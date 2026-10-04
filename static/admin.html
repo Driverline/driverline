@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Driverline Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><b>Admin</b><a class="push" href="/">Analysis</a></header>
+<main id="root"><span class="mut">Loading...</span></main>
+<script>
+const $=id=>document.getElementById(id);let pending=null;
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||'',v));return d}
+function opt(s,v,t){const o=document.createElement('option');o.value=v;o.textContent=t;s.append(o)}
+async function api(path,method,body,base){
+  const r=await fetch((base||'/api/admin')+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d;
+}
+function note(text,cls){const n=$('note');n.className=cls||'mut';n.textContent=text}
+async function act(fn){try{await fn();await load()}catch(e){note(e.message,'err')}}
+function linkBox(link,mins){
+  const b=$('linkbox');b.textContent='';b.append(el('div','mut','Send this link to the member. It works once and expires in '+mins+' minutes.'));
+  const i=document.createElement('input');i.readOnly=true;i.value=link;i.onfocus=()=>i.select();b.append(i);
+  const c=el('button','','Copy link');c.style.marginTop='8px';c.onclick=async()=>{try{await navigator.clipboard.writeText(link);c.textContent='Copied'}catch(e){i.select()}};b.append(c);
+  b.scrollIntoView({behavior:'smooth'});
+}
+function render(d){
+  const root=$('root');root.textContent='';
+  root.append(el('div','mut','Signed in as '+d.me),el('div','',''));
+  const n=el('div','mut');n.id='note';root.append(n);
+  const s=el('div','card');s.append(el('h2','','Overview'),kv('Members',d.totals.users),kv('Paid (member)',d.totals.member),kv('Free',d.totals.free),kv('AI analyses used today',d.totals.ai_today),
+    kv('Reset emails',d.mail_configured?'sending by email':'not set up: use "Reset link" below','mut'));root.append(s);
+  const lb=el('div','card');lb.id='linkbox';lb.hidden=true;root.append(lb);
+
+  const inv=el('div','card');inv.append(el('h2','','Invite codes'));
+  const t=document.createElement('select');opt(t,'free','free');opt(t,'member','member');
+  const u=document.createElement('input');u.type='number';u.value=10;u.min=1;u.max=1000;
+  const c=document.createElement('input');c.placeholder='Custom code (optional)';
+  const row=el('div','row');const a=el('div'),b=el('div');a.append(el('label','','Tier'),t);b.append(el('label','','Uses'),u);row.append(a,b);
+  const mk=el('button','','Create invite');mk.style.marginTop='10px';
+  mk.onclick=()=>act(async()=>{const r=await api('/invites','POST',{tier:t.value,uses:Number(u.value),code:c.value});pending=['New code: '+r.code+' ('+r.tier+', '+r.uses+' uses)','win']});
+  inv.append(row,el('label','','Code'),c,mk);
+  d.invites.forEach(i=>{const r=el('div','kv');r.append(el('span','',i.code+' · '+i.tier+' · '+i.uses_left+' left'));
+    const x=el('button','ghost','Delete');x.style.width='auto';x.style.padding='6px 12px';x.onclick=()=>act(()=>api('/invites/'+encodeURIComponent(i.code),'DELETE'));r.append(x);inv.append(r)});
+  if(!d.invites.length)inv.append(el('div','mut','No active codes.'));
+  root.append(inv);
+
+  const us=el('div');us.append(el('h2','','Members'));
+  d.users.forEach(m=>{
+    const card=el('div','card'),me=m.id===d.my_id;
+    const h=el('div','hd');h.append(el('span','',m.email+(me?' (you)':'')),el('span',m.blocked?'loss':'mut',m.blocked?'blocked':m.tier));
+    card.append(h,kv('AI today',m.used_today+' / '+m.limit),kv('Joined',m.created_at.slice(0,10)));
+    const tier=document.createElement('select');['free','member','admin'].forEach(x=>opt(tier,x,x));tier.value=m.tier;tier.disabled=me;tier.style.marginTop='8px';
+    tier.onchange=()=>act(()=>api('/users/'+m.id+'/tier','POST',{tier:tier.value}));card.append(tier);
+    const btns=el('div','btns');
+    const bl=el('button','ghost',m.blocked?'Unblock':'Block');bl.disabled=me;bl.onclick=()=>act(()=>api('/users/'+m.id+'/block','POST',{blocked:!m.blocked}));
+    const rs=el('button','ghost','Reset link');rs.onclick=async()=>{try{const r=await api('/users/'+m.id+'/reset-link','POST');$('linkbox').hidden=false;linkBox(r.link,r.valid_minutes)}catch(e){note(e.message,'err')}};
+    btns.append(bl,rs);card.append(btns);us.append(card)});
+  root.append(us);
+
+  const v=el('div','card');v.append(el('h2','','Deriv symbol check'));
+  const vb=el('button','','Check all symbols');const vr=el('div');
+  vb.onclick=async()=>{vr.textContent='Checking...';try{const r=await api('/verify','GET',null,'/api');vr.textContent='';
+    Object.entries(r).forEach(([k,x])=>vr.append(kv(k+' ('+x.code+')',x.found?'found':'NOT FOUND',x.found?'win':'loss')))}catch(e){vr.textContent=e.message}};
+  v.append(vb,vr);root.append(v);
+  if(pending){note(pending[0],pending[1]);pending=null}
+}
+async function load(){try{render(await api('/overview'))}catch(e){$('root').textContent='';$('root').append(el('div','err',e.message),el('p','mut','This page is for admins only.'))}}
+load();
+</script>
+</body>
+</html>

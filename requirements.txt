@@ -1,0 +1,5 @@
+# Termux: first run `pkg install python-pydantic`, then pip install the rest.
+fastapi
+uvicorn
+websockets
+httpx

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Driverline | New password</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/theme.css">
+</head>
+<body>
+<header><b>Driverline</b></header>
+<main>
+<div class="card">
+<h2>Choose a new password</h2>
+<label>New password (8 characters or more)</label><input id="pw" type="password" autocomplete="new-password">
+<label>Repeat it</label><input id="pw2" type="password" autocomplete="new-password">
+<div class="btns"><button id="go">Save password</button></div>
+<div id="msg" class="err" style="margin-top:8px"></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const token=new URLSearchParams(location.hash.slice(1)).get('token')||'';
+$('go').onclick=async()=>{
+  $('msg').textContent='';
+  if(!token){$('msg').textContent='This link is incomplete. Open the full link from your email.';return}
+  if($('pw').value!==$('pw2').value){$('msg').textContent='The two passwords differ.';return}
+  $('go').disabled=true;
+  try{
+    const r=await fetch('/api/auth/reset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,password:$('pw').value})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
+    $('msg').className='win';$('msg').textContent='Password changed. Taking you to sign in...';
+    history.replaceState(null,'',location.pathname);setTimeout(()=>location.href='/login.html',1500);
+  }catch(e){$('msg').textContent=e.message}
+  $('go').disabled=false;
+};
+</script>
+</body>
+</html>

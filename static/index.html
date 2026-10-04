@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Driverline</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body class="chat">
+<header><b>Driverline</b><a href="/risk.html">Risk</a><a href="/journal.html">Journal</a><select class="chip" id="sym"></select></header>
+<main id="feed"><div class="msg hello">Pick an instrument, then tap Analyze to pull live candles (D1 to M15), compute the structure, and get a Trade Card.</div></main>
+<footer>
+<button id="go" disabled>Analyze</button>
+<small class="dis"><span id="me"></span> <a href="#" id="signout" style="color:var(--gold)">Sign out</a> <a href="/admin.html" id="adminlink" hidden style="color:var(--gold)">Admin</a></small>
+<small class="dis">Education and risk analysis only, not financial advice. Synthetic indices are RNG-generated.</small>
+</footer>
+<script>
+const feed=document.getElementById('feed'),btn=document.getElementById('go'),sym=document.getElementById('sym');
+function label(){btn.textContent='Analyze '+(sym.selectedOptions[0]?sym.selectedOptions[0].text:'')}
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+function section(title,body){const c=el('div','card');c.append(el('h2','',title));if(typeof body==='string')c.append(el('div','',body));else c.append(body);return c}
+function factsBlock(d){const det=el('details');det.append(el('summary','','Computed facts'),el('pre','',JSON.stringify(d.facts,null,1)));return det}
+function renderFallback(d){
+  const box=el('div','msg'),s=d.summary||{};
+  const w=el('div','card');w.append(el('h2','','AI analysis unavailable'),el('div','',d.card_error||'Claude did not respond.'),el('div','hello','Showing computed facts only. This is not a trade signal.'));
+  box.append(w,section('Bias (computed)',s.bias||'-'));
+  const tfs=el('div');for(const [k,v] of Object.entries(s.timeframes||{})){const r=el('div','tf');r.append(el('b','',k),el('span','',v));tfs.append(r)}
+  box.append(section('Timeframes',tfs));
+  const lv=el('div');for(const [k,v] of Object.entries(s.levels||{})){const r=el('div','tf');r.append(el('b','',k),el('span','','price '+v.price+', swing high '+v.swing_high+', swing low '+v.swing_low));lv.append(r)}
+  box.append(section('Key levels',lv),factsBlock(d));feed.append(box);box.scrollIntoView({behavior:'smooth'});
+}
+function render(d){
+  if(!d.card){renderFallback(d);return}
+  const c=d.card,box=el('div','msg');
+  box.append(section('Summary',c.headline));
+  const tfs=el('div');
+  for(const [k,v] of Object.entries(c.timeframes||{})){const r=el('div','tf');r.append(el('b','',k),el('span','',v));tfs.append(r)}
+  box.append(section('Timeframes',tfs));
+  box.append(section('In plain words',c.plain_words));
+  const t=el('div');
+  const st=el('div','status '+(c.status==='TRADE'?(c.direction||''):'NOTRADE'),c.status==='TRADE'?c.direction+' setup':'NO TRADE');
+  t.append(st,el('div','',c.why));
+  if(c.status==='TRADE'){
+    const lv=el('div','lv');
+    [['Entry',c.entry],['Stop',c.stop],['Target',c.target]].forEach(([n,v])=>{const x=el('div');x.append(el('small','',n),el('b','',v));lv.append(x)});
+    t.append(lv);
+    if(c.reward_risk)t.append(el('div','hello','Reward:risk '+c.reward_risk));
+    try{localStorage.setItem('dl_last',JSON.stringify({key:sym.value,direction:c.direction,entry:c.entry,stop:c.stop,target:c.target}))}catch(e){}
+    const a=el('a','', 'Size this trade');a.href='/risk.html';a.style.cssText='display:block;margin-top:10px;color:var(--acc)';t.append(a);
+    const j=el('a','', 'Log this trade');j.href='/journal.html';j.style.cssText='display:block;margin-top:6px;color:var(--acc)';t.append(j);
+  }
+  t.append(el('div','',''),el('div','hello','Next: '+c.next_step));
+  box.append(section('Trade Card',t));
+  box.append(factsBlock(d));
+  feed.append(box);box.scrollIntoView({behavior:'smooth'});
+}
+btn.onclick=async()=>{
+  btn.disabled=true;btn.textContent='Analyzing...';
+  try{
+    const r=await fetch('/api/tradecard/'+sym.value);
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
+    render(d);
+  }catch(e){const m=el('div','msg err','Error: '+e.message);feed.append(m);m.scrollIntoView()}
+  btn.disabled=false;label();window.dlMe&&dlMe();
+};
+(async()=>{
+  try{
+    const list=await (await fetch('/api/instruments')).json();
+    list.forEach(i=>{const o=document.createElement('option');o.value=i.key;o.textContent=i.name;sym.append(o)});
+    try{const k=localStorage.getItem('dl_sym');if(k)sym.value=k}catch(e){}
+    label();btn.disabled=false;
+  }catch(e){feed.append(el('div','msg err','Cannot reach backend: '+e.message))}
+})();
+sym.onchange=()=>{label();try{localStorage.setItem('dl_sym',sym.value)}catch(e){}};
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>
