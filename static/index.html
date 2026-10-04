@@ -9,13 +9,14 @@
 <link rel="icon" href="/icon.svg">
 <link rel="stylesheet" href="/theme.css">
 <script src="/auth.js"></script>
+<script src="/ticket.js"></script>
 </head>
 <body class="chat">
 <header><b>Driverline</b><a href="/risk.html">Risk</a><a href="/journal.html">Journal</a><select class="chip" id="sym"></select></header>
 <main id="feed"><div class="msg hello">Pick an instrument, then tap Analyze to pull live candles (D1 to M15), compute the structure, and get a Trade Card.</div></main>
 <footer>
 <button id="go" disabled>Analyze</button>
-<small class="dis"><span id="me"></span> <a href="#" id="signout" style="color:var(--gold)">Sign out</a> <a href="/admin.html" id="adminlink" hidden style="color:var(--gold)">Admin</a></small>
+<small class="dis"><span id="me"></span> <a href="/mt5.html" style="color:var(--gold)">MT5</a> · <a href="#" id="signout" style="color:var(--gold)">Sign out</a> <a href="/admin.html" id="adminlink" hidden style="color:var(--gold)">Admin</a></small>
 <small class="dis">Education and risk analysis only, not financial advice. Synthetic indices are RNG-generated.</small>
 </footer>
 <script>
@@ -32,6 +33,24 @@ function renderFallback(d){
   box.append(section('Timeframes',tfs));
   const lv=el('div');for(const [k,v] of Object.entries(s.levels||{})){const r=el('div','tf');r.append(el('b','',k),el('span','','price '+v.price+', swing high '+v.swing_high+', swing low '+v.swing_low));lv.append(r)}
   box.append(section('Key levels',lv),factsBlock(d));feed.append(box);box.scrollIntoView({behavior:'smooth'});
+}
+function trow(k,v,copy){
+  const r=el('div','kv'),sp=el('span','',v);r.append(el('span','',k));
+  if(copy){const w=el('span');w.style.cssText='display:flex;gap:8px;align-items:center';const b=el('button','ghost','Copy');b.style.cssText='width:auto;padding:5px 10px';
+    b.onclick=async()=>{try{await navigator.clipboard.writeText(sp.textContent);b.textContent='Copied'}catch(e){prompt('Copy this:',sp.textContent)}};
+    w.append(sp,b);r.append(w)}else r.append(sp);
+  return [r,sp];
+}
+function ticketSection(c){
+  const box=el('div'),name=sym.selectedOptions[0].text,L=window.dlLots&&dlLots(sym.value,c.entry,c.stop);
+  const [r1,s1]=trow('Symbol',name,true);window.dlSymbolName&&dlSymbolName(name).then(n=>{s1.textContent=n});
+  box.append(r1,trow('Order',c.direction+' (market)',false)[0],trow('Volume (lots)',L?String(L.lots):'Set up the Risk page',!!L)[0],
+    trow('Stop loss',String(c.stop),true)[0],trow('Take profit',String(c.target),true)[0]);
+  if(L&&L.warn)box.append(el('div','warn','The minimum lot already risks more than your risk %. Consider skipping.'));
+  const a=el('a','','Open MT5 app');a.href='intent://#Intent;package=net.metaquotes.metatrader5;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dnet.metaquotes.metatrader5;end';
+  a.style.cssText='display:block;text-align:center;margin-top:10px;padding:12px;border-radius:12px;border:1px solid var(--gold);color:var(--gold);text-decoration:none;font-weight:600';
+  box.append(a,el('div','mut','MT5 cannot be filled in from a link. Open it, tap New Order, and enter these values yourself. The Open button works on Android only.'));
+  return section('Enter this in MT5',box);
 }
 function render(d){
   if(!d.card){renderFallback(d);return}
@@ -55,6 +74,7 @@ function render(d){
   }
   t.append(el('div','',''),el('div','hello','Next: '+c.next_step));
   box.append(section('Trade Card',t));
+  if(c.status==='TRADE')box.append(ticketSection(c));
   box.append(factsBlock(d));
   feed.append(box);box.scrollIntoView({behavior:'smooth'});
 }

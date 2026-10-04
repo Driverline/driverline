@@ -96,6 +96,18 @@ function tradeCard(t){
     const cb=el('button','','Close trade');cb.onclick=()=>{box.hidden=!box.hidden};
     btns.append(cb);c.append(btns,box);
   }
+  if(t.status==='closed'){
+    const box=el('div');box.hidden=true;
+    const fp=document.createElement('select');opt(fp,'','Followed your plan?');opt(fp,'true','Yes');opt(fp,'false','No');
+    fp.value=t.followed_plan===null||t.followed_plan===undefined?'':String(!!t.followed_plan);
+    const em=document.createElement('select');EMO.forEach(e=>opt(em,e,e||'How did it feel?'));em.value=t.emotion||'';
+    const nt=document.createElement('input');nt.placeholder='Add a note (optional)';
+    const sv=el('button','','Save tags');
+    sv.onclick=async()=>{try{await post('/'+t.id+'/tag',{followed_plan:fp.value===''?null:fp.value==='true',emotion:em.value||null,notes:nt.value||null});load()}catch(e){alert(e.message)}};
+    [fp,em,nt,sv].forEach(x=>{x.style.marginTop='8px';box.append(x)});
+    const tb=el('button','','Tag trade');tb.onclick=()=>{box.hidden=!box.hidden};
+    btns.append(tb);c.append(box);
+  }
   const del=el('button','ghost','Delete');
   del.onclick=async()=>{if(confirm('Delete this trade?')){await api('/'+t.id,{method:'DELETE'});load()}};
   if(t.status!=='open')c.append(btns);

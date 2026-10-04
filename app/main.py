@@ -9,7 +9,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, journal
+from . import admin, auth, ea, journal
 from .config import INSTRUMENTS
 from .deriv import fetch_candles, fetch_active_symbols
 from .indicators import analyze_all
@@ -102,6 +102,7 @@ routes = [
     Route("/api/tradecard/{key}", tradecard),
     *auth.routes,
     *admin.routes,
+    *ea.routes,
     *journal.routes,
     Mount("/", app=StaticFiles(directory=str(STATIC_DIR), html=True), name="static"),
 ]

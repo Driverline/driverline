@@ -1,4 +1,6 @@
 import json
+import math
+import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -37,9 +39,13 @@ def db():
         entry REAL NOT NULL, stop REAL, target REAL, lots REAL, exit_price REAL, pnl REAL,
         r_multiple REAL, status TEXT NOT NULL DEFAULT 'open', followed_plan INTEGER,
         emotion TEXT, notes TEXT, opened_at TEXT NOT NULL, closed_at TEXT)""")
-    if "user_id" not in [r[1] for r in con.execute("PRAGMA table_info(trades)")]:
+    cols = [r[1] for r in con.execute("PRAGMA table_info(trades)")]
+    if "user_id" not in cols:
         con.execute("ALTER TABLE trades ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
-        con.commit()
+    if "mt5_id" not in cols:
+        con.execute("ALTER TABLE trades ADD COLUMN mt5_id TEXT")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_trades_mt5 ON trades(user_id, mt5_id)")
+    con.commit()
     return con
 
 
@@ -125,6 +131,40 @@ def compute_stats(all_rows):
     }
 
 
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower().replace("index", ""))
+
+
+_KEYS = {_norm(v[1]): k for k, v in INSTRUMENTS.items()}
+
+
+def import_mt5(uid: int, login, rows: list, offset: int = 0) -> int:
+    """Log closed MT5 positions into the journal. Safe to repeat: each position is stored once."""
+    added = 0
+    with closing(db()) as con:
+        for r in rows[:100]:
+            try:
+                sym, direction = str(r["symbol"])[:60], r["type"]
+                entry, exit_p = float(r["open"]), float(r["close"])
+                lots, profit = float(r["volume"]), float(r["profit"])
+                sl, tp = float(r.get("sl") or 0) or None, float(r.get("tp") or 0) or None
+                opened, closed, pid = int(r["opened"]) - offset, int(r["closed"]) - offset, int(r["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if direction not in ("BUY", "SELL") or not all(math.isfinite(x) for x in (entry, exit_p, lots, profit)):
+                continue
+            iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
+            cur = con.execute(
+                "INSERT OR IGNORE INTO trades(user_id,instrument,direction,entry,stop,target,lots,exit_price,pnl,"
+                "r_multiple,status,notes,opened_at,closed_at,mt5_id) VALUES(?,?,?,?,?,?,?,?,?,?,'closed',"
+                "'Imported from MT5',?,?,?)",
+                (uid, _KEYS.get(_norm(sym), sym), direction, entry, sl, tp, lots, exit_p, profit,
+                 r_mult(direction, entry, sl, exit_p), iso(opened), iso(closed), f"{login}:{pid}"))
+            added += cur.rowcount
+        con.commit()
+    return added
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -195,6 +235,25 @@ async def close_trade(request):
     return JSONResponse({"id": trade_id, "r_multiple": r})
 
 
+async def tag_trade(request):
+    uid = require_user(request)["id"]
+    trade_id = request.path_params["trade_id"]
+    d = await _body(request)
+    fp = d.get("followed_plan")
+    if fp is not None and not isinstance(fp, bool):
+        raise HTTPException(422, "followed_plan must be true or false")
+    emotion = d.get("emotion") or None
+    _check_emotion(emotion)
+    notes = _text(d, "notes")
+    with closing(db()) as con:
+        if not con.execute("SELECT 1 FROM trades WHERE id=? AND user_id=?", (trade_id, uid)).fetchone():
+            raise HTTPException(404, "Trade not found")
+        con.execute("UPDATE trades SET followed_plan=?, emotion=?, notes=CASE WHEN ? IS NULL THEN notes ELSE ? END "
+                    "WHERE id=? AND user_id=?", (None if fp is None else int(fp), emotion, notes, notes, trade_id, uid))
+        con.commit()
+    return JSONResponse({"ok": True})
+
+
 async def delete_trade(request):
     uid = require_user(request)["id"]
     trade_id = request.path_params["trade_id"]
@@ -243,5 +302,6 @@ routes = [
     Route("/api/journal", list_trades, methods=["GET"]),
     Route("/api/journal", add_trade, methods=["POST"]),
     Route("/api/journal/{trade_id:int}/close", close_trade, methods=["POST"]),
+    Route("/api/journal/{trade_id:int}/tag", tag_trade, methods=["POST"]),
     Route("/api/journal/{trade_id:int}", delete_trade, methods=["DELETE"]),
 ]

@@ -16,7 +16,8 @@
 <label>Instrument</label><select id="sym"></select>
 <div class="row"><div><label>Balance</label><input id="bal" type="number" inputmode="decimal"></div>
 <div><label>Risk %</label><input id="rp" type="number" inputmode="decimal" value="1"></div></div>
-<div class="row"><div><label>Entry</label><input id="en" type="number" inputmode="decimal"></div>
+<div class="row"><div><small id="mt5note"></small>
+<label>Entry</label><input id="en" type="number" inputmode="decimal"></div>
 <div><label>Stop loss</label><input id="sl" type="number" inputmode="decimal"></div></div>
 <label>Take profit (optional)</label><input id="tp" type="number" inputmode="decimal">
 <div class="card" id="out"><small>Fill in entry, stop and balance.</small></div>
@@ -61,6 +62,19 @@ function calcLots(sp,balance,riskPct,entry,stop,target){
 }
 if(typeof module!=='undefined')module.exports={calcLots};
 
+async function syncMt5(){
+  try{
+    let note='';
+    const st=await (await fetch('/api/ea/status')).json();
+    if(st.connected&&st.account&&Number(st.account.balance)>0){$('bal').value=st.account.balance;store.set('dl_bal',String(st.account.balance));note='Balance'}
+    const sp=await (await fetch('/api/ea/specs')).json();let n=0;
+    sp.forEach(x=>{const inst=list.find(i=>norm(i.name)===norm(x.symbol));
+      if(inst){store.set('dl_spec_'+inst.key,{ts:x.tick_size,tv:x.tick_value,vmin:x.vol_min,vstep:x.vol_step,vmax:x.vol_max,cs:x.contract_size});n++}});
+    if(n)note+=(note?' and ':'')+'contract specs';
+    if(note)$('mt5note').textContent=note+' synced from your MT5 account.';
+    loadSpec();update();
+  }catch(e){}
+}
 let list=[];
 const norm=s=>s.toLowerCase().replace(/index/g,'').replace(/[^a-z0-9]/g,'');
 function loadSpec(){const s=store.get('dl_spec_'+$('sym').value,{});$('ts').value=s.ts??'';$('tv').value=s.tv??'';$('vmin').value=s.vmin??'';$('vstep').value=s.vstep??'';$('vmax').value=s.vmax??'';$('cs').value=s.cs??''}
@@ -100,7 +114,7 @@ $('impbtn').onclick=()=>{
   if(!$('sym').value)$('sym').value=list[0].key;
   $('bal').value=store.get('dl_bal','');$('rp').value=store.get('dl_rp','1');
   if(last){$('en').value=last.entry??'';$('sl').value=last.stop??'';$('tp').value=last.target??''}
-  loadSpec();update();
+  loadSpec();update();syncMt5();
 })();
 $('sym').onchange=()=>{store.set('dl_sym',$('sym').value);loadSpec();update()};
 ['bal','rp','en','sl','tp'].forEach(i=>$(i).oninput=update);
