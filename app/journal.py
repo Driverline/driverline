@@ -12,7 +12,7 @@ from starlette.routing import Route
 
 from .config import INSTRUMENTS
 from .auth import require_user, has_quota, consume_quota, DB_PATH
-from .trade_card import claude_text, parse_json
+from .trade_card import claude_json
 
 EMOTIONS = ["calm", "confident", "fomo", "revenge", "fearful", "bored", "tired"]
 
@@ -23,11 +23,26 @@ Do not give entry signals or predictions. Synthetic indices are RNG-generated, s
 (plan adherence, emotion, sizing, overtrading), not market calls.
 Be honest about sample size: with fewer than 30 closed trades, say patterns are tentative.
 Never suggest increasing risk to recover losses.
-Return ONLY a JSON object, no fences, with keys:
+Respond with a JSON object with:
 {"summary": "2-3 sentences",
  "patterns": [{"finding": "...", "evidence": "numbers from the data"}],
  "suggestions": ["concrete process changes, max 4"],
  "caution": "one sentence on limits of this review"}"""
+
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "patterns": {"type": "array", "items": {"type": "object", "properties": {
+            "finding": {"type": "string"}, "evidence": {"type": "string"}},
+            "required": ["finding", "evidence"], "additionalProperties": False}},
+        "suggestions": {"type": "array", "items": {"type": "string"}},
+        "caution": {"type": "string"},
+    },
+    "required": ["summary", "patterns", "suggestions", "caution"],
+    "additionalProperties": False,
+}
 
 
 def db():
@@ -286,8 +301,7 @@ async def review(request):
               for r in closed[-60:]]
     payload = {"stats": compute_stats(rows), "recent_closed_trades": recent}
     try:
-        text = await claude_text(REVIEW_SYSTEM, json.dumps(payload), max_tokens=1500)
-        out = parse_json(text)
+        out = await claude_json(REVIEW_SYSTEM, json.dumps(payload), REVIEW_SCHEMA)
     except Exception as e:
         raise HTTPException(502, f"Claude: {e}")
     for k, default in (("summary", ""), ("patterns", []), ("suggestions", []), ("caution", "")):

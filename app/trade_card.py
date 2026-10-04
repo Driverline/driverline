@@ -14,7 +14,7 @@ RNG-generated, so never claim a pattern is predictive; frame output as structure
 Boom, Crash and Jump indices produce sudden spikes: treat single spike candles as outliers, and
 warn that stops can be skipped by spikes.
 
-Respond by calling the trade_card tool with these fields:
+Respond with a JSON object with these fields:
 {
   "headline": "one sentence summary",
   "timeframes": {"D1": "...", "H4": "...", "H1": "...", "M30": "...", "M15": "..."},
@@ -69,23 +69,25 @@ def validate_card(card: dict) -> dict:
 
 
 _TF = {"type": "string"}
+_NUM_OR_NULL = {"anyOf": [{"type": "number"}, {"type": "null"}]}
 CARD_SCHEMA = {
     "type": "object",
     "properties": {
         "headline": {"type": "string"},
         "timeframes": {"type": "object", "properties": {k: _TF for k in ("D1", "H4", "H1", "M30", "M15")},
-                       "required": ["D1", "H4", "H1", "M30", "M15"]},
+                       "required": ["D1", "H4", "H1", "M30", "M15"], "additionalProperties": False},
         "plain_words": {"type": "string"},
         "status": {"type": "string", "enum": ["TRADE", "NO TRADE"]},
-        "direction": {"type": ["string", "null"], "enum": ["BUY", "SELL", None]},
-        "entry": {"type": ["number", "null"]},
-        "stop": {"type": ["number", "null"]},
-        "target": {"type": ["number", "null"]},
+        "direction": {"anyOf": [{"type": "string", "enum": ["BUY", "SELL"]}, {"type": "null"}]},
+        "entry": _NUM_OR_NULL,
+        "stop": _NUM_OR_NULL,
+        "target": _NUM_OR_NULL,
         "why": {"type": "string"},
         "next_step": {"type": "string"},
     },
     "required": ["headline", "timeframes", "plain_words", "status", "direction",
                  "entry", "stop", "target", "why", "next_step"],
+    "additionalProperties": False,
 }
 
 
@@ -112,24 +114,26 @@ async def claude_text(system: str, content: str, max_tokens: int = 1200) -> str:
     return "".join(b.get("text", "") for b in data["content"])
 
 
-async def claude_tool(system: str, content: str, name: str, description: str, schema: dict,
-                      max_tokens: int = 1500) -> dict:
-    """Forces Claude to answer through a tool, so the reply arrives as already-parsed JSON."""
+async def claude_json(system: str, content: str, schema: dict, max_tokens: int = 4000) -> dict:
+    """Asks for JSON that must match `schema` (structured outputs), so the reply always parses."""
     data = await _post({
         "model": MODEL, "max_tokens": max_tokens, "system": system,
-        "tools": [{"name": name, "description": description, "input_schema": schema}],
-        "tool_choice": {"type": "tool", "name": name},
+        "output_config": {"format": {"type": "json_schema", "schema": schema}},
         "messages": [{"role": "user", "content": content}],
     })
-    if data.get("stop_reason") == "max_tokens":
+    stop = data.get("stop_reason")
+    if stop == "max_tokens":
         raise RuntimeError("The AI answer was cut off. Please try again.")
-    for b in data.get("content", []):
-        if b.get("type") == "tool_use" and isinstance(b.get("input"), dict):
-            return b["input"]
-    raise RuntimeError("The AI did not return a structured answer. Please try again.")
+    if stop == "refusal":
+        raise RuntimeError("The AI declined to answer this request.")
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    if not text.strip():
+        raise RuntimeError("The AI did not return a structured answer. Please try again.")
+    return parse_json(text)
 
 
 async def generate_trade_card(symbol_name: str, facts: dict) -> dict:
-    card = await claude_tool(SYSTEM, f"Symbol: {symbol_name}\nFacts:\n{json.dumps(facts)}", "trade_card",
-                             "Return the Trade Card for this instrument.", CARD_SCHEMA)
+    card = await claude_json(SYSTEM, f"Symbol: {symbol_name}\nFacts:\n{json.dumps(facts)}", CARD_SCHEMA)
+    if isinstance(card.get("direction"), str):
+        card["direction"] = card["direction"].upper()
     return validate_card(card)
