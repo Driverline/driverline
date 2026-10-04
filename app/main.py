@@ -38,6 +38,8 @@ def _friendly(msg: str) -> str:
         return "AI analysis is temporarily unavailable. Computed facts are shown instead."
     if "ANTHROPIC_API_KEY" in msg:
         return "AI analysis is not configured on the server."
+    if "structured answer" in msg or "cut off" in msg:
+        return "The AI answer could not be read this time. Please try again."
     return msg[:200]
 
 

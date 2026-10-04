@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -13,7 +14,7 @@ RNG-generated, so never claim a pattern is predictive; frame output as structure
 Boom, Crash and Jump indices produce sudden spikes: treat single spike candles as outliers, and
 warn that stops can be skipped by spikes.
 
-Return ONLY a JSON object, no prose, no markdown fences, with exactly these keys:
+Respond by calling the trade_card tool with these fields:
 {
   "headline": "one sentence summary",
   "timeframes": {"D1": "...", "H4": "...", "H1": "...", "M30": "...", "M15": "..."},
@@ -67,21 +68,68 @@ def validate_card(card: dict) -> dict:
     return card
 
 
-async def claude_text(system: str, content: str, max_tokens: int = 1200) -> str:
+_TF = {"type": "string"}
+CARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "timeframes": {"type": "object", "properties": {k: _TF for k in ("D1", "H4", "H1", "M30", "M15")},
+                       "required": ["D1", "H4", "H1", "M30", "M15"]},
+        "plain_words": {"type": "string"},
+        "status": {"type": "string", "enum": ["TRADE", "NO TRADE"]},
+        "direction": {"type": ["string", "null"], "enum": ["BUY", "SELL", None]},
+        "entry": {"type": ["number", "null"]},
+        "stop": {"type": ["number", "null"]},
+        "target": {"type": ["number", "null"]},
+        "why": {"type": "string"},
+        "next_step": {"type": "string"},
+    },
+    "required": ["headline", "timeframes", "plain_words", "status", "direction",
+                 "entry", "stop", "target", "why", "next_step"],
+}
+
+
+async def _post(payload: dict) -> dict:
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise RuntimeError("Set ANTHROPIC_API_KEY in your environment")
-    payload = {"model": MODEL, "max_tokens": max_tokens, "system": system,
-               "messages": [{"role": "user", "content": content}]}
-    headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
-               "content-type": "application/json"}
-    async with httpx.AsyncClient(timeout=90) as client:
-        r = await client.post(API_URL, json=payload, headers=headers)
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    for attempt in (1, 2):  # one retry for temporary overload or rate-limit errors
+        async with httpx.AsyncClient(timeout=90) as client:
+            r = await client.post(API_URL, json=payload, headers=headers)
+        if r.status_code in (429, 500, 502, 503, 529) and attempt == 1:
+            await asyncio.sleep(2)
+            continue
+        break
     if r.status_code != 200:
         raise RuntimeError(f"Claude API {r.status_code}: {r.text[:300]}")
-    return "".join(b.get("text", "") for b in r.json()["content"])
+    return r.json()
+
+
+async def claude_text(system: str, content: str, max_tokens: int = 1200) -> str:
+    data = await _post({"model": MODEL, "max_tokens": max_tokens, "system": system,
+                        "messages": [{"role": "user", "content": content}]})
+    return "".join(b.get("text", "") for b in data["content"])
+
+
+async def claude_tool(system: str, content: str, name: str, description: str, schema: dict,
+                      max_tokens: int = 1500) -> dict:
+    """Forces Claude to answer through a tool, so the reply arrives as already-parsed JSON."""
+    data = await _post({
+        "model": MODEL, "max_tokens": max_tokens, "system": system,
+        "tools": [{"name": name, "description": description, "input_schema": schema}],
+        "tool_choice": {"type": "tool", "name": name},
+        "messages": [{"role": "user", "content": content}],
+    })
+    if data.get("stop_reason") == "max_tokens":
+        raise RuntimeError("The AI answer was cut off. Please try again.")
+    for b in data.get("content", []):
+        if b.get("type") == "tool_use" and isinstance(b.get("input"), dict):
+            return b["input"]
+    raise RuntimeError("The AI did not return a structured answer. Please try again.")
 
 
 async def generate_trade_card(symbol_name: str, facts: dict) -> dict:
-    text = await claude_text(SYSTEM, f"Symbol: {symbol_name}\nFacts:\n{json.dumps(facts)}")
-    return validate_card(parse_json(text))
+    card = await claude_tool(SYSTEM, f"Symbol: {symbol_name}\nFacts:\n{json.dumps(facts)}", "trade_card",
+                             "Return the Trade Card for this instrument.", CARD_SCHEMA)
+    return validate_card(card)

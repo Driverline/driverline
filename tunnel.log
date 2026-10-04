@@ -188,3 +188,40 @@
 2026-10-04T10:43:38Z ERR Connection terminated error="failed to dial to edge with quic: timeout: no recent network activity" connIndex=0
 2026-10-04T10:43:58Z INF Tunnel connection curve preferences: [X25519MLKEM768 CurveID(65074) CurveP256] connIndex=0 event=0 ip=198.41.200.63
 2026-10-04T10:44:03Z INF Registered tunnel connection connIndex=0 connection=3cde320b-7737-4f7c-bfe6-d8c8e7df27c9 event=0 ip=198.41.200.63 location=lhr01 protocol=quic
+2026-10-04T11:56:08Z ERR Serve tunnel error error="datagram manager error: timeout: no recent network activity" connIndex=0 event=0 ip=198.41.200.63
+2026-10-04T11:56:08Z INF Retrying connection in up to 2s connIndex=0 event=0 ip=198.41.200.63
+2026-10-04T11:56:09Z ERR Connection terminated error="datagram manager error: timeout: no recent network activity" connIndex=0
+2026-10-04T11:56:24Z INF Tunnel connection curve preferences: [X25519MLKEM768 CurveID(65074) CurveP256] connIndex=0 event=0 ip=198.41.200.113
+2026-10-04T11:56:25Z INF Registered tunnel connection connIndex=0 connection=d79cff3f-b40d-4677-9a62-98954bedd853 event=0 ip=198.41.200.113 location=lhr01 protocol=quic
+2026-10-04T12:18:26Z ERR Serve tunnel error error="datagram manager error: write udp [::]:52004->198.41.200.113:7844: sendmsg: network is unreachable" connIndex=0 event=0 ip=198.41.200.113
+2026-10-04T12:18:26Z INF Retrying connection in up to 2s connIndex=0 event=0 ip=198.41.200.113
+2026-10-04T12:18:27Z ERR Connection terminated error="datagram manager error: write udp [::]:52004->198.41.200.113:7844: sendmsg: network is unreachable" connIndex=0
+2026-10-04T12:18:32Z INF Tunnel connection curve preferences: [X25519MLKEM768 CurveID(65074) CurveP256] connIndex=0 event=0 ip=198.41.200.113
+2026-10-04T12:18:32Z ERR Failed to dial a quic connection error="failed to dial to edge with quic: write udp [::]:52004->198.41.200.113:7844: sendmsg: network is unreachable" connIndex=0 event=0 ip=198.41.200.113
+2026-10-04T12:18:32Z INF Retrying connection in up to 4s connIndex=0 event=0 ip=198.41.200.113
+2026-10-04T12:18:34Z ERR Connection terminated error="failed to dial to edge with quic: write udp [::]:52004->198.41.200.113:7844: sendmsg: network is unreachable" connIndex=0
+2026-10-04T12:18:40Z INF Tunnel connection curve preferences: [X25519MLKEM768 CurveID(65074) CurveP256] connIndex=0 event=0 ip=198.41.200.23
+2026-10-04T12:18:42Z INF Registered tunnel connection connIndex=0 connection=43c3dedd-9c2b-4ea7-b8af-f60bb51e870e event=0 ip=198.41.200.23 location=lhr01 protocol=quic
+2026-10-04T12:52:43Z ERR Serve tunnel error error="datagram manager error: timeout: no recent network activity" connIndex=0 event=0 ip=198.41.200.23
+2026-10-04T12:52:43Z INF Retrying connection in up to 2s connIndex=0 event=0 ip=198.41.200.23
+2026-10-04T12:52:43Z ERR Connection terminated error="datagram manager error: timeout: no recent network activity" connIndex=0
+2026-10-04T12:53:02Z INF Tunnel connection curve preferences: [X25519MLKEM768 CurveID(65074) CurveP256] connIndex=0 event=0 ip=198.41.200.193
+2026-10-04T12:53:03Z INF Registered tunnel connection connIndex=0 connection=b1cf6d03-636b-4688-a371-fb38302b4ff6 event=0 ip=198.41.200.193 location=lhr01 protocol=quic
+2026-10-04T13:18:24Z ERR Serve tunnel error error="accept stream listener error: failed to accept QUIC stream: timeout: no recent network activity" connIndex=0 event=0 ip=198.41.200.193
+2026-10-04T13:18:24Z INF Retrying connection in up to 2s connIndex=0 event=0 ip=198.41.200.193
+2026-10-04T13:18:25Z ERR Connection terminated error="accept stream listener error: failed to accept QUIC stream: timeout: no recent network activity" connIndex=0
+2026-10-04T13:18:44Z INF Tunnel connection curve preferences: [X25519MLKEM768 CurveID(65074) CurveP256] connIndex=0 event=0 ip=198.41.192.107
+2026-10-04T13:18:45Z INF Registered tunnel connection connIndex=0 connection=fcc83bad-3741-4def-9f84-a35eab020b81 event=0 ip=198.41.192.107 location=los02 protocol=quic
+2026-10-04T13:42:10Z ERR Serve tunnel error error="datagram manager error: timeout: no recent network activity" connIndex=0 event=0 ip=198.41.192.107
+2026-10-04T13:42:10Z INF Retrying connection in up to 2s connIndex=0 event=0 ip=198.41.192.107
+2026-10-04T13:42:11Z ERR Connection terminated error="datagram manager error: timeout: no recent network activity" connIndex=0
+2026-10-04T13:42:18Z INF Tunnel connection curve preferences: [X25519MLKEM768 CurveID(65074) CurveP256] connIndex=0 event=0 ip=198.41.192.67
+2026-10-04T13:42:19Z INF Registered tunnel connection connIndex=0 connection=de23053e-2c82-48d9-a961-53ee174c6f63 event=0 ip=198.41.192.67 location=los02 protocol=quic
+2026-10-04T13:58:03Z ERR Serve tunnel error error="datagram manager error: write udp [::]:52004->198.41.192.67:7844: sendmsg: network is unreachable" connIndex=0 event=0 ip=198.41.192.67
+2026-10-04T13:58:03Z INF Retrying connection in up to 2s connIndex=0 event=0 ip=198.41.192.67
+2026-10-04T13:58:04Z ERR Connection terminated error="datagram manager error: write udp [::]:52004->198.41.192.67:7844: sendmsg: network is unreachable" connIndex=0
+2026-10-04T13:58:23Z INF Tunnel connection curve preferences: [X25519MLKEM768 CurveID(65074) CurveP256] connIndex=0 event=0 ip=198.41.192.67
+2026-10-04T13:58:23Z INF Registered tunnel connection connIndex=0 connection=2f10c57a-4a3d-4839-b88e-d21735a48048 event=0 ip=198.41.192.67 location=los02 protocol=quic
+2026-10-04T13:59:03Z ERR Serve tunnel error error="accept stream listener error: failed to accept QUIC stream: write udp [::]:52004->198.41.192.67:7844: sendmsg: network is unreachable" connIndex=0 event=0 ip=198.41.192.67
+2026-10-04T13:59:03Z INF Retrying connection in up to 2s connIndex=0 event=0 ip=198.41.192.67
+2026-10-04T13:59:04Z ERR Connection terminated error="accept stream listener error: failed to accept QUIC stream: write udp [::]:52004->198.41.192.67:7844: sendmsg: network is unreachable" connIndex=0
