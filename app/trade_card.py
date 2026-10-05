@@ -25,7 +25,10 @@ Respond with a JSON object with these fields:
   "stop": number or null,
   "target": number or null,
   "why": "short reason for the status",
-  "next_step": "what to wait for or do next"
+  "next_step": "what to wait for or do next",
+  "setup_type": "trend_pullback, breakout, range_reversal, momentum_continuation or none",
+  "confidence": "integer 0-100: how clear the setup is (0 when NO TRADE)",
+  "no_trade_reason": "mixed_timeframes, consolidation, unclear_structure, overextended, poor_risk_reward, spike_risk or other; null when status is TRADE"
 }
 Default to NO TRADE when timeframes conflict, price is mid-range, or reward:risk is below 1.5.
 Entry, stop and target must come from provided swing levels or range boundaries."""
@@ -84,9 +87,15 @@ CARD_SCHEMA = {
         "target": _NUM_OR_NULL,
         "why": {"type": "string"},
         "next_step": {"type": "string"},
+        "setup_type": {"type": "string", "enum": ["trend_pullback", "breakout", "range_reversal",
+                                                   "momentum_continuation", "none"]},
+        "confidence": {"type": "integer"},
+        "no_trade_reason": {"anyOf": [{"type": "string", "enum": [
+            "mixed_timeframes", "consolidation", "unclear_structure", "overextended",
+            "poor_risk_reward", "spike_risk", "other"]}, {"type": "null"}]},
     },
     "required": ["headline", "timeframes", "plain_words", "status", "direction",
-                 "entry", "stop", "target", "why", "next_step"],
+                 "entry", "stop", "target", "why", "next_step", "setup_type", "confidence", "no_trade_reason"],
     "additionalProperties": False,
 }
 

@@ -1,7 +1,6 @@
 import json
 import math
 import re
-import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,7 +10,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from .config import INSTRUMENTS
-from .auth import require_user, has_quota, consume_quota, DB_PATH
+from . import dbx
+from .auth import require_user, has_quota, consume_quota
 from .trade_card import claude_json
 
 EMOTIONS = ["calm", "confident", "fomo", "revenge", "fearful", "bored", "tired"]
@@ -45,23 +45,23 @@ REVIEW_SCHEMA = {
 }
 
 
-def db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    con.execute("""CREATE TABLE IF NOT EXISTS trades(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, instrument TEXT NOT NULL, direction TEXT NOT NULL,
-        entry REAL NOT NULL, stop REAL, target REAL, lots REAL, exit_price REAL, pnl REAL,
-        r_multiple REAL, status TEXT NOT NULL DEFAULT 'open', followed_plan INTEGER,
-        emotion TEXT, notes TEXT, opened_at TEXT NOT NULL, closed_at TEXT)""")
-    cols = [r[1] for r in con.execute("PRAGMA table_info(trades)")]
-    if "user_id" not in cols:
-        con.execute("ALTER TABLE trades ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
-    if "mt5_id" not in cols:
-        con.execute("ALTER TABLE trades ADD COLUMN mt5_id TEXT")
+JOURNAL_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS trades(id {ID}, user_id INTEGER NOT NULL DEFAULT 0, instrument TEXT NOT NULL,
+        direction TEXT NOT NULL, entry DOUBLE PRECISION NOT NULL, stop DOUBLE PRECISION, target DOUBLE PRECISION,
+        lots DOUBLE PRECISION, exit_price DOUBLE PRECISION, pnl DOUBLE PRECISION, r_multiple DOUBLE PRECISION,
+        status TEXT NOT NULL DEFAULT 'open', followed_plan INTEGER, emotion TEXT, notes TEXT,
+        opened_at TEXT NOT NULL, closed_at TEXT, mt5_id TEXT)"""
+
+
+def _migrate(con):
+    # older databases were created before these columns existed
+    con.add_column("trades", "user_id", "INTEGER NOT NULL DEFAULT 0")
+    con.add_column("trades", "mt5_id", "TEXT")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_trades_mt5 ON trades(user_id, mt5_id)")
-    con.commit()
-    return con
+
+
+def db():
+    return dbx.connect("journal", JOURNAL_SCHEMA, _migrate)
 
 
 async def _body(request):
@@ -170,9 +170,9 @@ def import_mt5(uid: int, login, rows: list, offset: int = 0) -> int:
                 continue
             iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
             cur = con.execute(
-                "INSERT OR IGNORE INTO trades(user_id,instrument,direction,entry,stop,target,lots,exit_price,pnl,"
+                "INSERT INTO trades(user_id,instrument,direction,entry,stop,target,lots,exit_price,pnl,"
                 "r_multiple,status,notes,opened_at,closed_at,mt5_id) VALUES(?,?,?,?,?,?,?,?,?,?,'closed',"
-                "'Imported from MT5',?,?,?)",
+                "'Imported from MT5',?,?,?) ON CONFLICT DO NOTHING",
                 (uid, _KEYS.get(_norm(sym), sym), direction, entry, sl, tp, lots, exit_p, profit,
                  r_mult(direction, entry, sl, exit_p), iso(opened), iso(closed), f"{login}:{pid}"))
             added += cur.rowcount
@@ -205,13 +205,13 @@ async def add_trade(request):
         if (direction == "BUY" and stop >= entry) or (direction == "SELL" and stop <= entry):
             raise HTTPException(422, "Stop is on the wrong side of entry")
     with closing(db()) as con:
-        cur = con.execute(
+        new_id = con.insert(
             "INSERT INTO trades(user_id,instrument,direction,entry,stop,target,lots,emotion,notes,opened_at)"
             " VALUES(?,?,?,?,?,?,?,?,?,?)",
             (uid, instrument, direction, entry, stop, target, lots,
              emotion, _text(d, "notes") or "", _now()))
         con.commit()
-        return JSONResponse({"id": cur.lastrowid})
+        return JSONResponse({"id": new_id})
 
 
 async def list_trades(request):
@@ -243,7 +243,7 @@ async def close_trade(request):
         plan = None if fp is None else int(fp)
         con.execute(
             "UPDATE trades SET status='closed', exit_price=?, pnl=?, r_multiple=?, followed_plan=?,"
-            " emotion=COALESCE(?, emotion), notes=CASE WHEN ? IS NULL THEN notes ELSE ? END, closed_at=?"
+            " emotion=COALESCE(?, emotion), notes=CASE WHEN CAST(? AS TEXT) IS NULL THEN notes ELSE ? END, closed_at=?"
             " WHERE id=? AND user_id=?",
             (exit_price, pnl, r, plan, emotion, notes, notes, _now(), trade_id, uid))
         con.commit()
@@ -263,7 +263,7 @@ async def tag_trade(request):
     with closing(db()) as con:
         if not con.execute("SELECT 1 FROM trades WHERE id=? AND user_id=?", (trade_id, uid)).fetchone():
             raise HTTPException(404, "Trade not found")
-        con.execute("UPDATE trades SET followed_plan=?, emotion=?, notes=CASE WHEN ? IS NULL THEN notes ELSE ? END "
+        con.execute("UPDATE trades SET followed_plan=?, emotion=?, notes=CASE WHEN CAST(? AS TEXT) IS NULL THEN notes ELSE ? END "
                     "WHERE id=? AND user_id=?", (None if fp is None else int(fp), emotion, notes, notes, trade_id, uid))
         con.commit()
     return JSONResponse({"ok": True})

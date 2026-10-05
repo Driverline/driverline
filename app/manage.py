@@ -12,7 +12,7 @@ import getpass
 import secrets
 from contextlib import closing
 
-from . import auth
+from . import auth, journal
 
 
 def main():
@@ -58,10 +58,8 @@ def main():
             print(a.email, a.cmd + "ed")
         elif a.cmd == "claim-trades":
             uid = user_id(a.email)
-            try:
-                n = con.execute("UPDATE trades SET user_id=? WHERE user_id=0", (uid,)).rowcount
-            except Exception:
-                n = 0
+            journal.db().close()  # makes sure the trades table exists
+            n = con.execute("UPDATE trades SET user_id=? WHERE user_id=0", (uid,)).rowcount
             print(f"{n} older trade(s) assigned to {a.email}")
         elif a.cmd == "reset-password":
             pw = getpass.getpass("New password for them (min 8 chars): ")

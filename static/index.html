@@ -13,7 +13,7 @@
 </head>
 <body class="chat">
 <header><b>Driverline</b><a href="/risk.html">Risk</a><a href="/journal.html">Journal</a><select class="chip" id="sym"></select></header>
-<main id="feed"><div class="msg hello">Pick an instrument, then tap Analyze to pull live candles (D1 to M15), compute the structure, and get a Trade Card.</div></main>
+<main id="feed"><div id="radar"></div><div class="msg hello">Pick an instrument, then tap Analyze to pull live candles (D1 to M15), compute the structure, and get a Trade Card.</div></main>
 <footer>
 <button id="go" disabled>Analyze</button>
 <small class="dis"><span id="me"></span> <a href="/mt5.html" style="color:var(--gold)">MT5</a> · <a href="#" id="signout" style="color:var(--gold)">Sign out</a> <a href="/admin.html" id="adminlink" hidden style="color:var(--gold)">Admin</a></small>
@@ -86,7 +86,7 @@ btn.onclick=async()=>{
     if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
     render(d);
   }catch(e){const m=el('div','msg err','Error: '+e.message);feed.append(m);m.scrollIntoView()}
-  btn.disabled=false;label();window.dlMe&&dlMe();
+  btn.disabled=false;label();window.dlMe&&dlMe();loadRadar();
 };
 (async()=>{
   try{
@@ -97,6 +97,42 @@ btn.onclick=async()=>{
   }catch(e){feed.append(el('div','msg err','Cannot reach backend: '+e.message))}
 })();
 sym.onchange=()=>{label();try{localStorage.setItem('dl_sym',sym.value)}catch(e){}};
+const radarBox=document.getElementById('radar');
+function radarItem(s){
+  const d=el('div');d.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)';
+  const l=el('div'),t=el('div','',s.name+' \u00b7 '+s.score+'/100');t.style.fontWeight='600';
+  l.append(t,el('div','mut',s.condition+(s.preferred?' \u00b7 your usual symbol':'')));
+  if(s.cached)l.append(el('div','mut','A recent analysis is available, which uses no credit.'));
+  const b=el('button','ghost','Analyse');b.style.cssText='width:auto;padding:8px 12px';b.onclick=()=>analyse(s.key);
+  d.append(l,b);return d;
+}
+function renderRadar(r){
+  radarBox.textContent='';
+  const c=el('div','card');c.append(el('h2','','Smart Analysis Timing'));
+  if(r.status!=='ok'){c.append(el('div','mut',r.message||'Not available right now. You can still analyse manually.'));radarBox.append(c);return}
+  const left=Math.max(0,r.credits.limit-r.credits.used);
+  c.append(el('div','mut','You have '+left+' of '+r.credits.limit+' analyses remaining today. This panel never uses one.'));
+  if(r.best){
+    const b=r.best;
+    c.append(el('div','mut','Best opportunity to analyse now'),el('div','big',b.name),el('div','',b.score+'/100 \u00b7 '+b.label),
+      el('div','mut','Current conditions: '+b.condition),el('h2','','Why this is recommended'));
+    const ul=el('ul');b.reasons.forEach(x=>ul.append(el('li','',x)));c.append(ul);
+    c.append(el('div','mut',b.time_note+' '+(b.notes||[]).join(' ')));
+    const go=el('button','','Analyse '+b.name);go.style.marginTop='10px';go.onclick=()=>analyse(b.key);c.append(go);
+    if(b.cached)c.append(el('div','mut','A recent analysis is available, so opening it uses no credit.'));
+  }else if(r.wait){
+    c.append(el('div','status NOTRADE',r.wait.title),el('div','',r.wait.message));
+    if(r.wait.next_window)c.append(el('div','mut','Next historically favourable period ('+r.wait.next_window.name+'): '+r.wait.next_window.text+'. '+r.wait.next_window.note));
+  }
+  if(r.preferred_note)c.append(el('div','warn',r.preferred_note));
+  if((r.others||[]).length){c.append(el('h2','','Other opportunities'));r.others.forEach(s=>c.append(radarItem(s)))}
+  (r.notes||[]).forEach(n=>c.append(el('div','mut',n)));
+  c.append(el('div','mut','The score shows how worthwhile it is to spend an analysis request. It is not a probability that a trade will win.'));
+  radarBox.append(c);
+}
+function analyse(key){if(btn.disabled)return;sym.value=key;sym.dispatchEvent(new Event('change'));btn.click()}
+async function loadRadar(){try{const r=await fetch('/api/radar');if(!r.ok)return;renderRadar(await r.json())}catch(e){}}
+loadRadar();setInterval(loadRadar,180000);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 </body>

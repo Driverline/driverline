@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import time
 from pathlib import Path
@@ -9,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, ea, journal
+from . import admin, auth, ea, journal, radar
 from .config import INSTRUMENTS
 from .deriv import fetch_candles, fetch_active_symbols
 from .indicators import analyze_all
@@ -87,10 +88,34 @@ async def tradecard(request):
             try:
                 out["card"] = await generate_trade_card(name, facts)
                 auth.consume_quota(user)
+                radar.record_analysis(key, out["card"])  # feeds Smart Analysis Timing; never raises
                 _cache[key] = (time.time(), dict(out))
             except Exception as e:  # fall back to computed facts only
                 out["card_error"] = _friendly(str(e))
     return JSONResponse(out)
+
+
+async def radar_view(request):
+    """Smart Analysis Timing. Never calls Claude and never uses an analysis credit."""
+    user = auth.require_user(request)
+    try:
+        return JSONResponse(await radar.get_radar(user, fresh_fn=lambda k: bool(_fresh(k))))
+    except Exception as e:
+        print(f"[radar] {e}", flush=True)
+        return JSONResponse({"status": "unavailable",
+                             "message": "Smart Analysis Timing is not available right now. You can still analyse manually."})
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app):
+    try:
+        auth.bootstrap_admin()
+    except Exception as e:
+        print(f"[startup] admin bootstrap failed: {e}", flush=True)
+    tasks = await radar.background_loops() if os.environ.get("DRIVERLINE_RADAR", "1") != "0" else []
+    yield
+    for t in tasks:
+        t.cancel()
 
 
 async def http_error(request, exc):
@@ -102,6 +127,7 @@ routes = [
     Route("/api/verify", verify),
     Route("/api/analysis/{key}", analysis),
     Route("/api/tradecard/{key}", tradecard),
+    Route("/api/radar", radar_view),
     *auth.routes,
     *admin.routes,
     *ea.routes,
@@ -109,4 +135,4 @@ routes = [
     Mount("/", app=StaticFiles(directory=str(STATIC_DIR), html=True), name="static"),
 ]
 
-app = Starlette(routes=routes, exception_handlers={HTTPException: http_error})
+app = Starlette(routes=routes, exception_handlers={HTTPException: http_error}, lifespan=lifespan)

@@ -5,7 +5,6 @@ import hmac
 import os
 import re
 import secrets
-import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
@@ -14,9 +13,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import mailer
-
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "journal.db"
+from . import dbx, mailer
 LIMITS = {
     "free": int(os.environ.get("DRIVERLINE_FREE_LIMIT", 3)),
     "member": int(os.environ.get("DRIVERLINE_MEMBER_LIMIT", 30)),
@@ -27,20 +24,19 @@ SECURE = os.environ.get("DRIVERLINE_SECURE") == "1"  # set to 1 when served over
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+AUTH_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS users(id {ID}, email TEXT UNIQUE NOT NULL,
+        pw_hash TEXT NOT NULL, tier TEXT NOT NULL DEFAULT 'free', blocked INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS invites(code TEXT PRIMARY KEY, tier TEXT NOT NULL, uses_left INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS usage(user_id INTEGER, day TEXT, n INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(user_id, day));
+    CREATE TABLE IF NOT EXISTS resets(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+        expires_at BIGINT NOT NULL)"""
+
+
 def db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL,
-            pw_hash TEXT NOT NULL, tier TEXT NOT NULL DEFAULT 'free', blocked INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS invites(code TEXT PRIMARY KEY, tier TEXT NOT NULL, uses_left INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS usage(user_id INTEGER, day TEXT, n INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(user_id, day));
-        CREATE TABLE IF NOT EXISTS resets(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL);""")
-    return con
+    return dbx.connect("auth", AUTH_SCHEMA)
 
 
 def _now():
@@ -55,8 +51,10 @@ def _secret() -> bytes:
     s = os.environ.get("DRIVERLINE_SECRET")
     if s:
         return s.encode()
-    f = DB_PATH.parent / "secret.key"
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    f = dbx.SQLITE_PATH.parent / "secret.key"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    if dbx.using_postgres():
+        print("[warning] Set DRIVERLINE_SECRET: without it, logins reset whenever the server restarts.", flush=True)
     if not f.exists():
         f.write_text(secrets.token_hex(32))
         try:
@@ -145,7 +143,21 @@ def has_quota(user: dict) -> bool:
 def consume_quota(user: dict):
     with closing(db()) as con:
         con.execute("INSERT INTO usage(user_id,day,n) VALUES(?,?,1) "
-                    "ON CONFLICT(user_id,day) DO UPDATE SET n=n+1", (user["id"], _today()))
+                    "ON CONFLICT(user_id,day) DO UPDATE SET n=usage.n+1", (user["id"], _today()))
+        con.commit()
+
+
+def bootstrap_admin():
+    """Creates the first admin from DRIVERLINE_ADMIN_EMAIL / DRIVERLINE_ADMIN_PASSWORD if that account is missing.
+    It never overwrites an existing account. Remove the password variable after your first login."""
+    email = os.environ.get("DRIVERLINE_ADMIN_EMAIL", "").strip().lower()
+    pw = os.environ.get("DRIVERLINE_ADMIN_PASSWORD", "")
+    if not email or len(pw) < 8:
+        return
+    with closing(db()) as con:
+        if con.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+            return
+        con.execute("INSERT INTO users(email,pw_hash,tier,created_at) VALUES(?,?,'admin',?)", (email, hash_pw(pw), _now()))
         con.commit()
 
 
@@ -179,13 +191,14 @@ async def signup(request):
         if not inv:
             raise HTTPException(403, "Invalid or used invite code")
         try:
-            cur = con.execute("INSERT INTO users(email,pw_hash,tier,created_at) VALUES(?,?,?,?)",
-                              (email, ph, inv["tier"], _now()))
-        except sqlite3.IntegrityError:
-            raise HTTPException(409, "Email already registered")
+            uid = con.insert("INSERT INTO users(email,pw_hash,tier,created_at) VALUES(?,?,?,?)",
+                             (email, ph, inv["tier"], _now()))
+        except Exception as e:
+            if dbx.is_duplicate(e):
+                raise HTTPException(409, "Email already registered")
+            raise
         con.execute("UPDATE invites SET uses_left=uses_left-1 WHERE code=?", (code,))
         con.commit()
-        uid = cur.lastrowid
     return _session(JSONResponse({"ok": True}), uid, ph)
 
 

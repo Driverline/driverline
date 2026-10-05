@@ -1,5 +1,8 @@
-# Termux: first run `pkg install python-pydantic`, then pip install the rest.
-fastapi
+# Termux: no compiler needed, all pure Python.
+#   pip install starlette uvicorn websockets httpx
+# Hosting with Supabase (Render etc.) also needs psycopg:
+starlette
 uvicorn
 websockets
 httpx
+psycopg[binary]

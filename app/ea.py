@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import auth, journal
+from . import auth, dbx, journal
 
 MAX_BODY = 300_000
 CMD_TTL = 60  # seconds a close command stays valid
@@ -19,18 +19,24 @@ _last_report: dict[int, float] = {}
 _last_poll: dict[int, float] = {}
 
 
+EA_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS ea_keys(user_id INTEGER PRIMARY KEY, key_hash TEXT UNIQUE NOT NULL,
+        created_at BIGINT NOT NULL, last_seen BIGINT);
+    CREATE TABLE IF NOT EXISTS ea_state(user_id INTEGER PRIMARY KEY, state TEXT NOT NULL,
+        specs TEXT, updated_at BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS ea_rules(user_id INTEGER PRIMARY KEY, max_risk_pct DOUBLE PRECISION NOT NULL,
+        daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS ea_commands(id {ID}, user_id INTEGER NOT NULL,
+        kind TEXT NOT NULL, ticket BIGINT, created_at BIGINT NOT NULL, status TEXT NOT NULL, result TEXT)"""
+_auth_ready = False
+
+
 def db():
-    con = auth.db()
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS ea_keys(user_id INTEGER PRIMARY KEY, key_hash TEXT UNIQUE NOT NULL,
-            created_at INTEGER NOT NULL, last_seen INTEGER);
-        CREATE TABLE IF NOT EXISTS ea_state(user_id INTEGER PRIMARY KEY, state TEXT NOT NULL,
-            specs TEXT, updated_at INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS ea_rules(user_id INTEGER PRIMARY KEY, max_risk_pct REAL NOT NULL,
-            daily_loss_pct REAL NOT NULL, max_positions INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS ea_commands(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-            kind TEXT NOT NULL, ticket INTEGER, created_at INTEGER NOT NULL, status TEXT NOT NULL, result TEXT);""")
-    return con
+    global _auth_ready
+    if not _auth_ready:  # the users table must exist before keys are joined to it
+        auth.db().close()
+        _auth_ready = True
+    return dbx.connect("ea", EA_SCHEMA)
 
 
 def _hash(k: str) -> str:
@@ -175,10 +181,10 @@ async def command_create(request):
         if con.execute("SELECT 1 FROM ea_commands WHERE user_id=? AND status IN ('pending','sent') AND created_at>?",
                        (u["id"], now - CMD_TTL)).fetchone():
             raise HTTPException(409, "Another close is still in progress")
-        cur = con.execute("INSERT INTO ea_commands(user_id,kind,ticket,created_at,status) VALUES(?,?,?,?,'pending')",
-                          (u["id"], kind, ticket, now))
+        cid = con.insert("INSERT INTO ea_commands(user_id,kind,ticket,created_at,status) VALUES(?,?,?,?,'pending')",
+                         (u["id"], kind, ticket, now))
         con.commit()
-    return JSONResponse({"id": cur.lastrowid})
+    return JSONResponse({"id": cid})
 
 
 async def poll(request):

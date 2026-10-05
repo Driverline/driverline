@@ -62,10 +62,12 @@ def classify_structure(highs, lows) -> str:
 
 
 def detect_range(candles: list[dict], lookback: int = 30, er_max: float = 0.3):
-    """Consolidation = choppy path (low efficiency ratio) AND price away from the range edges."""
     recent = candles[-lookback:]
-    if len(recent) < lookback:
-        return None
+    return range_stats(recent, er_max) if len(recent) >= lookback else None
+
+
+def range_stats(recent: list[dict], er_max: float = 0.3):
+    """Consolidation = choppy path (low efficiency ratio) AND price away from the range edges."""
     hi = max(c["high"] for c in recent)
     lo = min(c["low"] for c in recent)
     trs = [max(c["high"] - c["low"], abs(c["high"] - p["close"]), abs(c["low"] - p["close"]))

@@ -18,7 +18,7 @@ async def overview(request):
         users = [dict(r) for r in con.execute(
             "SELECT u.id,u.email,u.tier,u.blocked,u.created_at,COALESCE(g.n,0) AS used_today "
             "FROM users u LEFT JOIN usage g ON g.user_id=u.id AND g.day=? ORDER BY u.id", (auth._today(),))]
-        invites = [dict(r) for r in con.execute("SELECT code,tier,uses_left FROM invites ORDER BY rowid DESC")]
+        invites = [dict(r) for r in con.execute("SELECT code,tier,uses_left FROM invites ORDER BY code")]
     for u in users:
         u["limit"] = auth.LIMITS.get(u["tier"], 0)
     return JSONResponse({
@@ -96,7 +96,14 @@ async def delete_invite(request):
     return JSONResponse({"ok": True})
 
 
+async def radar_info(request):
+    auth.require_admin(request)
+    from . import radar
+    return JSONResponse(radar.admin_summary())
+
+
 routes = [
+    Route("/api/admin/radar", radar_info, methods=["GET"]),
     Route("/api/admin/overview", overview, methods=["GET"]),
     Route("/api/admin/users/{uid:int}/tier", set_tier, methods=["POST"]),
     Route("/api/admin/users/{uid:int}/block", set_blocked, methods=["POST"]),

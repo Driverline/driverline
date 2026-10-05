@@ -59,3 +59,26 @@ async def fetch_active_symbols() -> set[str]:
     if not names:
         raise RuntimeError("Could not read symbol names from Deriv's active_symbols response")
     return names
+
+
+async def fetch_multi(symbols: list[str], tfs: tuple, count) -> dict:
+    """Candles for several symbols over ONE connection. {symbol: {tf: candles}}; symbols that fail are skipped.
+    `count` may be a number or a {tf: number} dict."""
+    out: dict = {}
+    async with websockets.connect(DERIV_WS_URL, open_timeout=15, ping_interval=20) as ws:
+        for sym in symbols:
+            got = {}
+            for tf in tfs:
+                try:
+                    resp = await _request(ws, {
+                        "ticks_history": sym, "adjust_start_time": 1,
+                        "count": count[tf] if isinstance(count, dict) else count,
+                        "end": "latest", "style": "candles", "granularity": TIMEFRAMES[tf]}, expect="candles")
+                    got[tf] = [{k: float(c[k]) if k != "epoch" else int(c[k])
+                                for k in ("epoch", "open", "high", "low", "close")} for c in resp["candles"]]
+                except Exception:
+                    got = {}
+                    break
+            if got:
+                out[sym] = got
+    return out

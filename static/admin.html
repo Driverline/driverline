@@ -69,7 +69,19 @@ function render(d){
   vb.onclick=async()=>{vr.textContent='Checking...';try{const r=await api('/verify','GET',null,'/api');vr.textContent='';
     Object.entries(r).forEach(([k,x])=>vr.append(kv(k+' ('+x.code+')',x.found?'found':'NOT FOUND',x.found?'win':'loss')))}catch(e){vr.textContent=e.message}};
   v.append(vb,vr);root.append(v);
+  const ri=el('div','card');ri.append(el('h2','','Smart Analysis Timing insights'));const rb=el('div');rb.append(el('span','mut','Loading...'));ri.append(rb);root.append(ri);loadRadarInfo(rb);
   if(pending){note(pending[0],pending[1]);pending=null}
+}
+async function loadRadarInfo(box){
+  try{
+    const r=await api('/radar');box.textContent='';
+    box.append(el('div','mut','Claude analyses logged: '+r.global.n+' ('+r.global.trade+' with a trade). Last scan: '+(r.scan_age===null?'not yet':r.scan_age+' s ago')+'.'));
+    r.rows.forEach(x=>{
+      const h=x.history,te=h&&h.time_effect;
+      const hist=h?(h.span_days+' days of history; '+(te&&te.significant?'time effect found, best hours (UTC) '+te.best_hours.join(', '):(te&&te.tested?'no meaningful time effect':'still building'))):'history not built yet';
+      box.append(el('div','mut',x.name+': '+hist+'; analyses '+x.analyses.n+(x.analyses.rate!==null?' ('+Math.round(x.analyses.rate*100)+'% trade)':'')+(x.now?'; now readiness '+x.now.readiness+', '+x.now.regime:'')));
+    });
+  }catch(e){box.textContent=e.message}
 }
 async function load(){try{render(await api('/overview'))}catch(e){$('root').textContent='';$('root').append(el('div','err',e.message),el('p','mut','This page is for admins only.'))}}
 load();
