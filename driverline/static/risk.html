@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Driverline Risk</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><b>Risk calculator</b><a class="push" href="/">Analysis</a></header>
+<main>
+<label>Instrument</label><select id="sym"></select>
+<div class="row"><div><label>Balance</label><input id="bal" type="number" inputmode="decimal"></div>
+<div><label>Risk %</label><input id="rp" type="number" inputmode="decimal" value="1"></div></div>
+<div class="row"><div><small id="mt5note"></small>
+<label>Entry</label><input id="en" type="number" inputmode="decimal"></div>
+<div><label>Stop loss</label><input id="sl" type="number" inputmode="decimal"></div></div>
+<label>Take profit (optional)</label><input id="tp" type="number" inputmode="decimal">
+<div class="card" id="out"><small>Fill in entry, stop and balance.</small></div>
+<details id="specbox"><summary>Contract specs for this instrument</summary>
+<small>Enter <b>tick size and tick value</b>, or just the <b>contract size</b>, plus min lot, lot step and max lot. Values save automatically as you type.</small>
+<div class="row"><div><label>Tick size</label><input id="ts" type="number" inputmode="decimal"></div>
+<div><label>Tick value (loss)</label><input id="tv" type="number" inputmode="decimal"></div></div>
+<div class="row"><div><label>Min lot</label><input id="vmin" type="number" inputmode="decimal"></div>
+<div><label>Lot step</label><input id="vstep" type="number" inputmode="decimal"></div></div>
+<div class="row"><div><label>Max lot</label><input id="vmax" type="number" inputmode="decimal"></div>
+<div><label>Contract size (optional)</label><input id="cs" type="number" inputmode="decimal"></div></div>
+<details><summary>Import from the MT5 script (optional)</summary>
+<label>Paste CSV lines: symbol,tick_size,tick_value,min,step,max</label>
+<textarea id="imp" rows="4"></textarea><button id="impbtn">Import pasted specs</button><small id="impmsg"></small></details>
+</details>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const SPIKY=/^(boom|crash|jump)/;
+const store={get(k,d){try{const v=localStorage.getItem(k);return v===null?d:JSON.parse(v)}catch(e){return d}},
+ set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+const dec=s=>{const t=String(s);return t.includes('.')?t.split('.')[1].length:0};
+
+function calcLots(sp,balance,riskPct,entry,stop,target){
+  const w=[];
+  const unit=sp&&(sp.ts>0&&sp.tv>0?sp.tv/sp.ts:(sp.cs>0?sp.cs:0));
+  if(!(unit>0&&sp.vmin>0&&sp.vstep>0))return{error:'Enter tick size and tick value (or the contract size), plus min lot and lot step, in the specs below.'};
+  const dist=Math.abs(entry-stop);
+  if(!(dist>0))return{error:'Entry and stop must differ.'};
+  const riskAmt=balance*riskPct/100;
+  const lossPerLot=dist*unit;
+  let lots=Math.floor(riskAmt/lossPerLot/sp.vstep+1e-9)*sp.vstep;
+  if(lots<sp.vmin){lots=sp.vmin;w.push('The minimum lot already risks more than your target. Use a tighter stop, a bigger balance, or skip the trade.')}
+  if(sp.vmax>0&&lots>sp.vmax){lots=sp.vmax;w.push('Capped at the maximum lot size.')}
+  lots=Number(lots.toFixed(Math.max(dec(sp.vstep),2)));
+  const risk=lots*lossPerLot;
+  const r={lots,risk,riskPctActual:risk/balance*100,lossPerLot,warnings:w};
+  if(target&&Math.abs(target-entry)>0){
+    r.reward=lots*Math.abs(target-entry)*unit;r.rr=r.reward/risk;
+  }
+  return r;
+}
+if(typeof module!=='undefined')module.exports={calcLots};
+
+async function syncMt5(){
+  try{
+    let note='';
+    const st=await (await fetch('/api/ea/status')).json();
+    if(st.connected&&st.account&&Number(st.account.balance)>0){$('bal').value=st.account.balance;store.set('dl_bal',String(st.account.balance));note='Balance'}
+    const sp=await (await fetch('/api/ea/specs')).json();let n=0;
+    sp.forEach(x=>{const inst=list.find(i=>norm(i.name)===norm(x.symbol));
+      if(inst){store.set('dl_spec_'+inst.key,{ts:x.tick_size,tv:x.tick_value,vmin:x.vol_min,vstep:x.vol_step,vmax:x.vol_max,cs:x.contract_size});n++}});
+    if(n)note+=(note?' and ':'')+'contract specs';
+    if(note)$('mt5note').textContent=note+' synced from your MT5 account.';
+    loadSpec();update();
+  }catch(e){}
+}
+let list=[];
+const norm=s=>s.toLowerCase().replace(/index/g,'').replace(/[^a-z0-9]/g,'');
+function loadSpec(){const s=store.get('dl_spec_'+$('sym').value,{});$('ts').value=s.ts??'';$('tv').value=s.tv??'';$('vmin').value=s.vmin??'';$('vstep').value=s.vstep??'';$('vmax').value=s.vmax??'';$('cs').value=s.cs??''}
+function saveSpec(){store.set('dl_spec_'+$('sym').value,{ts:+$('ts').value,tv:+$('tv').value,vmin:+$('vmin').value,vstep:+$('vstep').value,vmax:+$('vmax').value,cs:+$('cs').value})}
+function row(k,v,cls){const d=document.createElement('div');d.className='kv';const a=document.createElement('span');a.textContent=k;const b=document.createElement('span');b.textContent=v;if(cls)b.className=cls;d.append(a,b);return d}
+function update(){
+  store.set('dl_bal',$('bal').value);store.set('dl_rp',$('rp').value);
+  const out=$('out');out.textContent='';
+  const bal=+$('bal').value,rp=+$('rp').value,en=+$('en').value,sl=+$('sl').value,tp=+$('tp').value;
+  if(!(bal>0&&rp>0&&en>0&&sl>0)){const s=document.createElement('small');s.textContent='Fill in balance, risk %, entry and stop.';out.append(s);return}
+  const sp={ts:+$('ts').value,tv:+$('tv').value,vmin:+$('vmin').value,vstep:+$('vstep').value,vmax:+$('vmax').value,cs:+$('cs').value};
+  const r=calcLots(sp,bal,rp,en,sl,tp||0);
+  if(r.error){const d=document.createElement('div');d.className='err';d.textContent=r.error;out.append(d);$('specbox').open=true;return}
+  const big=document.createElement('div');big.className='big';big.textContent=r.lots+' lots';out.append(big);
+  out.append(row('Risk',r.risk.toFixed(2)+' ('+r.riskPctActual.toFixed(2)+'%)'),row('Loss per 1 lot',r.lossPerLot.toFixed(2)));
+  if(r.reward)out.append(row('Reward',r.reward.toFixed(2)),row('Reward:risk',r.rr.toFixed(2)));
+  r.warnings.forEach(t=>{const d=document.createElement('div');d.className='warn';d.textContent=t;out.append(d)});
+  const k=list.find(i=>i.key===$('sym').value);
+  if(k&&SPIKY.test(norm(k.name))){const d=document.createElement('div');d.className='warn';d.textContent='Spike instrument: price can jump past your stop, so real loss can exceed this figure.';out.append(d)}
+}
+$('impbtn').onclick=()=>{
+  if(!$('imp').value.trim()){$('impmsg').textContent='Paste the CSV lines into the box first.';return}
+  let n=0;
+  $('imp').value.split(/\r?\n/).forEach(line=>{
+    const p=line.split(',').map(x=>x.trim());if(p.length<6)return;
+    const inst=list.find(i=>norm(i.name)===norm(p[0]));if(!inst)return;
+    const [ts,tv,vmin,vstep,vmax]=p.slice(1,6).map(Number);
+    store.set('dl_spec_'+inst.key,{ts,tv,vmin,vstep,vmax,cs:ts>0?tv/ts:0});n++;
+  });
+  $('impmsg').textContent=n+' instrument(s) imported.';loadSpec();update();
+};
+(async()=>{
+  try{list=await (await fetch('/api/instruments')).json()}catch(e){$('out').textContent='Cannot reach backend.';return}
+  list.forEach(i=>{const o=document.createElement('option');o.value=i.key;o.textContent=i.name;$('sym').append(o)});
+  const last=store.get('dl_last',null);
+  $('sym').value=(last&&last.key)||store.get('dl_sym','')||list[0].key;
+  if(!$('sym').value)$('sym').value=list[0].key;
+  $('bal').value=store.get('dl_bal','');$('rp').value=store.get('dl_rp','1');
+  if(last){$('en').value=last.entry??'';$('sl').value=last.stop??'';$('tp').value=last.target??''}
+  loadSpec();update();syncMt5();
+})();
+$('sym').onchange=()=>{store.set('dl_sym',$('sym').value);loadSpec();update()};
+['bal','rp','en','sl','tp'].forEach(i=>$(i).oninput=update);
+['ts','tv','vmin','vstep','vmax','cs'].forEach(i=>$(i).oninput=()=>{saveSpec();update()});
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

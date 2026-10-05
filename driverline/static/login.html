@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Driverline | Sign in</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/theme.css">
+</head>
+<body>
+<header><b>Driverline</b></header>
+<main>
+<div class="card">
+<h2 id="ttl">Sign in</h2>
+<label>Email</label><input id="em" type="email" autocomplete="email">
+<div id="pwbox"><label>Password</label><input id="pw" type="password" autocomplete="current-password"></div>
+<div id="invbox" hidden><label>Invite code</label><input id="inv" autocomplete="off"></div>
+<div class="btns"><button id="go">Sign in</button></div>
+<div id="msg" class="err" style="margin-top:8px"></div>
+<p class="mut"><a href="#" id="tg" style="color:var(--gold)"></a></p>
+<p class="mut"><a href="#" id="fg" style="color:var(--gold)"></a></p>
+</div>
+<small class="dis" style="display:block;text-align:center">Education and risk analysis only, not financial advice.</small>
+</main>
+<script>
+const $=id=>document.getElementById(id);let mode='login';
+const T={login:['Sign in','Sign in'],create:['Create account','Create account'],forgot:['Reset password','Send reset link']};
+function setMode(m){mode=m;$('ttl').textContent=T[m][0];$('go').textContent=T[m][1];$('msg').textContent='';$('msg').className='err';
+  $('pwbox').hidden=m==='forgot';$('invbox').hidden=m!=='create';$('pw').autocomplete=m==='create'?'new-password':'current-password';
+  $('tg').textContent=m==='create'?'Already have an account? Sign in':'Have an invite code? Create account';
+  $('fg').textContent=m==='forgot'?'Back to sign in':'Forgot your password?';}
+$('tg').onclick=e=>{e.preventDefault();setMode(mode==='create'?'login':'create')};
+$('fg').onclick=e=>{e.preventDefault();setMode(mode==='forgot'?'login':'forgot')};
+$('go').onclick=async()=>{
+  $('msg').textContent='';$('go').disabled=true;
+  const path=mode==='create'?'signup':mode==='forgot'?'forgot':'login';
+  try{
+    const r=await fetch('/api/auth/'+path,{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({email:$('em').value,password:$('pw').value,invite:$('inv').value})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
+    if(mode==='forgot'){$('msg').className='mut';$('msg').textContent=d.message}else location.href='/';
+  }catch(e){$('msg').textContent=e.message}
+  $('go').disabled=false;
+};
+['em','pw','inv'].forEach(i=>$(i).addEventListener('keydown',e=>{if(e.key==='Enter')$('go').click()}));
+setMode('login');
+</script>
+</body>
+</html>

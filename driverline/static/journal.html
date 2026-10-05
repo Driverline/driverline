@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Driverline Journal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><b>Journal</b><a class="push" href="/">Analysis</a><a href="/risk.html">Risk</a></header>
+<main>
+<div class="card" id="stats"><span class="mut">Loading...</span></div>
+<div class="btns"><button id="rv">AI review of my trades</button></div>
+<div id="review"></div>
+
+<details class="card" id="logbox"><summary>Log a trade</summary>
+<label>Instrument</label><select id="ins"></select>
+<div class="row"><div><label>Direction</label><select id="dir"><option>BUY</option><option>SELL</option></select></div>
+<div><label>Lots</label><input id="lots" type="number" inputmode="decimal"></div></div>
+<div class="row"><div><label>Entry</label><input id="en" type="number" inputmode="decimal"></div>
+<div><label>Stop</label><input id="sl" type="number" inputmode="decimal"></div></div>
+<label>Target</label><input id="tp" type="number" inputmode="decimal">
+<label>How do you feel?</label><select id="emo"></select>
+<label>Notes</label><textarea id="nt" rows="2"></textarea>
+<div class="btns"><button id="add">Log trade</button></div><div id="msg" class="err"></div>
+</details>
+
+<div id="list"></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const EMO=['','calm','confident','fomo','revenge','fearful','bored','tired'];
+let names={};
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+function kv(k,v,cls){const d=el('div','kv');d.append(el('span','',k),el('span',cls||'',v));return d}
+function opt(sel,v,t){const o=document.createElement('option');o.value=v;o.textContent=t;sel.append(o)}
+function num(id){const v=$(id).value;return v===''?null:Number(v)}
+async function api(path,opts){
+  const r=await fetch('/api/journal'+path,opts);let d={};
+  try{d=await r.json()}catch(e){}
+  if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail||('HTTP '+r.status)));
+  return d;
+}
+const post=(path,body)=>api(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
+const f=(v,d=2)=>v===null||v===undefined?'-':Number(v).toFixed(d);
+
+function groupRows(title,obj,labelFn){
+  const keys=Object.keys(obj);if(!keys.length)return null;
+  const box=el('div');box.append(el('div','mut',title));
+  keys.forEach(k=>{const a=obj[k];box.append(kv(labelFn?labelFn(k):k,a.trades+' trades, '+f(a.win_rate,0)+'% win, avg R '+f(a.avg_r)))});
+  return box;
+}
+function renderStats(s){
+  const c=$('stats');c.textContent='';c.append(el('h2','','Performance (closed trades)'));
+  const o=s.overall;
+  if(!o.trades){c.append(el('span','mut','No closed trades yet. Log a trade and close it to see stats.'));return}
+  c.append(kv('Trades',o.trades),kv('Win rate',f(o.win_rate,1)+'%'),kv('Average R',f(o.avg_r)),
+    kv('Total P&L',f(o.total_pnl),o.total_pnl>=0?'win':'loss'),
+    kv('Longest losing streak',s.max_losing_streak),kv('Most trades in a day',s.max_trades_in_a_day));
+  [['By plan',s.by_plan],['By feeling',s.by_emotion],['By instrument',s.by_instrument]].forEach(([t,g])=>{
+    const b=groupRows(t,g,t==='By instrument'?k=>names[k]||k:k=>k.replace('_',' '));
+    if(b){b.style.marginTop='10px';c.append(b)}
+  });
+}
+function tradeCard(t){
+  const c=el('div','card'),h=el('div','hd');
+  h.append(el('span','',(names[t.instrument]||t.instrument)+' '+t.direction),
+    el('span',t.status==='open'?'mut':(t.pnl>0||t.r_multiple>0?'win':'loss'),t.status==='open'?'open':'closed'));
+  c.append(h,kv('Entry / Stop / Target',f(t.entry,3)+' / '+f(t.stop,3)+' / '+f(t.target,3)));
+  if(t.lots)c.append(kv('Lots',t.lots));
+  if(t.status==='closed'){
+    c.append(kv('Exit',f(t.exit_price,3)),kv('R multiple',f(t.r_multiple)),kv('P&L',f(t.pnl),t.pnl>=0?'win':'loss'));
+    c.append(kv('Plan',t.followed_plan===null?'-':(t.followed_plan?'followed':'broke')));
+  }
+  if(t.emotion)c.append(kv('Feeling',t.emotion));
+  if(t.notes)c.append(el('div','mut',t.notes));
+  c.append(el('div','mut',t.opened_at.replace('T',' ').slice(0,16)+' UTC'));
+  const btns=el('div','btns');
+  if(t.status==='open'){
+    const box=el('div');box.hidden=true;
+    const ex=document.createElement('input');ex.type='number';ex.step='any';ex.placeholder='Exit price';ex.inputMode='decimal';
+    const pl=document.createElement('input');pl.type='number';pl.step='any';pl.placeholder='P&L in money (optional)';pl.inputMode='decimal';
+    const fp=document.createElement('select');opt(fp,'','Did you follow your plan?');opt(fp,'true','Yes');opt(fp,'false','No');
+    const em=document.createElement('select');EMO.forEach(e=>opt(em,e,e||'How did it feel?'));
+    const save=el('button','','Save close');
+    save.onclick=async()=>{
+      if(ex.value===''){alert('Enter the exit price');return}
+      try{await post('/'+t.id+'/close',{exit_price:Number(ex.value),pnl:pl.value===''?null:Number(pl.value),
+        followed_plan:fp.value===''?null:fp.value==='true',emotion:em.value||null});load()}catch(e){alert(e.message)}
+    };
+    [ex,pl,fp,em,save].forEach(x=>{x.style.marginTop='8px';box.append(x)});
+    const cb=el('button','','Close trade');cb.onclick=()=>{box.hidden=!box.hidden};
+    btns.append(cb);c.append(btns,box);
+  }
+  if(t.status==='closed'){
+    const box=el('div');box.hidden=true;
+    const fp=document.createElement('select');opt(fp,'','Followed your plan?');opt(fp,'true','Yes');opt(fp,'false','No');
+    fp.value=t.followed_plan===null||t.followed_plan===undefined?'':String(!!t.followed_plan);
+    const em=document.createElement('select');EMO.forEach(e=>opt(em,e,e||'How did it feel?'));em.value=t.emotion||'';
+    const nt=document.createElement('input');nt.placeholder='Add a note (optional)';
+    const sv=el('button','','Save tags');
+    sv.onclick=async()=>{try{await post('/'+t.id+'/tag',{followed_plan:fp.value===''?null:fp.value==='true',emotion:em.value||null,notes:nt.value||null});load()}catch(e){alert(e.message)}};
+    [fp,em,nt,sv].forEach(x=>{x.style.marginTop='8px';box.append(x)});
+    const tb=el('button','','Tag trade');tb.onclick=()=>{box.hidden=!box.hidden};
+    btns.append(tb);c.append(box);
+  }
+  const del=el('button','ghost','Delete');
+  del.onclick=async()=>{if(confirm('Delete this trade?')){await api('/'+t.id,{method:'DELETE'});load()}};
+  if(t.status!=='open')c.append(btns);
+  btns.append(del);
+  return c;
+}
+async function load(){
+  try{
+    const [s,l]=await Promise.all([api('/stats'),api('')]);
+    renderStats(s);const list=$('list');list.textContent='';
+    if(!l.length)list.append(el('div','mut','No trades logged yet.'));
+    l.forEach(t=>list.append(tradeCard(t)));
+  }catch(e){$('stats').textContent='Cannot reach backend: '+e.message}
+}
+$('add').onclick=async()=>{
+  $('msg').textContent='';
+  const entry=num('en');if(entry===null){$('msg').textContent='Entry is required.';return}
+  try{
+    await post('',{instrument:$('ins').value,direction:$('dir').value,entry,stop:num('sl'),target:num('tp'),
+      lots:num('lots'),emotion:$('emo').value||null,notes:$('nt').value||null});
+    ['en','sl','tp','lots','nt'].forEach(i=>$(i).value='');$('logbox').open=false;
+    try{localStorage.removeItem('dl_last')}catch(e){}
+    load();
+  }catch(e){$('msg').textContent=e.message}
+};
+$('rv').onclick=async()=>{
+  const b=$('rv'),out=$('review');b.disabled=true;b.textContent='Reviewing...';out.textContent='';
+  try{
+    const r=await post('/review');const c=el('div','card');
+    c.append(el('h2','','Review'),el('div','',r.summary));
+    if(r.patterns.length){c.append(el('h2','','Patterns'));const ul=el('ul');
+      r.patterns.forEach(p=>{const li=el('li','',p.finding+' ');li.append(el('span','mut','('+p.evidence+')'));ul.append(li)});c.append(ul)}
+    if(r.suggestions.length){c.append(el('h2','','Suggestions'));const ul=el('ul');r.suggestions.forEach(s=>ul.append(el('li','',s)));c.append(ul)}
+    if(r.caution)c.append(el('div','mut',r.caution));
+    out.append(c);
+  }catch(e){out.append(el('div','err',e.message))}
+  b.disabled=false;b.textContent='AI review of my trades';
+};
+(async()=>{
+  EMO.forEach(e=>opt($('emo'),e,e||'(optional)'));
+  try{
+    const list=await (await fetch('/api/instruments')).json();
+    list.forEach(i=>{names[i.key]=i.name;opt($('ins'),i.key,i.name)});
+    let last=null;try{last=JSON.parse(localStorage.getItem('dl_last'))}catch(e){}
+    if(last){$('ins').value=last.key;if(last.direction)$('dir').value=last.direction;
+      $('en').value=last.entry??'';$('sl').value=last.stop??'';$('tp').value=last.target??'';$('logbox').open=true}
+  }catch(e){}
+  load();
+})();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

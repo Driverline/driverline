@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Driverline</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+<script src="/ticket.js"></script>
+</head>
+<body class="chat">
+<header><b>Driverline</b><a href="/risk.html">Risk</a><a href="/journal.html">Journal</a><select class="chip" id="sym"></select></header>
+<main id="feed"><div id="radar"></div><div class="msg hello">Pick an instrument, then tap Analyze to pull live candles (D1 to M15), compute the structure, and get a Trade Card.</div></main>
+<footer>
+<button id="go" disabled>Analyze</button>
+<small class="dis"><span id="me"></span> <a href="/mt5.html" style="color:var(--gold)">MT5</a> · <a href="#" id="signout" style="color:var(--gold)">Sign out</a> <a href="/admin.html" id="adminlink" hidden style="color:var(--gold)">Admin</a></small>
+<small class="dis">Education and risk analysis only, not financial advice. Synthetic indices are RNG-generated.</small>
+</footer>
+<script>
+const feed=document.getElementById('feed'),btn=document.getElementById('go'),sym=document.getElementById('sym');
+function label(){btn.textContent='Analyze '+(sym.selectedOptions[0]?sym.selectedOptions[0].text:'')}
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+function section(title,body){const c=el('div','card');c.append(el('h2','',title));if(typeof body==='string')c.append(el('div','',body));else c.append(body);return c}
+function factsBlock(d){const det=el('details');det.append(el('summary','','Computed facts'),el('pre','',JSON.stringify(d.facts,null,1)));return det}
+function renderFallback(d){
+  const box=el('div','msg'),s=d.summary||{};
+  const w=el('div','card');w.append(el('h2','','AI analysis unavailable'),el('div','',d.card_error||'Claude did not respond.'),el('div','hello','Showing computed facts only. This is not a trade signal.'));
+  box.append(w,section('Bias (computed)',s.bias||'-'));
+  const tfs=el('div');for(const [k,v] of Object.entries(s.timeframes||{})){const r=el('div','tf');r.append(el('b','',k),el('span','',v));tfs.append(r)}
+  box.append(section('Timeframes',tfs));
+  const lv=el('div');for(const [k,v] of Object.entries(s.levels||{})){const r=el('div','tf');r.append(el('b','',k),el('span','','price '+v.price+', swing high '+v.swing_high+', swing low '+v.swing_low));lv.append(r)}
+  box.append(section('Key levels',lv),factsBlock(d));feed.append(box);box.scrollIntoView({behavior:'smooth'});
+}
+function trow(k,v,copy){
+  const r=el('div','kv'),sp=el('span','',v);r.append(el('span','',k));
+  if(copy){const w=el('span');w.style.cssText='display:flex;gap:8px;align-items:center';const b=el('button','ghost','Copy');b.style.cssText='width:auto;padding:5px 10px';
+    b.onclick=async()=>{try{await navigator.clipboard.writeText(sp.textContent);b.textContent='Copied'}catch(e){prompt('Copy this:',sp.textContent)}};
+    w.append(sp,b);r.append(w)}else r.append(sp);
+  return [r,sp];
+}
+function ticketSection(c){
+  const box=el('div'),name=sym.selectedOptions[0].text,L=window.dlLots&&dlLots(sym.value,c.entry,c.stop);
+  const [r1,s1]=trow('Symbol',name,true);window.dlSymbolName&&dlSymbolName(name).then(n=>{s1.textContent=n});
+  box.append(r1,trow('Order',c.direction+' (market)',false)[0],trow('Volume (lots)',L?String(L.lots):'Set up the Risk page',!!L)[0],
+    trow('Stop loss',String(c.stop),true)[0],trow('Take profit',String(c.target),true)[0]);
+  if(L&&L.warn)box.append(el('div','warn','The minimum lot already risks more than your risk %. Consider skipping.'));
+  const a=el('a','','Open MT5 app');a.href='intent://#Intent;package=net.metaquotes.metatrader5;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dnet.metaquotes.metatrader5;end';
+  a.style.cssText='display:block;text-align:center;margin-top:10px;padding:12px;border-radius:12px;border:1px solid var(--gold);color:var(--gold);text-decoration:none;font-weight:600';
+  box.append(a,el('div','mut','MT5 cannot be filled in from a link. Open it, tap New Order, and enter these values yourself. The Open button works on Android only.'));
+  return section('Enter this in MT5',box);
+}
+function render(d){
+  if(!d.card){renderFallback(d);return}
+  const c=d.card,box=el('div','msg');
+  box.append(section('Summary',c.headline));
+  const tfs=el('div');
+  for(const [k,v] of Object.entries(c.timeframes||{})){const r=el('div','tf');r.append(el('b','',k),el('span','',v));tfs.append(r)}
+  box.append(section('Timeframes',tfs));
+  box.append(section('In plain words',c.plain_words));
+  const t=el('div');
+  const st=el('div','status '+(c.status==='TRADE'?(c.direction||''):'NOTRADE'),c.status==='TRADE'?c.direction+' setup':'NO TRADE');
+  t.append(st,el('div','',c.why));
+  if(c.status==='TRADE'){
+    const lv=el('div','lv');
+    [['Entry',c.entry],['Stop',c.stop],['Target',c.target]].forEach(([n,v])=>{const x=el('div');x.append(el('small','',n),el('b','',v));lv.append(x)});
+    t.append(lv);
+    if(c.reward_risk)t.append(el('div','hello','Reward:risk '+c.reward_risk));
+    try{localStorage.setItem('dl_last',JSON.stringify({key:sym.value,direction:c.direction,entry:c.entry,stop:c.stop,target:c.target}))}catch(e){}
+    const a=el('a','', 'Size this trade');a.href='/risk.html';a.style.cssText='display:block;margin-top:10px;color:var(--acc)';t.append(a);
+    const j=el('a','', 'Log this trade');j.href='/journal.html';j.style.cssText='display:block;margin-top:6px;color:var(--acc)';t.append(j);
+  }
+  t.append(el('div','',''),el('div','hello','Next: '+c.next_step));
+  box.append(section('Trade Card',t));
+  if(c.status==='TRADE')box.append(ticketSection(c));
+  box.append(factsBlock(d));
+  feed.append(box);box.scrollIntoView({behavior:'smooth'});
+}
+btn.onclick=async()=>{
+  btn.disabled=true;btn.textContent='Analyzing...';
+  try{
+    const r=await fetch('/api/tradecard/'+sym.value);
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
+    render(d);
+  }catch(e){const m=el('div','msg err','Error: '+e.message);feed.append(m);m.scrollIntoView()}
+  btn.disabled=false;label();window.dlMe&&dlMe();loadRadar();
+};
+(async()=>{
+  try{
+    const list=await (await fetch('/api/instruments')).json();
+    list.forEach(i=>{const o=document.createElement('option');o.value=i.key;o.textContent=i.name;sym.append(o)});
+    try{const k=localStorage.getItem('dl_sym');if(k)sym.value=k}catch(e){}
+    label();btn.disabled=false;
+  }catch(e){feed.append(el('div','msg err','Cannot reach backend: '+e.message))}
+})();
+sym.onchange=()=>{label();try{localStorage.setItem('dl_sym',sym.value)}catch(e){}};
+const radarBox=document.getElementById('radar');
+function radarItem(s){
+  const d=el('div');d.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)';
+  const l=el('div'),t=el('div','',s.name+' \u00b7 '+s.score+'/100');t.style.fontWeight='600';
+  l.append(t,el('div','mut',s.condition+(s.preferred?' \u00b7 your usual symbol':'')));
+  if(s.cached)l.append(el('div','mut','A recent analysis is available, which uses no credit.'));
+  const b=el('button','ghost','Analyse');b.style.cssText='width:auto;padding:8px 12px';b.onclick=()=>analyse(s.key);
+  d.append(l,b);return d;
+}
+function renderRadar(r){
+  radarBox.textContent='';
+  const c=el('div','card');c.append(el('h2','','Smart Analysis Timing'));
+  if(r.status!=='ok'){c.append(el('div','mut',r.message||'Not available right now. You can still analyse manually.'));radarBox.append(c);return}
+  const left=Math.max(0,r.credits.limit-r.credits.used);
+  c.append(el('div','mut','You have '+left+' of '+r.credits.limit+' analyses remaining today. This panel never uses one.'));
+  if(r.best){
+    const b=r.best;
+    c.append(el('div','mut','Best opportunity to analyse now'),el('div','big',b.name),el('div','',b.score+'/100 \u00b7 '+b.label),
+      el('div','mut','Current conditions: '+b.condition),el('h2','','Why this is recommended'));
+    const ul=el('ul');b.reasons.forEach(x=>ul.append(el('li','',x)));c.append(ul);
+    c.append(el('div','mut',b.time_note+' '+(b.notes||[]).join(' ')));
+    const go=el('button','','Analyse '+b.name);go.style.marginTop='10px';go.onclick=()=>analyse(b.key);c.append(go);
+    if(b.cached)c.append(el('div','mut','A recent analysis is available, so opening it uses no credit.'));
+  }else if(r.wait){
+    c.append(el('div','status NOTRADE',r.wait.title),el('div','',r.wait.message));
+    if(r.wait.next_window)c.append(el('div','mut','Next historically favourable period ('+r.wait.next_window.name+'): '+r.wait.next_window.text+'. '+r.wait.next_window.note));
+  }
+  if(r.preferred_note)c.append(el('div','warn',r.preferred_note));
+  if((r.others||[]).length){c.append(el('h2','','Other opportunities'));r.others.forEach(s=>c.append(radarItem(s)))}
+  (r.notes||[]).forEach(n=>c.append(el('div','mut',n)));
+  c.append(el('div','mut','The score shows how worthwhile it is to spend an analysis request. It is not a probability that a trade will win.'));
+  radarBox.append(c);
+}
+function analyse(key){if(btn.disabled)return;sym.value=key;sym.dispatchEvent(new Event('change'));btn.click()}
+async function loadRadar(){try{const r=await fetch('/api/radar');if(!r.ok)return;renderRadar(await r.json())}catch(e){}}
+loadRadar();setInterval(loadRadar,180000);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+</body>
+</html>

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Driverline MT5</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><b>MT5</b><a class="push" href="/">Analysis</a><a href="/risk.html">Risk</a></header>
+<main>
+<div class="card"><h2>Connection</h2><div id="conn"><span class="mut">Loading...</span></div></div>
+
+<div class="card"><h2>Connect your MT5</h2>
+<div class="mut">1. Create a key. 2. Put the Driverline EA on a chart in MT5 on a PC or VPS. 3. Paste your Driverline address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your Driverline address. The EA is read-only and never places trades.</div>
+<div class="btns"><button id="mk">Create or replace key</button><button id="rv" class="ghost">Revoke</button></div>
+<div id="keybox" style="margin-top:10px"></div>
+<div class="mut" style="margin-top:8px">Your Driverline address: <b id="addr"></b></div></div>
+
+<div class="card"><h2>My risk rules</h2>
+<label>Max risk per trade (% of balance)</label><input id="r1" type="number" step="any" inputmode="decimal">
+<label>Daily loss limit (% of balance)</label><input id="r2" type="number" step="any" inputmode="decimal">
+<label>Max open positions</label><input id="r3" type="number" inputmode="numeric">
+<div class="btns"><button id="sv">Save rules</button></div><div id="rmsg" class="mut"></div></div>
+
+<div class="card"><h2>Live from MT5</h2><div id="pos"><span class="mut">Nothing yet.</span></div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||'',v));return d}
+async function api(path,method,body){
+  const r=await fetch('/api/ea'+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
+let first=true;
+async function load(){
+  try{
+    const s=await api('/status');
+    const c=$('conn');c.textContent='';
+    c.append(kv('Status',s.connected?'Connected':(s.has_key?'Key created, EA not connected':'Not set up'),s.connected?'win':'mut'));
+    if(s.last_seen_ago!==null)c.append(kv('Last sync',s.last_seen_ago+' seconds ago'));
+    if(s.account){const a=s.account;
+      c.append(kv('Account',(a.login||'-')+' ('+(a.demo?'DEMO':'LIVE')+')'),kv('Server',a.server||'-'),
+        kv('Balance',(a.balance??'-')+' '+(a.currency||'')),kv('Equity',a.equity??'-'))}
+    if(first){$('r1').value=s.rules.max_risk_pct;$('r2').value=s.rules.daily_loss_pct;$('r3').value=s.rules.max_positions;first=false}
+    const p=$('pos');p.textContent='';
+    if(s.check){const k=s.check;
+      p.append(kv('Risk check',k.status,k.status==='OK'?'win':(k.status==='STOP'?'loss':'warn')),
+        kv('Money at risk',k.risk_money+' ('+k.risk_pct+'%)'),kv('Today',k.today_pnl+' ('+k.today_pct+'%)'));
+      k.warnings.forEach(w=>p.append(el('div','warn',w)))}
+    (s.positions||[]).forEach(x=>{
+      const row=el('div','kv');row.append(el('span','',x.symbol+' '+x.type+' '+x.volume+' | P&L '+x.profit+(Number(x.sl)>0?'':' | NO STOP')));
+      if(s.can_close){const b=el('button','ghost','Close');b.style.cssText='width:auto;padding:6px 12px';
+        b.onclick=()=>closeCmd({kind:'close',ticket:x.ticket},'Close '+x.symbol+' '+x.type+' '+x.volume+' now? Current P&L '+x.profit+'.');row.append(b)}
+      p.append(row)});
+    const n=(s.positions||[]).length;
+    if(n&&s.can_close){const b=el('button',s.check&&s.check.status!=='OK'?'':'ghost','Close ALL positions');b.style.marginTop='10px';
+      b.onclick=()=>closeCmd({kind:'close_all'},'Close ALL '+n+' open positions now?');p.append(b)}
+    else if(n&&s.connected)p.append(el('div','mut','Closing from the app is off. Turn on AllowRemoteClose in the EA inputs.'));
+    const cm=s.command;
+    if(cm){const r=cm.result;p.append(el('div',cm.status==='done'?'win':(cm.status==='sent'||cm.status==='pending'?'mut':'warn'),
+      (cm.kind==='close_all'?'Close all':'Close '+cm.ticket)+': '+cm.status+(r?' ('+r.closed+' closed'+(r.failed?', '+r.failed+' failed':'')+(r.message?': '+r.message:'')+')':'')))}
+    if(!s.check)p.append(el('span','mut','Nothing yet. It fills in once the EA syncs.'));
+    return s;
+  }catch(e){$('conn').textContent=e.message}
+}
+async function closeCmd(body,question){
+  if(!confirm(question+'\n\nThis sends a close order to your MT5.'))return;
+  try{await api('/command','POST',body)}catch(e){alert(e.message);return}
+  for(let i=0;i<30;i++){
+    await new Promise(r=>setTimeout(r,2000));
+    const s=await load();
+    if(s&&s.command&&!['pending','sent'].includes(s.command.status))break;
+  }
+}
+$('mk').onclick=async()=>{
+  if(!confirm('This replaces any key an EA is already using. Continue?'))return;
+  try{const r=await api('/key','POST');const b=$('keybox');b.textContent='';
+    b.append(el('div','mut','Copy this key now. It is shown only once.'));
+    const i=document.createElement('input');i.readOnly=true;i.value=r.key;i.onfocus=()=>i.select();b.append(i);
+    const c=el('button','','Copy key');c.style.marginTop='8px';c.onclick=async()=>{try{await navigator.clipboard.writeText(r.key);c.textContent='Copied'}catch(e){i.select()}};b.append(c);
+    load()}catch(e){$('keybox').textContent=e.message}
+};
+$('rv').onclick=async()=>{if(!confirm('Disconnect your EA?'))return;try{await api('/key','DELETE');$('keybox').textContent='';load()}catch(e){alert(e.message)}};
+$('sv').onclick=async()=>{
+  try{await api('/rules','POST',{max_risk_pct:Number($('r1').value),daily_loss_pct:Number($('r2').value),max_positions:Number($('r3').value)});
+    $('rmsg').className='win';$('rmsg').textContent='Saved. The EA picks it up on its next sync.';load()}
+  catch(e){$('rmsg').className='err';$('rmsg').textContent=e.message}
+};
+$('addr').textContent=location.origin;
+load();setInterval(load,15000);
+</script>
+</body>
+</html>
