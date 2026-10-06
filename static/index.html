@@ -111,7 +111,7 @@ function renderRadar(r){
   const c=el('div','card');c.append(el('h2','','Smart Analysis Timing'));
   if(r.status!=='ok'){c.append(el('div','mut',r.message||'Not available right now. You can still analyse manually.'));radarBox.append(c);return}
   const left=Math.max(0,r.credits.limit-r.credits.used);
-  c.append(el('div','mut','You have '+left+' of '+r.credits.limit+' analyses remaining today. This panel never uses one.'));
+  c.append(el('div','mut','You have '+left+' of '+r.credits.limit+' analyses left today. An analysis is used only when you press Analyse and Claude runs a new one. Looking at this panel is free.'));
   if(r.best){
     const b=r.best;
     c.append(el('div','mut','Best opportunity to analyse now'),el('div','big',b.name),el('div','',b.score+'/100 \u00b7 '+b.label),
