@@ -15,7 +15,7 @@ from .config import INSTRUMENTS
 from .deriv import fetch_candles, fetch_active_symbols
 from .indicators import analyze_all
 from .summary import summarize_facts
-from .trade_card import generate_trade_card
+from .trade_card import generate_trade_card, redact
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 CACHE_TTL = int(os.environ.get("DRIVERLINE_CACHE_SECONDS", 300))
@@ -35,13 +35,19 @@ async def _facts(key: str):
 
 
 def _friendly(msg: str) -> str:
+    msg = redact(msg)
+    low = msg.lower()
+    if "claude api 401" in low or "invalid x-api-key" in low or "authentication" in low:
+        return "AI analysis is not set up correctly on the server (the Claude key was rejected)."
+    if "stray characters" in low:
+        return "AI analysis is not set up correctly on the server (the Claude key has stray characters)."
     if "credit balance" in msg:
         return "AI analysis is temporarily unavailable. Computed facts are shown instead."
     if "ANTHROPIC_API_KEY" in msg:
         return "AI analysis is not configured on the server."
     if "structured answer" in msg or "cut off" in msg or "declined" in msg:
         return "The AI could not give an answer this time. Please try again."
-    return msg[:200]
+    return "AI analysis is temporarily unavailable. Computed facts are shown instead."
 
 
 def _fresh(key):
@@ -91,6 +97,7 @@ async def tradecard(request):
                 radar.record_analysis(key, out["card"])  # feeds Smart Analysis Timing; never raises
                 _cache[key] = (time.time(), dict(out))
             except Exception as e:  # fall back to computed facts only
+                print(f"[ai] {type(e).__name__}: {redact(str(e))[:300]}", flush=True)
                 out["card_error"] = _friendly(str(e))
     return JSONResponse(out)
 

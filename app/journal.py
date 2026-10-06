@@ -12,7 +12,7 @@ from starlette.routing import Route
 from .config import INSTRUMENTS
 from . import dbx
 from .auth import require_user, has_quota, consume_quota
-from .trade_card import claude_json
+from .trade_card import claude_json, redact
 
 EMOTIONS = ["calm", "confident", "fomo", "revenge", "fearful", "bored", "tired"]
 
@@ -303,7 +303,7 @@ async def review(request):
     try:
         out = await claude_json(REVIEW_SYSTEM, json.dumps(payload), REVIEW_SCHEMA)
     except Exception as e:
-        raise HTTPException(502, f"Claude: {e}")
+        raise HTTPException(502, "The AI review is temporarily unavailable. Please try again later.")
     for k, default in (("summary", ""), ("patterns", []), ("suggestions", []), ("caution", "")):
         out.setdefault(k, default)
     consume_quota(user)

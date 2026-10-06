@@ -100,20 +100,35 @@ CARD_SCHEMA = {
 }
 
 
-async def _post(payload: dict) -> dict:
-    key = os.environ.get("ANTHROPIC_API_KEY")
+def redact(text: str) -> str:
+    """Hides anything that looks like an API key before an error is shown or logged."""
+    return re.sub(r"sk-ant-[A-Za-z0-9_\-]+", "sk-ant-***", str(text))
+
+
+def _api_key() -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip().strip("\"'").strip()
     if not key:
         raise RuntimeError("Set ANTHROPIC_API_KEY in your environment")
-    headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    if not (key.isascii() and key.isprintable() and " " not in key):
+        raise RuntimeError("The Claude API key on the server contains stray characters. "
+                           "Paste it again with no spaces, quotes or line breaks.")
+    return key
+
+
+async def _post(payload: dict) -> dict:
+    headers = {"x-api-key": _api_key(), "anthropic-version": "2023-06-01", "content-type": "application/json"}
     for attempt in (1, 2):  # one retry for temporary overload or rate-limit errors
-        async with httpx.AsyncClient(timeout=90) as client:
-            r = await client.post(API_URL, json=payload, headers=headers)
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                r = await client.post(API_URL, json=payload, headers=headers)
+        except Exception as e:  # never echo the exception text: it can contain request headers
+            raise RuntimeError(f"Could not reach Claude ({type(e).__name__})")
         if r.status_code in (429, 500, 502, 503, 529) and attempt == 1:
             await asyncio.sleep(2)
             continue
         break
     if r.status_code != 200:
-        raise RuntimeError(f"Claude API {r.status_code}: {r.text[:300]}")
+        raise RuntimeError(f"Claude API {r.status_code}: {redact(r.text[:300])}")
     return r.json()
 
 
