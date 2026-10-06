@@ -32,14 +32,14 @@ def _send(to: str, subject: str, body: str):
 
 
 async def send_reset(to: str, link: str) -> bool:
-    body = ("Someone asked to reset your Driverline password.\n\n"
+    body = ("Someone asked to reset your TradeLens password.\n\n"
             f"Open this link within one hour to choose a new one:\n{link}\n\n"
             "If this wasn't you, ignore this email and your password stays the same.")
     if not configured():
         print(f"[mail not configured] Password reset link for {to}: {link}", flush=True)
         return False
     try:
-        await asyncio.to_thread(_send, to, "Reset your Driverline password", body)
+        await asyncio.to_thread(_send, to, "Reset your TradeLens password", body)
         return True
     except Exception as e:
         print(f"[mail error] {e}", flush=True)

@@ -2,23 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Driverline MT5</title>
+<title>TradeLens MT5</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#000000">
-<link rel="icon" href="/icon.svg">
+<meta name="theme-color" content="#040a1b">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/theme.css">
 <script src="/auth.js"></script>
 </head>
 <body>
-<header><b>MT5</b></header>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
 <main>
 <div class="card"><h2>Connection</h2><div id="conn"><span class="mut">Loading...</span></div></div>
 
 <div class="card"><h2>Connect your MT5</h2>
-<div class="mut">1. Create a key. 2. Put the Driverline EA on a chart in MT5 on a PC or VPS. 3. Paste your Driverline address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your Driverline address. The EA is read-only and never places trades.</div>
+<div class="mut">1. Create a key. 2. Put the TradeLens EA on a chart in MT5 on a PC or VPS. 3. Paste your TradeLens address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA is read-only and never places trades.</div>
 <div class="btns"><button id="mk">Create or replace key</button><button id="rv" class="ghost">Revoke</button></div>
 <div id="keybox" style="margin-top:10px"></div>
-<div class="mut" style="margin-top:8px">Your Driverline address: <b id="addr"></b></div></div>
+<div class="mut" style="margin-top:8px">Your TradeLens address: <b id="addr"></b></div></div>
 
 <div class="card"><h2>My risk rules</h2>
 <label>Max risk per trade (% of balance)</label><input id="r1" type="number" step="any" inputmode="decimal">
