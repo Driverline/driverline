@@ -39,3 +39,7 @@ button.ghost{background:transparent;border:1px solid var(--line);color:var(--mut
 footer{padding:10px 16px 14px;border-top:1px solid rgba(212,175,55,.3)}
 small.dis{display:block;text-align:center;color:var(--mut);font-size:11px;margin-top:8px}
 small{color:var(--mut)}
+
+nav.tabs{display:flex;gap:8px;padding:10px 16px;background:#000;border-bottom:1px solid var(--line);overflow-x:auto}
+nav.tabs a{flex:1;min-width:max-content;text-align:center;padding:10px 12px;border:1px solid var(--line);border-radius:10px;color:var(--gold);text-decoration:none;font-weight:600;font-size:14px;letter-spacing:.03em}
+nav.tabs a.on{background:linear-gradient(135deg,var(--gold2),var(--gold) 55%,#a8841f);color:#0a0a0a;border-color:transparent}
