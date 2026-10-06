@@ -416,7 +416,7 @@ async def refresh_history(force: bool = False):
     _load_hist()
     for key, (code, name) in INSTRUMENTS.items():
         old = _hist.get(key)
-        if not force and old and time.time() - old.get("updated_at", 0) < CFG["history_refresh_hours"] * 3600:
+        if not force and old and old.get("span_days", 0) >= 30 and time.time() - old.get("updated_at", 0) < CFG["history_refresh_hours"] * 3600:
             continue
         try:
             d = (await deriv.fetch_multi([code], ("M15", "H1"),

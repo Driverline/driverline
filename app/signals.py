@@ -43,8 +43,12 @@ SCHEMA = """
     CREATE INDEX IF NOT EXISTS ix_bt_run ON backtest_results(run_id)"""
 
 
+def _migrate(con):
+    con.add_column("backtest_results", "sd_r", "DOUBLE PRECISION")
+
+
 def db():
-    return dbx.connect("signals", SCHEMA)
+    return dbx.connect("signals", SCHEMA, _migrate)
 
 
 # ---------------------------------------------------------------- indicator series
@@ -117,10 +121,10 @@ def find_signals(setup: str, F: dict, ctx: list) -> list:
             elif c[i] < min(l[i - 20:i]) and ctx[i] < 0 and e20[i] < e50[i]:
                 d = -1
         elif setup == "range_reversal":
-            if F["er"][i] <= 0.25:
-                if F["rsi"][i - 1] < 28 and l[i - 1] <= F["lo"][i - 1] and c[i] > o[i] and c[i] > c[i - 1]:
+            if F["er"][i] <= 0.35:
+                if F["rsi"][i - 1] < 33 and l[i - 1] <= F["lo"][i - 1] and c[i] > o[i] and c[i] > c[i - 1]:
                     d = 1
-                elif F["rsi"][i - 1] > 72 and h[i - 1] >= F["up"][i - 1] and c[i] < o[i] and c[i] < c[i - 1]:
+                elif F["rsi"][i - 1] > 67 and h[i - 1] >= F["up"][i - 1] and c[i] < o[i] and c[i] < c[i - 1]:
                     d = -1
         if d:
             out.append((i, d))
@@ -175,7 +179,7 @@ def trade_stats(trades: list, span_days: float, rr: float, cfg: dict = None) -> 
     return {"n": n, "per_day": n / span_days if span_days else None, "hit_rate": sum(1 for t in trades if t[1]) / n,
             "avg_r": mean, "avg_r_h1": sum(r[:half]) / half, "avg_r_h2": sum(r[half:]) / (n - half),
             "t_stat": mean / (sd / math.sqrt(n)) if sd > 0 else 0.0, "pf": wins / losses if losses else None,
-            "be_rate": (1 + cost_r) / (1 + rr), "max_loss_streak": best}
+            "be_rate": (1 + cost_r) / (1 + rr), "max_loss_streak": best, "sd_r": sd}
 
 
 def backtest_symbol(data: dict, spiky: bool = False, cfg: dict = None) -> list:
@@ -229,11 +233,11 @@ async def run_backtest():
                         for r in rows:
                             con.execute(
                                 "INSERT INTO backtest_results(run_id,instrument,style,setup,rr,n,per_day,hit_rate,avg_r,"
-                                "avg_r_h1,avg_r_h2,t_stat,pf,be_rate,span_days,max_loss_streak) "
-                                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                "avg_r_h1,avg_r_h2,t_stat,pf,be_rate,span_days,max_loss_streak,sd_r) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (run_id, key, r["style"], r["setup"], r["rr"], r["n"], r["per_day"], r["hit_rate"],
                                  r["avg_r"], r["avg_r_h1"], r["avg_r_h2"], r["t_stat"], r["pf"], r["be_rate"],
-                                 r["span_days"], r["max_loss_streak"]))
+                                 r["span_days"], r["max_loss_streak"], r["sd_r"]))
                         con.commit()
             except Exception as e:
                 print(f"[backtest] {key} failed: {type(e).__name__}: {str(e)[:150]}", flush=True)
@@ -261,8 +265,13 @@ def summary() -> dict:
         groups.setdefault((r["style"], r["setup"], r["rr"]), []).append(r)
     for (style, setup, rr), g in groups.items():
         tot = sum(x["n"] for x in g)
+        sds = [x["sd_r"] for x in g]
+        t_pool = None
+        if all(s is not None for s in sds):
+            se = math.sqrt(sum(x["n"] * x["sd_r"] ** 2 for x in g)) / tot
+            t_pool = (sum(x["avg_r"] * x["n"] for x in g) / tot) / se if se > 0 else None
         out["pooled"].append({
-            "style": style, "setup": setup, "rr": rr, "symbols": len(g), "n": tot,
+            "t_pooled": t_pool, "style": style, "setup": setup, "rr": rr, "symbols": len(g), "n": tot,
             "per_day_all": sum(x["per_day"] or 0 for x in g),
             "hit_rate": sum(x["hit_rate"] * x["n"] for x in g) / tot, "be_rate": g[0]["be_rate"],
             "avg_r": sum(x["avg_r"] * x["n"] for x in g) / tot,

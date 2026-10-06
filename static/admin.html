@@ -90,7 +90,7 @@ async function loadBacktest(box){
     clearTimeout(btTimer);if(st.running)btTimer=setTimeout(()=>loadBacktest(box),5000);
     if(!r.run||!r.rows){box.append(el('div','mut','No results yet.'));return}
     box.append(el('h2','','Pooled across symbols (best average R first)'));
-    r.pooled.slice(0,10).forEach(x=>box.append(el('div','mut',STY[x.style]+' \u00b7 '+SET[x.setup]+' \u00b7 target '+x.rr+'R: '+x.n+' trades on '+x.symbols+' symbols ('+x.per_day_all.toFixed(1)+'/day in total), hit rate '+pct(x.hit_rate)+' vs break-even '+pct(x.be_rate)+', average '+sg(x.avg_r)+'R, positive in both halves on '+x.stable_symbols+' symbols')));
+    r.pooled.slice(0,10).forEach(x=>box.append(el('div','mut',STY[x.style]+' \u00b7 '+SET[x.setup]+' \u00b7 target '+x.rr+'R: '+x.n+' trades on '+x.symbols+' symbols ('+x.per_day_all.toFixed(1)+'/day in total), hit rate '+pct(x.hit_rate)+' vs break-even '+pct(x.be_rate)+', average '+sg(x.avg_r)+'R'+(x.t_pooled!==null?' (t='+x.t_pooled.toFixed(1)+')':'')+', positive in both halves on '+x.stable_symbols+' symbols')));
     box.append(el('h2','','Strongest single symbols'));
     r.best.forEach(x=>box.append(el('div','mut',x.name+' \u00b7 '+STY[x.style]+' \u00b7 '+SET[x.setup]+' \u00b7 '+x.rr+'R: '+x.n+' trades, average '+sg(x.avg_r)+'R (halves '+sg(x.avg_r_h1)+' / '+sg(x.avg_r_h2)+'), t='+x.t_stat.toFixed(1))));
     if(r.share_t_over_2!==null)box.append(el('div','mut','Of '+r.tested_combinations+' tested combinations, '+pct(r.share_t_over_2)+' score t above 2. If nothing works, chance alone gives about 2 to 3 percent, so a few strong-looking rows prove nothing.'));
