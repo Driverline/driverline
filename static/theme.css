@@ -14,6 +14,8 @@ main{padding:16px;max-width:560px;margin:0 auto;width:100%}
 .hello,.mut{color:var(--mut)}.mut{font-size:14px}
 .card{background:linear-gradient(160deg,#0b1430,#050914);border:1px solid var(--line);border-top-color:rgba(212,175,55,.4);border-radius:14px;padding:14px;margin:12px 0}
 h2{font:600 13px Georgia,serif;letter-spacing:.12em;text-transform:uppercase;margin:0 0 6px;color:var(--gold)}
+.card h2:not(:first-child){margin-top:16px}
+.card .big{margin:2px 0}
 .tf{display:flex;gap:10px;margin:6px 0}.tf b{min-width:38px;color:var(--gold)}.tf span{flex:1}
 .status{font:700 22px Georgia,serif}
 .BUY{color:var(--buy)}.SELL{color:var(--sell)}.NOTRADE{color:var(--gold)}
