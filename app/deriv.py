@@ -1,6 +1,6 @@
 import json
 import websockets
-from .config import DERIV_WS_URL, TIMEFRAMES, CANDLE_COUNT
+from .config import DERIV_WS_URL, TIMEFRAMES, TF_ALL, CANDLE_COUNT
 
 
 def _error_message(resp: dict):
@@ -73,7 +73,7 @@ async def fetch_multi(symbols: list[str], tfs: tuple, count) -> dict:
                     resp = await _request(ws, {
                         "ticks_history": sym, "adjust_start_time": 1,
                         "count": count[tf] if isinstance(count, dict) else count,
-                        "end": "latest", "style": "candles", "granularity": TIMEFRAMES[tf]}, expect="candles")
+                        "end": "latest", "style": "candles", "granularity": TF_ALL[tf]}, expect="candles")
                     got[tf] = [{k: float(c[k]) if k != "epoch" else int(c[k])
                                 for k in ("epoch", "open", "high", "low", "close")} for c in resp["candles"]]
                 except Exception:

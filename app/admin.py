@@ -102,7 +102,21 @@ async def radar_info(request):
     return JSONResponse(radar.admin_summary())
 
 
+async def backtest_start(request):
+    auth.require_admin(request)
+    from . import signals
+    return JSONResponse({"started": signals.start_backtest()})
+
+
+async def backtest_status(request):
+    auth.require_admin(request)
+    from . import signals
+    return JSONResponse(signals.summary())
+
+
 routes = [
+    Route("/api/admin/backtest", backtest_start, methods=["POST"]),
+    Route("/api/admin/backtest", backtest_status, methods=["GET"]),
     Route("/api/admin/radar", radar_info, methods=["GET"]),
     Route("/api/admin/overview", overview, methods=["GET"]),
     Route("/api/admin/users/{uid:int}/tier", set_tier, methods=["POST"]),

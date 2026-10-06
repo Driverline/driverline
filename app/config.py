@@ -41,4 +41,7 @@ TIMEFRAMES = {
     "M15": 900,
 }
 
+# Extra timeframes used only by the signal engine and its backtest
+TF_ALL = {**TIMEFRAMES, "M5": 300, "M1": 60, "H4": 14400}
+
 CANDLE_COUNT = 300
