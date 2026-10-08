@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, ea, journal, radar
+from . import admin, auth, ea, journal, push, radar, signal_feed
 from .config import INSTRUMENTS
 from .deriv import fetch_candles, fetch_active_symbols
 from .indicators import analyze_all
@@ -120,6 +120,8 @@ async def lifespan(app):
     except Exception as e:
         print(f"[startup] admin bootstrap failed: {e}", flush=True)
     tasks = await radar.background_loops() if os.environ.get("DRIVERLINE_RADAR", "1") != "0" else []
+    if os.environ.get("DRIVERLINE_SIGNALS", "1") != "0":
+        tasks.append(asyncio.create_task(signal_feed.signal_loop()))
     yield
     for t in tasks:
         t.cancel()
@@ -138,6 +140,8 @@ routes = [
     *auth.routes,
     *admin.routes,
     *ea.routes,
+    *signal_feed.routes,
+    *push.routes,
     *journal.routes,
     Mount("/", app=StaticFiles(directory=str(STATIC_DIR), html=True), name="static"),
 ]

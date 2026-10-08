@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Signals</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main>
+<div class="card" id="budget"><span class="mut">Loading...</span></div>
+<div class="card"><h2>Look after your trades</h2>
+<div id="advice"></div></div>
+<div class="card" id="notif" hidden></div>
+<div class="chips" id="chips"></div>
+<div id="list"></div>
+<div class="card"><h2>Track record</h2><div id="record"><span class="mut">Loading...</span></div></div>
+<small class="dis">Setups are candidates, not predictions. On these indices the historical average result is close to zero after costs. Education and risk analysis only, not financial advice.</small>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const STY={scalp:'Scalp',day:'Day',swing:'Swing'},SET={ema_pullback:'EMA pullback',squeeze_breakout:'Squeeze breakout',range_breakout:'20-bar breakout',range_reversal:'Range reversal'};
+const pct=x=>Math.round(x*100)+'%',sg=x=>(x>=0?'+':'')+x.toFixed(2);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||'',v));return d}
+async function api(path,method,body){
+  const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
+let filter='all',state=null,hasEA=false;
+
+function ago(t){const m=Math.max(0,Math.round((Date.now()/1000-t)/60));return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'}
+function left(t){const m=Math.round((t-Date.now()/1000)/60);return m>0?'Valid for about '+m+' more minutes':''}
+function btText(b){return(!b||!b.n)?'No historical test is available for this setup yet.':'Historical test: the target was reached '+pct(b.hit)+' of the time on '+b.n.toLocaleString()+' trades (break-even '+pct(b.be)+'), average '+sg(b.avg_r)+'R after costs.'}
+
+function renderBudget(b,paid){
+  const c=$('budget');c.textContent='';
+  if(b.kind==='limit'){
+    c.append(el('h2','','Your daily limit'),el('div','',b.used+' of '+b.limit+' signals opened today'+(b.paused?'. You have reached your limit, so new signals are paused until tomorrow (00:00 UTC).':'.')));
+    c.append(el('div','mut','You choose this limit yourself. Fewer, better-chosen trades is a skill worth building.'));
+    const row=el('div','row');const i=document.createElement('input');i.type='number';i.min=1;i.max=b.max;i.value=b.limit;i.inputMode='numeric';
+    const s=el('button','','Set my limit');s.onclick=async()=>{try{const r=await api('/api/signals/limit','POST',{limit:Number(i.value)});$('lmsg').textContent=r.message;load()}catch(e){$('lmsg').textContent=e.message}};
+    row.append(i,s);c.append(row);
+    const m=el('div','mut');m.id='lmsg';m.textContent=b.pending?'A higher limit of '+b.pending+' starts tomorrow.':'Lowering your limit applies at once. Raising it takes effect tomorrow.';c.append(m);
+  }else{
+    c.append(el('h2','','Your daily analyses'),el('div','',b.used+' of '+b.limit+' used today.'),
+      el('div','mut','Opening a setup uses one of your daily analyses. Paid members get a daily signal limit of their own choosing, plus notifications.'));
+  }
+}
+function renderAdvice(){
+  const a=$('advice');a.textContent='';
+  a.append(el('div','','Track and close your trades. Never leave trades unattended.'));
+  if(state&&state.paid&&hasEA){const l=el('a','','Manage your trades in the MT5 tab');l.href='/mt5.html';l.style.cssText='display:block;margin-top:8px;color:var(--gold2)';a.append(l)}
+  else a.append(el('div','mut',state&&state.paid?'Connect your MT5 in the MT5 tab to track, close and auto-manage trades here. Until then, check your trades in your MT5 app.':'Check your open trades in your MT5 app, and close or adjust positions there.'));
+}
+function copyBtn(text){const b=el('button','ghost','Copy for MT5');b.style.cssText='width:auto;padding:8px 12px';b.onclick=async()=>{try{await navigator.clipboard.writeText(text);b.textContent='Copied'}catch(e){prompt('Copy this:',text)}};return b}
+function card(s){
+  const c=el('div','card'),h=el('div','hd');
+  h.append(el('span','',s.name+' '),el('span',s.direction==='BUY'?'BUY':'SELL',s.direction));
+  c.append(h);
+  const t=el('div');t.append(el('span','tag',STY[s.style]),el('span','tag '+s.risk,s.risk+' risk'),el('span','mut',SET[s.setup]+' \u00b7 '+ago(s.created_at)));c.append(t);
+  if(s.status!=='open'){
+    const r=s.result_r;c.append(el('div',r>0?'win':'loss','Finished: '+({target:'target reached',stop:'stop hit',timeout:'time ran out'}[s.status]||s.status)+(r===null?'':' ('+sg(r)+'R after costs)')));
+  }else if(!s.actionable)c.append(el('div','mut','This setup is no longer fresh enough to enter.'));
+  else if(!s.opened){
+    const cost=state.budget.kind==='limit'?'Counts towards your daily limit.':'Uses one of your daily analyses.';
+    c.append(el('div','mut',left(s.expires_at)+(left(s.expires_at)?'. ':'')+cost));
+    const b=el('button','','Open setup');b.style.marginTop='8px';b.disabled=state.budget.paused;
+    b.onclick=async()=>{b.disabled=true;try{await api('/api/signals/'+s.id+'/open','POST');load()}catch(e){alert(e.message);load()}};c.append(b);
+    if(state.budget.paused)c.append(el('div','warn',state.budget.kind==='limit'?'You have reached your daily limit.':'You have used your daily analyses.'));
+    return c;
+  }
+  if(s.entry!==undefined){
+    const lv=el('div','lv');[['Entry (near market)',s.entry],['Stop',s.stop],['Target ('+s.rr+'R)',s.target]].forEach(([n,v])=>{const d=el('div');d.append(el('small','',n),el('b','',Number(v).toFixed(2)));lv.append(d)});c.append(lv);
+    c.append(el('div','mut',btText(s.bt)));
+    if(s.risk_notes)c.append(el('div','mut','Risk notes: '+s.risk_notes+'.'));
+    if(s.status==='open'){
+      c.append(el('div','warn','Set the stop when you enter. Track and close your trades; never leave them unattended.'));
+      const row=el('div','btns');row.append(copyBtn(s.name+' '+s.direction+' SL '+s.stop.toFixed(2)+' TP '+s.target.toFixed(2)));
+      const lg=el('button','ghost','Log / size it');lg.onclick=()=>{try{localStorage.setItem('dl_last',JSON.stringify({key:s.instrument,direction:s.direction,entry:s.entry,stop:s.stop,target:s.target}))}catch(e){}location.href='/risk.html'};row.append(lg);c.append(row);
+    }
+  }
+  return c;
+}
+function renderList(){
+  const l=$('list');l.textContent='';
+  const rows=(state.signals||[]).filter(s=>filter==='all'||s.style===filter);
+  if(!rows.length)l.append(el('div','mut','No setups right now. This is normal: setups appear only when the rules line up, and waiting is a valid choice.'));
+  rows.forEach(s=>l.append(card(s)));
+}
+function renderChips(){
+  const c=$('chips');c.textContent='';
+  [['all','All'],['scalp','Scalp'],['day','Day'],['swing','Swing']].forEach(([k,t])=>{const b=el('button',k===filter?'':'ghost',t);b.onclick=()=>{filter=k;renderChips();renderList()};c.append(b)});
+}
+async function renderRecord(){
+  try{
+    const r=await api('/api/signals/record'),box=$('record');box.textContent='';
+    box.append(el('div','mut',r.open+' setups are being tracked right now. Results below use the same costs as the backtest.'));
+    if(!r.live.length)box.append(el('div','mut','No finished setups yet.'));
+    r.live.forEach(x=>box.append(el('div','mut',STY[x.style]+' \u00b7 '+SET[x.setup]+': '+x.n+' finished, target reached '+pct(x.target_rate)+', average '+sg(x.avg_r)+'R')));
+  }catch(e){$('record').textContent=e.message}
+}
+// ---- notifications (paid members) ----
+const b64=s=>{const p='='.repeat((4-s.length%4)%4),r=(s+p).replace(/-/g,'+').replace(/_/g,'/'),raw=atob(r);return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)))};
+async function pushState(){try{const reg=await Promise.race([navigator.serviceWorker.ready,new Promise((_,rj)=>setTimeout(rj,3000))]);return await reg.pushManager.getSubscription()}catch(e){return null}}
+async function renderNotif(){
+  const n=$('notif');n.textContent='';n.hidden=false;n.append(el('h2','','Notifications'));
+  if(!state.paid){n.append(el('div','mut','Notifications are for paid members. They arrive even when the app is closed, within your own daily limit.'));return}
+  let p={styles:[],quiet_start:null,quiet_end:null,tz_offset:0};
+  try{p=await api('/api/signals/notify')}catch(e){}
+  const sub=('serviceWorker' in navigator&&'PushManager' in window)?await pushState():null;
+  n.append(el('div','mut',sub?'Notifications are on for this device.':'Notifications are off for this device. On iPhone, add TradeLens to your home screen first.'));
+  const styles=['scalp','day','swing'],boxes={};
+  styles.forEach(k=>{const l=el('label','sw');const i=document.createElement('input');i.type='checkbox';i.checked=p.styles.includes(k);boxes[k]=i;l.append(i,document.createTextNode(STY[k]+' setups'));n.append(l)});
+  const row=el('div','row'),qs=document.createElement('input'),qe=document.createElement('input');
+  [qs,qe].forEach(i=>{i.type='number';i.min=0;i.max=23;i.inputMode='numeric'});qs.placeholder='Quiet from (hour)';qe.placeholder='Quiet until (hour)';
+  qs.value=p.quiet_start??'';qe.value=p.quiet_end??'';row.append(qs,qe);n.append(row);
+  n.append(el('div','mut','Quiet hours use your phone\u2019s clock. You are alerted at most as many times a day as your own daily limit, and never once you have reached it.'));
+  const btns=el('div','btns'),msg=el('div','mut');
+  const save=el('button','','Save');save.onclick=async()=>{try{await api('/api/signals/notify','POST',{styles:styles.filter(k=>boxes[k].checked),quiet_start:qs.value===''?null:Number(qs.value),quiet_end:qe.value===''?null:Number(qe.value),tz_offset:-new Date().getTimezoneOffset()});msg.textContent='Saved.'}catch(e){msg.textContent=e.message}};
+  const tog=el('button','ghost',sub?'Turn off for this device':'Turn on for this device');
+  tog.onclick=async()=>{try{
+    if(sub){await api('/api/push/unsubscribe','POST',{endpoint:sub.endpoint});await sub.unsubscribe()}
+    else{
+      if(!('serviceWorker' in navigator)||!('PushManager' in window))throw new Error('This browser does not support notifications. On iPhone, add TradeLens to the home screen first.');
+      if(await Notification.requestPermission()!=='granted')throw new Error('Notifications were not allowed on this device.');
+      const reg=await navigator.serviceWorker.ready,k=(await api('/api/push/key')).key;
+      const s=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(k)});
+      await api('/api/push/subscribe','POST',s.toJSON());
+    }
+    renderNotif()}catch(e){msg.textContent=e.message}};
+  btns.append(save,tog);n.append(btns);
+  if(sub){const t=el('button','ghost','Send a test notification');t.style.marginTop='8px';t.onclick=async()=>{try{await api('/api/push/test','POST');msg.textContent='Sent.'}catch(e){msg.textContent=e.message}};n.append(t)}
+  n.append(msg);
+}
+async function load(){
+  try{
+    state=await api('/api/signals');
+    try{const s=await api('/api/ea/status');hasEA=!!s.connected}catch(e){}
+    renderBudget(state.budget,state.paid);renderAdvice();renderChips();renderList();
+  }catch(e){$('budget').textContent=e.message}
+}
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+load();renderRecord();setInterval(load,60000);
+setTimeout(async()=>{if(state)renderNotif()},900);
+</script>
+</body>
+</html>

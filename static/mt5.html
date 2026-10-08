@@ -16,7 +16,7 @@
 <div class="card"><h2>Connection</h2><div id="conn"><span class="mut">Loading...</span></div></div>
 
 <div class="card"><h2>Connect your MT5</h2>
-<div class="mut">1. Create a key. 2. Put the TradeLens EA on a chart in MT5 on a PC or VPS. 3. Paste your TradeLens address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA is read-only and never places trades.</div>
+<div class="mut">1. Create a key. 2. Put the TradeLens EA on a chart in MT5 on a PC or VPS. 3. Paste your TradeLens address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA never opens trades. It closes or adjusts trades only if you switch those options on in its settings.</div>
 <div class="btns"><button id="mk">Create or replace key</button><button id="rv" class="ghost">Revoke</button></div>
 <div id="keybox" style="margin-top:10px"></div>
 <div class="mut" style="margin-top:8px">Your TradeLens address: <b id="addr"></b></div></div>
@@ -27,6 +27,20 @@
 <label>Max open positions</label><input id="r3" type="number" inputmode="numeric">
 <div class="btns"><button id="sv">Save rules</button></div><div id="rmsg" class="mut"></div></div>
 
+<div class="card"><h2>Auto-manage my trades</h2>
+<div class="mut" id="mgnote">Loading...</div>
+<label class="sw"><input type="checkbox" id="be_on"> Move my stop to breakeven</label>
+<div class="row"><div><label>After profit of (R)</label><input id="be_trigger" type="number" step="any" inputmode="decimal"></div>
+<div><label>Lock in (R)</label><input id="be_offset" type="number" step="any" inputmode="decimal"></div></div>
+<label class="sw"><input type="checkbox" id="tsl_on"> Trail my stop loss</label>
+<div class="row"><div><label>Start after profit of (R)</label><input id="tsl_start" type="number" step="any" inputmode="decimal"></div>
+<div><label>Keep a distance of (R)</label><input id="tsl_dist" type="number" step="any" inputmode="decimal"></div></div>
+<label class="sw"><input type="checkbox" id="ttp_on"> Trail my take-profit (let winners run)</label>
+<div class="row"><div><label>When within (R) of target</label><input id="ttp_near" type="number" step="any" inputmode="decimal"></div>
+<div><label>Extend it by (R)</label><input id="ttp_step" type="number" step="any" inputmode="decimal"></div></div>
+<div class="mut" style="margin-top:10px">1R is the distance from your entry to your original stop loss. Stops only ever move in your favour, never wider. The take-profit is extended only once your stop protects the trade (breakeven or better). Trades with no stop loss are skipped. This needs AllowManage switched on in the EA settings in MT5.</div>
+<div class="btns"><button id="mgsave">Save auto-manage</button></div><div id="mgmsg" class="mut"></div></div>
+
 <div class="card"><h2>Live from MT5</h2><div id="pos"><span class="mut">Nothing yet.</span></div></div>
 </main>
 <script>
@@ -36,10 +50,13 @@ function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||
 async function api(path,method,body){
   const r=await fetch('/api/ea'+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
-let first=true;
+let first=true,mgFirst=true;
 async function load(){
   try{
     const s=await api('/status');
+    const mg=s.manage||{};
+    if(mgFirst){['be_on','tsl_on','ttp_on'].forEach(k=>{$(k).checked=!!mg[k]});['be_trigger','be_offset','tsl_start','tsl_dist','ttp_near','ttp_step'].forEach(k=>{$(k).value=mg[k]});mgFirst=false}
+    $('mgnote').textContent=s.can_manage?'Auto-manage is allowed in your EA and ready.':(s.connected?'Switch on AllowManage in the EA settings in MT5 to use this.':'Connect your MT5 first, using the steps above.');
     const c=$('conn');c.textContent='';
     c.append(kv('Status',s.connected?'Connected':(s.has_key?'Key created, EA not connected':'Not set up'),s.connected?'win':'mut'));
     if(s.last_seen_ago!==null)c.append(kv('Last sync',s.last_seen_ago+' seconds ago'));
@@ -54,9 +71,11 @@ async function load(){
       k.warnings.forEach(w=>p.append(el('div','warn',w)))}
     (s.positions||[]).forEach(x=>{
       const row=el('div','kv');row.append(el('span','',x.symbol+' '+x.type+' '+x.volume+' | P&L '+x.profit+(Number(x.sl)>0?'':' | NO STOP')));
+      const act=el('span');act.style.cssText='display:flex;gap:6px';
+      if(s.can_manage&&(mg.be_on||mg.tsl_on||mg.ttp_on)){const off=(mg.excluded||[]).includes(Number(x.ticket));const a=el('button','ghost','Auto: '+(off?'off':'on'));a.style.cssText='width:auto;padding:6px 10px';a.onclick=()=>toggleAuto(x.ticket,!off);act.append(a)}
       if(s.can_close){const b=el('button','ghost','Close');b.style.cssText='width:auto;padding:6px 12px';
-        b.onclick=()=>closeCmd({kind:'close',ticket:x.ticket},'Close '+x.symbol+' '+x.type+' '+x.volume+' now? Current P&L '+x.profit+'.');row.append(b)}
-      p.append(row)});
+        b.onclick=()=>closeCmd({kind:'close',ticket:x.ticket},'Close '+x.symbol+' '+x.type+' '+x.volume+' now? Current P&L '+x.profit+'.');act.append(b)}
+      row.append(act);p.append(row)});
     const n=(s.positions||[]).length;
     if(n&&s.can_close){const b=el('button',s.check&&s.check.status!=='OK'?'':'ghost','Close ALL positions');b.style.marginTop='10px';
       b.onclick=()=>closeCmd({kind:'close_all'},'Close ALL '+n+' open positions now?');p.append(b)}
@@ -68,6 +87,14 @@ async function load(){
     return s;
   }catch(e){$('conn').textContent=e.message}
 }
+async function toggleAuto(ticket,excluded){try{await api('/manage/exclude','POST',{ticket:Number(ticket),excluded});load()}catch(e){alert(e.message)}}
+$('mgsave').onclick=async()=>{
+  const num=k=>Number($(k).value);
+  try{
+    await api('/manage','POST',{be_on:$('be_on').checked,be_trigger:num('be_trigger'),be_offset:num('be_offset'),tsl_on:$('tsl_on').checked,tsl_start:num('tsl_start'),tsl_dist:num('tsl_dist'),ttp_on:$('ttp_on').checked,ttp_near:num('ttp_near'),ttp_step:num('ttp_step')});
+    $('mgmsg').className='win';$('mgmsg').textContent='Saved. Your EA applies it within a few seconds.';load();
+  }catch(e){$('mgmsg').className='err';$('mgmsg').textContent=e.message}
+};
 async function closeCmd(body,question){
   if(!confirm(question+'\n\nThis sends a close order to your MT5.'))return;
   try{await api('/command','POST',body)}catch(e){alert(e.message);return}

@@ -94,38 +94,43 @@ def ctx_direction(F: dict, X: dict, p_sig: int, p_ctx: int) -> list:
 
 
 # ---------------------------------------------------------------- the four setups: a list of (bar index, +1 buy / -1 sell)
-def find_signals(setup: str, F: dict, ctx: list) -> list:
-    n, out = F["n"], []
+def _detect(setup: str, F: dict, ctx: list, i: int) -> int:
+    """+1 buy, -1 sell, 0 nothing, judged on the candle that just closed at index i."""
     o, h, l, c, e20, e50, atr = F["o"], F["h"], F["l"], F["c"], F["e20"], F["e50"], F["atr"]
-    for i in range(120, n - 1):
-        d = 0
-        if setup == "ema_pullback":
-            body_ok = (h[i] - l[i]) > 0 and abs(c[i] - o[i]) >= 0.4 * (h[i] - l[i])
-            if ctx[i] > 0 and e20[i] > e50[i] > e50[i - 5] and body_ok and c[i] > o[i] and c[i] > e20[i] \
-                    and any(l[k] <= e20[k] for k in (i - 2, i - 1, i)):
-                d = 1
-            elif ctx[i] < 0 and e20[i] < e50[i] < e50[i - 5] and body_ok and c[i] < o[i] and c[i] < e20[i] \
-                    and any(h[k] >= e20[k] for k in (i - 2, i - 1, i)):
-                d = -1
-        elif setup == "squeeze_breakout":
-            lim = sorted(F["wid"][i - 100:i])[19]
-            squeezed = F["wid"][i - 1] <= lim or F["wid"][i - 2] <= lim
-            big = (h[i] - l[i]) >= 1.1 * atr[i]
-            if squeezed and big and c[i] > F["up"][i] and e50[i] > e50[i - 5]:
-                d = 1
-            elif squeezed and big and c[i] < F["lo"][i] and e50[i] < e50[i - 5]:
-                d = -1
-        elif setup == "range_breakout":
-            if c[i] > max(h[i - 20:i]) and ctx[i] > 0 and e20[i] > e50[i]:
-                d = 1
-            elif c[i] < min(l[i - 20:i]) and ctx[i] < 0 and e20[i] < e50[i]:
-                d = -1
-        elif setup == "range_reversal":
-            if F["er"][i] <= 0.35:
-                if F["rsi"][i - 1] < 33 and l[i - 1] <= F["lo"][i - 1] and c[i] > o[i] and c[i] > c[i - 1]:
-                    d = 1
-                elif F["rsi"][i - 1] > 67 and h[i - 1] >= F["up"][i - 1] and c[i] < o[i] and c[i] < c[i - 1]:
-                    d = -1
+    if setup == "ema_pullback":
+        body_ok = (h[i] - l[i]) > 0 and abs(c[i] - o[i]) >= 0.4 * (h[i] - l[i])
+        if ctx[i] > 0 and e20[i] > e50[i] > e50[i - 5] and body_ok and c[i] > o[i] and c[i] > e20[i] \
+                and any(l[k] <= e20[k] for k in (i - 2, i - 1, i)):
+            return 1
+        if ctx[i] < 0 and e20[i] < e50[i] < e50[i - 5] and body_ok and c[i] < o[i] and c[i] < e20[i] \
+                and any(h[k] >= e20[k] for k in (i - 2, i - 1, i)):
+            return -1
+    elif setup == "squeeze_breakout":
+        lim = sorted(F["wid"][i - 100:i])[19]
+        squeezed = F["wid"][i - 1] <= lim or F["wid"][i - 2] <= lim
+        big = (h[i] - l[i]) >= 1.1 * atr[i]
+        if squeezed and big and c[i] > F["up"][i] and e50[i] > e50[i - 5]:
+            return 1
+        if squeezed and big and c[i] < F["lo"][i] and e50[i] < e50[i - 5]:
+            return -1
+    elif setup == "range_breakout":
+        if c[i] > max(h[i - 20:i]) and ctx[i] > 0 and e20[i] > e50[i]:
+            return 1
+        if c[i] < min(l[i - 20:i]) and ctx[i] < 0 and e20[i] < e50[i]:
+            return -1
+    elif setup == "range_reversal":
+        if F["er"][i] <= 0.35:
+            if F["rsi"][i - 1] < 33 and l[i - 1] <= F["lo"][i - 1] and c[i] > o[i] and c[i] > c[i - 1]:
+                return 1
+            if F["rsi"][i - 1] > 67 and h[i - 1] >= F["up"][i - 1] and c[i] < o[i] and c[i] < c[i - 1]:
+                return -1
+    return 0
+
+
+def find_signals(setup: str, F: dict, ctx: list) -> list:
+    out = []
+    for i in range(120, F["n"] - 1):
+        d = _detect(setup, F, ctx, i)
         if d:
             out.append((i, d))
     return out

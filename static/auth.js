@@ -17,7 +17,7 @@
     if(!h||document.querySelector('nav.tabs')||/^\/(login|reset)/.test(location.pathname))return;
     const here=location.pathname==='/index.html'?'/':location.pathname;
     const n=document.createElement('nav');n.className='tabs';
-    [['Analysis','/'],['Risk','/risk.html'],['Journal','/journal.html'],['MT5','/mt5.html']].forEach(([t,u])=>{
+    [['Analysis','/'],['Signals','/signals.html'],['Risk','/risk.html'],['Journal','/journal.html'],['MT5','/mt5.html']].forEach(([t,u])=>{
       const a=document.createElement('a');a.href=u;a.textContent=t;if(u===here)a.className='on';n.append(a)});
     h.after(n);
   }

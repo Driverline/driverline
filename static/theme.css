@@ -46,6 +46,11 @@ footer{padding:10px 16px 14px;border-top:1px solid rgba(26,168,255,.3)}
 small.dis{display:block;text-align:center;color:var(--mut);font-size:11px;margin-top:8px}
 small{color:var(--mut)}
 
-nav.tabs{display:flex;gap:8px;padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--line);overflow-x:auto}
-nav.tabs a{flex:1;min-width:max-content;text-align:center;padding:10px 12px;border:1px solid var(--line);border-radius:10px;color:var(--gold2);text-decoration:none;font-weight:600;font-size:14px;letter-spacing:.03em}
+nav.tabs{display:flex;gap:6px;padding:10px 12px;background:var(--bg);border-bottom:1px solid var(--line);overflow-x:auto}
+nav.tabs a{flex:1;min-width:max-content;text-align:center;padding:10px 8px;border:1px solid var(--line);border-radius:10px;color:var(--gold2);text-decoration:none;font-weight:600;font-size:14px;letter-spacing:.03em}
 nav.tabs a.on{background:var(--grad);color:#02122c;border-color:transparent}
+
+.sw{display:flex;align-items:center;gap:10px;margin:12px 0 4px;color:var(--tx);font-size:15px}.sw input{width:auto}
+.tag{display:inline-block;padding:2px 9px;border-radius:999px;border:1px solid var(--line);font-size:12px;color:var(--gold2);margin-right:6px}
+.tag.Low{color:var(--buy);border-color:var(--buy)}.tag.Medium{color:var(--no);border-color:var(--no)}.tag.High{color:var(--sell);border-color:var(--sell)}
+.chips{display:flex;gap:8px;margin:10px 0;overflow-x:auto}.chips button{width:auto;padding:8px 14px;font-size:14px}

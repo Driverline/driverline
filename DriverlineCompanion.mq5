@@ -5,10 +5,12 @@
 //| specs to your TradeLens app and shows a risk panel on the chart.|
 //| It NEVER opens a trade. It can CLOSE positions, but only when    |
 //| InpAllowRemoteClose is on AND the account owner clicks Close in  |
-//| the TradeLens app.                                              |
+//| the TradeLens app. With InpAllowManage on it can also move a     |
+//| position's stop and take-profit (breakeven, trailing) using the  |
+//| settings chosen in the app. It never widens a stop.              |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.10"
+#property version     "1.20"
 #property description "Syncs account state to TradeLens. Never opens trades. Closes positions only on request."
 
 #include <Trade/Trade.mqh>
@@ -19,6 +21,7 @@ input int    InpIntervalSec = 15;                                // Seconds betw
 input bool   InpShowPanel   = true;                              // Show the on-chart panel
 input bool   InpSyncJournal = true;                              // Send closed trades to your TradeLens journal
 input int    InpJournalDays = 7;                                 // How many days of closed trades to send at start
+input bool   InpAllowManage = false;                              // Allow auto-manage: breakeven, trailing stop and trailing take-profit chosen in the app (never widens a stop)
 input bool   InpAllowRemoteClose = false;                        // Allow CLOSING positions from the TradeLens app (never opens trades)
 
 const string PFX        = "DL_";
@@ -38,6 +41,12 @@ datetime g_lastSpecs = 0;
 datetime g_lastFull  = 0;
 datetime g_jSince    = 0;
 string   g_cmdMsg    = "";
+string   g_mgMsg     = "";
+// Auto-manage settings, sent by the app. Distances are in R (1R = the position's original stop distance).
+bool     g_be_on = false;   double g_be_trigger = 1.0;  double g_be_offset = 0.1;
+bool     g_tsl_on = false;  double g_tsl_start = 1.5;   double g_tsl_dist = 1.0;
+bool     g_ttp_on = false;  double g_ttp_near = 0.3;    double g_ttp_step = 1.0;
+string   g_excl = "";
 CTrade   g_trade;
 
 //+------------------------------------------------------------------+
@@ -343,6 +352,7 @@ bool Sync()
       + ",\"margin_free\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2)
       + ",\"demo\":" + (demo ? "true" : "false")
       + ",\"remote_close\":" + (InpAllowRemoteClose ? "true" : "false")
+      + ",\"manage_allowed\":" + (InpAllowManage ? "true" : "false")
       + ",\"server_offset\":" + (string)((int)MathRound((double)(TimeCurrent() - TimeGMT()) / 900.0) * 900) + "}"
       + ",\"today\":{\"closed_pnl\":" + DoubleToString(closedPnl, 2) + ",\"trades\":" + (string)closedCnt + "}"
       + ",\"positions\":[" + pos + "]";
@@ -399,6 +409,123 @@ bool Sync()
 }
 
 //+------------------------------------------------------------------+
+//| Auto-manage (only when InpAllowManage is on)                     |
+//+------------------------------------------------------------------+
+void ParseManage(const string resp)
+{
+   g_be_on      = (JsonGet(resp, "be_on") == "1");
+   g_be_trigger = StringToDouble(JsonGet(resp, "be_trigger"));
+   g_be_offset  = StringToDouble(JsonGet(resp, "be_offset"));
+   g_tsl_on     = (JsonGet(resp, "tsl_on") == "1");
+   g_tsl_start  = StringToDouble(JsonGet(resp, "tsl_start"));
+   g_tsl_dist   = StringToDouble(JsonGet(resp, "tsl_dist"));
+   g_ttp_on     = (JsonGet(resp, "ttp_on") == "1");
+   g_ttp_near   = StringToDouble(JsonGet(resp, "ttp_near"));
+   g_ttp_step   = StringToDouble(JsonGet(resp, "ttp_step"));
+   g_excl       = JsonGet(resp, "excluded");
+}
+
+bool IsExcluded(const ulong ticket)
+{
+   return StringFind("," + g_excl + ",", "," + (string)ticket + ",") >= 0;
+}
+
+// The original stop distance (1R). It is remembered, because trailing moves the stop itself.
+double InitialRisk(const ulong ticket, const double open, const double sl)
+{
+   string name = "TL_R_" + (string)ticket;
+   if(GlobalVariableCheck(name))
+      return GlobalVariableGet(name);
+   if(sl <= 0.0)
+      return 0.0;
+   double r = MathAbs(open - sl);
+   GlobalVariableSet(name, r);
+   return r;
+}
+
+// Brokers refuse stops that are too close to the price. Returns false if the move would be refused.
+bool StopsAllowed(const string sym, const long type, const double px, const double sl, const double tp)
+{
+   double pt   = SymbolInfoDouble(sym, SYMBOL_POINT);
+   double minD = (double)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL) * pt;
+   double frz  = (double)SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL) * pt;
+   double d    = (type == POSITION_TYPE_BUY) ? 1.0 : -1.0;
+   if(sl > 0.0 && d * (px - sl) < MathMax(minD, frz) + pt)
+      return false;
+   if(tp > 0.0 && d * (tp - px) < MathMax(minD, frz) + pt)
+      return false;
+   return true;
+}
+
+void ManagePositions()
+{
+   if(!InpAllowManage || (!g_be_on && !g_tsl_on && !g_ttp_on))
+      return;
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return;
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0 || IsExcluded(tk))
+         continue;
+      string sym  = PositionGetString(POSITION_SYMBOL);
+      long   type = PositionGetInteger(POSITION_TYPE);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   = PositionGetDouble(POSITION_SL);
+      double tp   = PositionGetDouble(POSITION_TP);
+      double R    = InitialRisk(tk, open, sl);
+      if(R <= 0.0)
+         continue;               // no stop loss was ever set, so there is no 1R to work from
+      double dir = (type == POSITION_TYPE_BUY) ? 1.0 : -1.0;
+      double px  = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
+      if(px <= 0.0)
+         continue;
+      int    dg      = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      double profitR = dir * (px - open) / R;
+      double newSL   = sl;
+      double newTP   = tp;
+      string what    = "";
+
+      if(g_be_on && profitR >= g_be_trigger)
+      {
+         double be = open + dir * g_be_offset * R;
+         if(sl <= 0.0 || dir * (be - newSL) > 0.0)
+         {
+            newSL = be;
+            what  = "breakeven";
+         }
+      }
+      if(g_tsl_on && profitR >= g_tsl_start)
+      {
+         double t = px - dir * g_tsl_dist * R;
+         if((newSL <= 0.0 || dir * (t - newSL) >= 0.05 * R))   // only forward, in steps of at least 0.05R
+         {
+            newSL = t;
+            what  = "trailing stop";
+         }
+      }
+      bool protectedPos = (newSL > 0.0) && (dir * (newSL - open) >= 0.0);
+      if(g_ttp_on && tp > 0.0 && protectedPos && dir * (tp - px) <= g_ttp_near * R)
+      {
+         newTP = tp + dir * g_ttp_step * R;
+         what += (StringLen(what) > 0 ? " + " : "") + "take-profit";
+      }
+      newSL = NormalizeDouble(newSL, dg);
+      newTP = NormalizeDouble(newTP, dg);
+      if(newSL == NormalizeDouble(sl, dg) && newTP == NormalizeDouble(tp, dg))
+         continue;
+      if(sl > 0.0 && dir * (newSL - sl) < 0.0)
+         continue;               // never widen a stop
+      if(!StopsAllowed(sym, type, px, newSL, newTP))
+         continue;
+      g_trade.SetTypeFillingBySymbol(sym);
+      if(g_trade.PositionModify(tk, newSL, newTP) && g_trade.ResultRetcode() == TRADE_RETCODE_DONE)
+         g_mgMsg = "Auto-manage: #" + (string)tk + " " + what;
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Remote close (only when InpAllowRemoteClose is on)               |
 //+------------------------------------------------------------------+
 bool ClosePos(const ulong ticket, string &err)
@@ -436,7 +563,7 @@ void ReportResult(const long id, const bool ok, const int closed, const int fail
 
 void PollCommand()
 {
-   if(!InpAllowRemoteClose)
+   if(!InpAllowRemoteClose && !InpAllowManage)
       return;
    char data[];
    char result[];
@@ -447,6 +574,10 @@ void PollCommand()
    if(code != 200)
       return;
    string resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   if(InpAllowManage)
+      ParseManage(resp);
+   if(!InpAllowRemoteClose)
+      return;
    string cmd  = JsonGet(resp, "cmd");
    if(StringLen(cmd) == 0)
       return;
@@ -564,7 +695,7 @@ void DrawPanel()
    const int px = 10;
    const int py = 20;
    const int w  = 300;
-   int h = g_collapsed ? 34 : 166;
+   int h = g_collapsed ? 34 : 184;
 
    Rect(PFX + "bg", px, py, w, h, CLR_BG, CLR_ACCENT);
    Rect(PFX + "hdr", px + 1, py + 1, w - 2, 32, CLR_PANEL, CLR_PANEL);
@@ -580,6 +711,7 @@ void DrawPanel()
       ObjectDelete(0, PFX + "l3");
       ObjectDelete(0, PFX + "net");
       ObjectDelete(0, PFX + "cmd");
+      ObjectDelete(0, PFX + "mg");
       return;
    }
 
@@ -604,6 +736,7 @@ void DrawPanel()
    Lbl(PFX + "l2", px + 10, py + 82, g_l2, clrWhite, 9);
    Lbl(PFX + "l3", px + 10, py + 102, g_l3, sc, 9);
    Lbl(PFX + "net", px + 10, py + 126, netText, nc, 8);
+   Lbl(PFX + "mg", px + 10, py + 162, (StringLen(g_mgMsg) > 0 ? g_mgMsg : (InpAllowManage ? (g_be_on || g_tsl_on || g_ttp_on ? "Auto-manage: ON" : "Auto-manage: allowed, switched off in the app") : "Auto-manage: off")), clrSilver, 8);
    Lbl(PFX + "cmd", px + 10, py + 144, (StringLen(g_cmdMsg) > 0 ? g_cmdMsg : (InpAllowRemoteClose ? "Remote close: ON" : "Remote close: off")), clrSilver, 8);
 }
 
@@ -611,6 +744,7 @@ void DrawPanel()
 int OnInit()
 {
    g_trade.SetDeviationInPoints(200);
+   GlobalVariablesDeleteAll("TL_R_", TimeCurrent() - 30 * 86400);   // forget old positions
    g_jSince = TimeCurrent() - (datetime)(MathMax(1, InpJournalDays) * 86400);
    EventSetMillisecondTimer(3000);
    DrawPanel();
@@ -634,8 +768,9 @@ void OnTimer()
          g_lastFull = now;
          Sync();
       }
-      else if(InpAllowRemoteClose && g_net == "Connected")
+      else if((InpAllowRemoteClose || InpAllowManage) && g_net == "Connected")
          PollCommand();
+      ManagePositions();
    }
    DrawPanel();
    ChartRedraw();

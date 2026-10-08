@@ -6,3 +6,5 @@ uvicorn
 websockets
 httpx
 psycopg[binary]
+pywebpush
+cryptography

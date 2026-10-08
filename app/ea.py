@@ -27,7 +27,8 @@ EA_SCHEMA = """
     CREATE TABLE IF NOT EXISTS ea_rules(user_id INTEGER PRIMARY KEY, max_risk_pct DOUBLE PRECISION NOT NULL,
         daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_commands(id {ID}, user_id INTEGER NOT NULL,
-        kind TEXT NOT NULL, ticket BIGINT, created_at BIGINT NOT NULL, status TEXT NOT NULL, result TEXT)"""
+        kind TEXT NOT NULL, ticket BIGINT, created_at BIGINT NOT NULL, status TEXT NOT NULL, result TEXT);
+    CREATE TABLE IF NOT EXISTS ea_manage(user_id INTEGER PRIMARY KEY, settings TEXT NOT NULL)"""
 _auth_ready = False
 
 
@@ -120,7 +121,7 @@ async def report(request):
         _last_report[uid] = now
         state = {
             "account": {k: acc.get(k) for k in ("login", "server", "currency", "balance", "equity", "margin_free", "demo",
-                                           "remote_close", "server_offset")},
+                                           "remote_close", "manage_allowed", "server_offset")},
             "today": d.get("today") if isinstance(d.get("today"), dict) else {},
             "positions": [p for p in (d.get("positions") or []) if isinstance(p, dict)][:100],
         }
@@ -203,8 +204,13 @@ async def poll(request):
         if r:
             con.execute("UPDATE ea_commands SET status='sent' WHERE id=?", (r["id"],))
         con.commit()
+        m = get_manage(con, uid)
+    flat = {"be_on": "1" if m["be_on"] else "0", "be_trigger": str(m["be_trigger"]), "be_offset": str(m["be_offset"]),
+            "tsl_on": "1" if m["tsl_on"] else "0", "tsl_start": str(m["tsl_start"]), "tsl_dist": str(m["tsl_dist"]),
+            "ttp_on": "1" if m["ttp_on"] else "0", "ttp_near": str(m["ttp_near"]), "ttp_step": str(m["ttp_step"]),
+            "excluded": ",".join(str(t) for t in m["excluded"])}
     return JSONResponse({"cmd": r["kind"] if r else "", "id": r["id"] if r else 0,
-                         "ticket": (r["ticket"] or 0) if r else 0})
+                         "ticket": (r["ticket"] or 0) if r else 0, **flat})
 
 
 async def result(request):
@@ -221,6 +227,71 @@ async def result(request):
                     ("done" if d.get("ok") else "failed", res, cid, uid))
         con.commit()
     return JSONResponse({"ok": True})
+
+
+MANAGE_DEFAULT = {"be_on": False, "be_trigger": 1.0, "be_offset": 0.1,
+                  "tsl_on": False, "tsl_start": 1.5, "tsl_dist": 1.0,
+                  "ttp_on": False, "ttp_near": 0.3, "ttp_step": 1.0, "excluded": []}
+MANAGE_RANGES = {"be_trigger": (0.3, 3.0), "be_offset": (0.0, 0.5), "tsl_start": (0.5, 5.0), "tsl_dist": (0.3, 3.0),
+                 "ttp_near": (0.1, 1.5), "ttp_step": (0.3, 3.0)}
+
+
+def get_manage(con, uid) -> dict:
+    r = con.execute("SELECT settings FROM ea_manage WHERE user_id=?", (uid,)).fetchone()
+    return {**MANAGE_DEFAULT, **(json.loads(r["settings"]) if r else {})}
+
+
+def _save_manage(con, uid, s):
+    con.execute("INSERT INTO ea_manage(user_id,settings) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET settings=excluded.settings",
+                (uid, json.dumps(s)))
+    con.commit()
+
+
+async def manage_get(request):
+    u = auth.require_user(request)
+    with closing(db()) as con:
+        return JSONResponse(get_manage(con, u["id"]))
+
+
+async def manage_save(request):
+    """Switches and distances for breakeven, trailing stop and trailing take-profit. Distances are in R, where
+    1R is the original stop distance of the position."""
+    u = auth.require_user(request)
+    d = await auth._json(request)
+    with closing(db()) as con:
+        s = get_manage(con, u["id"])
+        for k in ("be_on", "tsl_on", "ttp_on"):
+            if k in d:
+                if not isinstance(d[k], bool):
+                    raise HTTPException(422, f"{k} must be true or false")
+                s[k] = d[k]
+        for k, (lo, hi) in MANAGE_RANGES.items():
+            if k in d:
+                v = _f(d[k], None)
+                if v is None or not lo <= v <= hi:
+                    raise HTTPException(422, f"{k} must be between {lo:g} and {hi:g}")
+                s[k] = v
+        if s["tsl_dist"] > s["tsl_start"]:
+            raise HTTPException(422, "The trailing distance cannot be larger than the profit needed to start trailing")
+        _save_manage(con, u["id"], s)
+    return JSONResponse(s)
+
+
+async def manage_exclude(request):
+    """Switch auto-manage off (or on) for one open position."""
+    u = auth.require_user(request)
+    d = await auth._json(request)
+    try:
+        ticket = int(d.get("ticket"))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "ticket must be a number")
+    with closing(db()) as con:
+        s = get_manage(con, u["id"])
+        ex = {int(t) for t in s["excluded"]}
+        (ex.add if d.get("excluded") else ex.discard)(ticket)
+        s["excluded"] = sorted(ex)[-200:]
+        _save_manage(con, u["id"], s)
+    return JSONResponse(s)
 
 
 async def key_create(request):
@@ -248,16 +319,18 @@ async def status(request):
         k = con.execute("SELECT last_seen FROM ea_keys WHERE user_id=?", (u["id"],)).fetchone()
         s = con.execute("SELECT state, updated_at FROM ea_state WHERE user_id=?", (u["id"],)).fetchone()
         rules = get_rules(con, u["id"])
+        mg = get_manage(con, u["id"])
         cmd = con.execute("SELECT id,kind,ticket,status,result,created_at FROM ea_commands WHERE user_id=? "
                           "ORDER BY id DESC LIMIT 1", (u["id"],)).fetchone()
     now = time.time()
     seen = k["last_seen"] if k else None
     out = {"has_key": bool(k), "connected": bool(seen and now - seen < 120),
-           "last_seen_ago": int(now - seen) if seen else None, "rules": rules}
+           "last_seen_ago": int(now - seen) if seen else None, "rules": rules, "manage": mg}
     if s:
         st = json.loads(s["state"])
         out.update(account=st["account"], today=st["today"], positions=st["positions"], check=risk_check(st, rules))
         out["can_close"] = bool(out["connected"] and st["account"].get("remote_close"))
+        out["can_manage"] = bool(out["connected"] and st["account"].get("manage_allowed"))
     if cmd and now - cmd["created_at"] < 600:
         stat = cmd["status"]
         if stat == "pending" and now - cmd["created_at"] > CMD_TTL:
@@ -302,5 +375,8 @@ routes = [
     Route("/api/ea/key", key_revoke, methods=["DELETE"]),
     Route("/api/ea/status", status, methods=["GET"]),
     Route("/api/ea/rules", rules_save, methods=["POST"]),
+    Route("/api/ea/manage", manage_get, methods=["GET"]),
+    Route("/api/ea/manage", manage_save, methods=["POST"]),
+    Route("/api/ea/manage/exclude", manage_exclude, methods=["POST"]),
     Route("/api/ea/specs", specs, methods=["GET"]),
 ]
