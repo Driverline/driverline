@@ -32,7 +32,8 @@ function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||
 async function api(path,method,body){
   const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
-let filter='all',state=null,hasEA=false;
+let filter='all',state=null,hasEA=false,ea={},specs=[],execMsg={};
+const norm=s=>String(s).toLowerCase().replace(/index/g,'').replace(/[^a-z0-9]/g,'');
 
 function ago(t){const m=Math.max(0,Math.round((Date.now()/1000-t)/60));return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'}
 function left(t){const m=Math.round((t-Date.now()/1000)/60);return m>0?'Valid for about '+m+' more minutes':''}
@@ -81,11 +82,54 @@ function card(s){
     if(s.risk_notes)c.append(el('div','mut','Risk notes: '+s.risk_notes+'.'));
     if(s.status==='open'){
       c.append(el('div','warn','Set the stop when you enter. Track and close your trades; never leave them unattended.'));
+      if(state.paid)c.append(execBlock(s));
       const row=el('div','btns');row.append(copyBtn(s.name+' '+s.direction+' SL '+s.stop.toFixed(2)+' TP '+s.target.toFixed(2)));
       const lg=el('button','ghost','Log / size it');lg.onclick=()=>{try{localStorage.setItem('dl_last',JSON.stringify({key:s.instrument,direction:s.direction,entry:s.entry,stop:s.stop,target:s.target}))}catch(e){}location.href='/risk.html'};row.append(lg);c.append(row);
     }
   }
   return c;
+}
+function specFor(s){return specs.find(x=>norm(x.symbol)===norm(s.name))||null}
+function riskText(s,lots){
+  const sp=specFor(s);if(!sp)return '';
+  const unit=(sp.tick_size>0&&sp.tick_value>0)?sp.tick_value/sp.tick_size:(sp.contract_size||0);
+  const l=lots>0?lots:sp.vol_min;if(!(unit>0&&l>0))return '';
+  const money=l*Math.abs(s.entry-s.stop)*unit,bal=ea.account&&ea.account.balance;
+  return {text:'Estimated risk: about '+money.toFixed(2)+(bal>0?' ('+(money/bal*100).toFixed(2)+'% of your balance)':'')+'. This is an estimate.',money,pct:bal>0?money/bal*100:null,lots:l};
+}
+function execBlock(s){
+  const b=el('div');b.style.cssText='margin-top:12px;border-top:1px solid var(--line);padding-top:10px';
+  b.append(el('h2','','Open this trade in MT5'));
+  if(!ea.connected){const a=el('a','','Connect your MT5 to open trades from here');a.href='/mt5.html';a.style.color='var(--gold2)';b.append(a);return b}
+  if(!ea.can_execute){b.append(el('div','mut','Switch on AllowExecute in the EA settings in MT5 to open trades from here.'));return b}
+  const sp=specFor(s);
+  const lot=document.createElement('input');lot.type='number';lot.step='any';lot.min='0';lot.inputMode='decimal';
+  lot.placeholder='Lot size'+(sp&&sp.vol_min?' (empty = minimum '+sp.vol_min+')':' (empty = minimum lot)');
+  const info=el('div','mut');const upd=()=>{const r=riskText(s,Number(lot.value));info.textContent=r?r.text:''};lot.oninput=upd;upd();
+  const go=el('button','','Open trade in MT5');go.style.marginTop='8px';
+  const out=el('div',execMsg[s.id]&&execMsg[s.id].ok?'win':'err',execMsg[s.id]?execMsg[s.id].text:'');
+  go.onclick=async()=>{
+    const lots=lot.value===''?null:Number(lot.value),r=riskText(s,lots||0);
+    let q='Open a REAL trade in your MT5 now?\n\n'+s.name+' '+s.direction+'\nLot size: '+(lots?lots:(r&&r.lots?r.lots+' (the minimum lot)':'the minimum lot'))+
+      '\nStop loss and take profit are attached, set from the price at the moment the order is placed (about '+s.stop.toFixed(2)+' and '+s.target.toFixed(2)+').'+
+      (r&&r.text?'\n'+r.text:'')+'\n\nYou are placing this order yourself. You can close or adjust it at any time.';
+    if(!confirm(q))return;
+    if(r&&r.pct!==null&&ea.rules&&r.pct>ea.rules.max_risk_pct&&!confirm('WARNING: this risks about '+r.pct.toFixed(2)+'% of your balance, more than the '+ea.rules.max_risk_pct+'% you set as your own limit.\n\nPlace it anyway?'))return;
+    go.disabled=true;out.className='mut';out.textContent='Sending to your MT5...';
+    try{
+      const r2=await api('/api/signals/'+s.id+'/execute','POST',{lots});
+      for(let i=0;i<20;i++){
+        await new Promise(r=>setTimeout(r,1500));
+        const st=await api('/api/ea/status'),cm=st.command;
+        if(cm&&cm.id===r2.command_id&&!['pending','sent'].includes(cm.status)){
+          const ok=cm.status==='done';execMsg[s.id]={ok,text:(cm.result&&cm.result.message)||(ok?'Done.':'Your EA did not confirm. Check MT5.')};break}
+      }
+      if(!execMsg[s.id])execMsg[s.id]={ok:false,text:'No reply from your EA yet. Check MT5 before trying again.'};
+    }catch(e){execMsg[s.id]={ok:false,text:e.message}}
+    out.className=execMsg[s.id].ok?'win':'err';out.textContent=execMsg[s.id].text;go.disabled=false;
+  };
+  b.append(lot,info,go,out,el('div','mut','You decide to take each trade. TradeLens only passes your click to your own MT5. Manage open trades in the MT5 tab.'));
+  return b;
 }
 function renderList(){
   const l=$('list');l.textContent='';
@@ -141,7 +185,7 @@ async function renderNotif(){
 async function load(){
   try{
     state=await api('/api/signals');
-    try{const s=await api('/api/ea/status');hasEA=!!s.connected}catch(e){}
+    try{const s=await api('/api/ea/status');hasEA=!!s.connected;ea=s;if(!specs.length)specs=await api('/api/ea/specs')}catch(e){ea={}}
     renderBudget(state.budget,state.paid);renderAdvice();renderChips();renderList();
   }catch(e){$('budget').textContent=e.message}
 }

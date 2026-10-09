@@ -27,9 +27,14 @@ EA_SCHEMA = """
     CREATE TABLE IF NOT EXISTS ea_rules(user_id INTEGER PRIMARY KEY, max_risk_pct DOUBLE PRECISION NOT NULL,
         daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_commands(id {ID}, user_id INTEGER NOT NULL,
-        kind TEXT NOT NULL, ticket BIGINT, created_at BIGINT NOT NULL, status TEXT NOT NULL, result TEXT);
+        kind TEXT NOT NULL, ticket BIGINT, created_at BIGINT NOT NULL, status TEXT NOT NULL, result TEXT, payload TEXT);
     CREATE TABLE IF NOT EXISTS ea_manage(user_id INTEGER PRIMARY KEY, settings TEXT NOT NULL)"""
 _auth_ready = False
+OPEN_TTL = 20   # seconds an 'open trade' request stays valid, so a stale order can never fire later
+
+
+def _migrate(con):
+    con.add_column("ea_commands", "payload", "TEXT")
 
 
 def db():
@@ -37,7 +42,7 @@ def db():
     if not _auth_ready:  # the users table must exist before keys are joined to it
         auth.db().close()
         _auth_ready = True
-    return dbx.connect("ea", EA_SCHEMA)
+    return dbx.connect("ea", EA_SCHEMA, _migrate)
 
 
 def _hash(k: str) -> str:
@@ -121,7 +126,7 @@ async def report(request):
         _last_report[uid] = now
         state = {
             "account": {k: acc.get(k) for k in ("login", "server", "currency", "balance", "equity", "margin_free", "demo",
-                                           "remote_close", "manage_allowed", "server_offset")},
+                                           "remote_close", "manage_allowed", "execute_allowed", "server_offset")},
             "today": d.get("today") if isinstance(d.get("today"), dict) else {},
             "positions": [p for p in (d.get("positions") or []) if isinstance(p, dict)][:100],
         }
@@ -199,7 +204,9 @@ async def poll(request):
         con.execute("UPDATE ea_keys SET last_seen=? WHERE user_id=?", (int(now), uid))
         con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",
                     (uid, int(now) - CMD_TTL))
-        r = con.execute("SELECT id,kind,ticket FROM ea_commands WHERE user_id=? AND status='pending' "
+        con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND kind='open' "
+                    "AND created_at<?", (uid, int(now) - OPEN_TTL))
+        r = con.execute("SELECT id,kind,ticket,payload FROM ea_commands WHERE user_id=? AND status='pending' "
                         "ORDER BY id LIMIT 1", (uid,)).fetchone()
         if r:
             con.execute("UPDATE ea_commands SET status='sent' WHERE id=?", (r["id"],))
@@ -209,6 +216,10 @@ async def poll(request):
             "tsl_on": "1" if m["tsl_on"] else "0", "tsl_start": str(m["tsl_start"]), "tsl_dist": str(m["tsl_dist"]),
             "ttp_on": "1" if m["ttp_on"] else "0", "ttp_near": str(m["ttp_near"]), "ttp_step": str(m["ttp_step"]),
             "excluded": ",".join(str(t) for t in m["excluded"])}
+    if r and r["kind"] == "open" and r["payload"]:
+        p = json.loads(r["payload"])
+        flat.update(sym=p["symbol"], dir=p["dir"], lots=str(p["lots"]), sl_dist=str(p["sl_dist"]),
+                    tp_dist=str(p["tp_dist"]), ref=str(p["ref"]), maxdev=str(p["maxdev"]), cmt=p["comment"])
     return JSONResponse({"cmd": r["kind"] if r else "", "id": r["id"] if r else 0,
                          "ticket": (r["ticket"] or 0) if r else 0, **flat})
 
@@ -294,6 +305,20 @@ async def manage_exclude(request):
     return JSONResponse(s)
 
 
+def queue_open(con, uid: int, payload: dict) -> int:
+    """Queue ONE 'open trade' request for this member's EA. Called only after the member clicked the button."""
+    now = int(time.time())
+    con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",
+                (uid, now - CMD_TTL))
+    if con.execute("SELECT 1 FROM ea_commands WHERE user_id=? AND status IN ('pending','sent') AND created_at>?",
+                   (uid, now - CMD_TTL)).fetchone():
+        raise HTTPException(409, "Another request is still in progress. Wait a moment and try again.")
+    cid = con.insert("INSERT INTO ea_commands(user_id,kind,ticket,created_at,status,payload) VALUES(?,?,?,?,'pending',?)",
+                     (uid, "open", None, now, json.dumps(payload)))
+    con.commit()
+    return cid
+
+
 async def key_create(request):
     u = auth.require_user(request)
     raw = "dlk_" + secrets.token_urlsafe(24)
@@ -331,6 +356,7 @@ async def status(request):
         out.update(account=st["account"], today=st["today"], positions=st["positions"], check=risk_check(st, rules))
         out["can_close"] = bool(out["connected"] and st["account"].get("remote_close"))
         out["can_manage"] = bool(out["connected"] and st["account"].get("manage_allowed"))
+        out["can_execute"] = bool(out["connected"] and st["account"].get("execute_allowed"))
     if cmd and now - cmd["created_at"] < 600:
         stat = cmd["status"]
         if stat == "pending" and now - cmd["created_at"] > CMD_TTL:

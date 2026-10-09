@@ -3,15 +3,17 @@
 //| Companion for TradeLens.                                        |
 //| Sends account state, open positions, closed trades and contract  |
 //| specs to your TradeLens app and shows a risk panel on the chart.|
-//| It NEVER opens a trade. It can CLOSE positions, but only when    |
-//| InpAllowRemoteClose is on AND the account owner clicks Close in  |
-//| the TradeLens app. With InpAllowManage on it can also move a     |
+//| It NEVER opens a trade on its own. It opens one only when        |
+//| InpAllowExecute is on AND the account owner clicks Open trade in |
+//| the TradeLens app. It can CLOSE positions, but only when         |
+//| InpAllowRemoteClose is on AND the owner clicks Close. With       |
+//| InpAllowManage on it can also move a                             |
 //| position's stop and take-profit (breakeven, trailing) using the  |
 //| settings chosen in the app. It never widens a stop.              |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.20"
-#property description "Syncs account state to TradeLens. Never opens trades. Closes positions only on request."
+#property version     "1.30"
+#property description "Syncs account state to TradeLens. Opens or closes a trade only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
 
@@ -21,6 +23,8 @@ input int    InpIntervalSec = 15;                                // Seconds betw
 input bool   InpShowPanel   = true;                              // Show the on-chart panel
 input bool   InpSyncJournal = true;                              // Send closed trades to your TradeLens journal
 input int    InpJournalDays = 7;                                 // How many days of closed trades to send at start
+input bool   InpAllowExecute = false;                            // Allow OPENING a trade when you click "Open trade" in the app (stop and target are always attached)
+input double InpMaxLotsPerTrade = 0.0;                           // Extra safety: refuse orders above this lot size (0 = only the broker's own maximum)
 input bool   InpAllowManage = false;                              // Allow auto-manage: breakeven, trailing stop and trailing take-profit chosen in the app (never widens a stop)
 input bool   InpAllowRemoteClose = false;                        // Allow CLOSING positions from the TradeLens app (never opens trades)
 
@@ -353,6 +357,7 @@ bool Sync()
       + ",\"demo\":" + (demo ? "true" : "false")
       + ",\"remote_close\":" + (InpAllowRemoteClose ? "true" : "false")
       + ",\"manage_allowed\":" + (InpAllowManage ? "true" : "false")
+      + ",\"execute_allowed\":" + (InpAllowExecute ? "true" : "false")
       + ",\"server_offset\":" + (string)((int)MathRound((double)(TimeCurrent() - TimeGMT()) / 900.0) * 900) + "}"
       + ",\"today\":{\"closed_pnl\":" + DoubleToString(closedPnl, 2) + ",\"trades\":" + (string)closedCnt + "}"
       + ",\"positions\":[" + pos + "]";
@@ -561,9 +566,70 @@ void ReportResult(const long id, const bool ok, const int closed, const int fail
    WebRequest("POST", BaseUrl() + "/api/ea/result", headers, 5000, data, result, rh);
 }
 
+// Places ONE order that the member asked for with a click. Returns the message to show; ok tells if it worked.
+string OpenTrade(const string sym, const string dirS, const double reqLots, const double slDist, const double tpDist,
+                 const double ref, const double maxDev, const string cmt, bool &ok)
+{
+   ok = false;
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return "Turn on Algo Trading in MT5";
+   if(StringLen(sym) == 0 || slDist <= 0.0 || tpDist <= 0.0 || (dirS != "BUY" && dirS != "SELL"))
+      return "Incomplete order request";
+   if(!SymbolSelect(sym, true))
+      return sym + " is not available in your MT5";
+   if(SymbolInfoInteger(sym, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_FULL)
+      return "Trading is not allowed on " + sym + " right now";
+   bool   buy   = (dirS == "BUY");
+   double price = buy ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
+   if(price <= 0.0)
+      return "No price for " + sym + " right now";
+   if(maxDev > 0.0 && MathAbs(price - ref) > maxDev)
+      return "Price moved too far from the setup. Check the chart before trading.";
+
+   double vmin  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double vstep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   double vmax  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   int    ld    = 0;
+   for(double st = vstep; st < 1.0 - 1e-9 && ld < 8; st *= 10.0)
+      ld++;
+   double lots = reqLots;
+   if(lots <= 0.0)
+      lots = vmin;                 // no lot size entered: the smallest lot this symbol allows
+   else
+   {
+      if(lots < vmin - 1e-9)
+         return "Lot size is below the minimum of " + DoubleToString(vmin, ld) + " for " + sym;
+      lots = MathFloor(lots / vstep + 1e-9) * vstep;
+   }
+   lots = NormalizeDouble(lots, ld);
+   if(lots > vmax + 1e-9)
+      return "Lot size is above the maximum of " + DoubleToString(vmax, ld);
+   if(InpMaxLotsPerTrade > 0.0 && lots > InpMaxLotsPerTrade + 1e-9)
+      return "Lot size is above the limit you set in the EA (" + DoubleToString(InpMaxLotsPerTrade, ld) + ")";
+   ENUM_ORDER_TYPE ot = buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double margin = 0.0;
+   if(OrderCalcMargin(ot, sym, lots, price, margin) && margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+      return "Not enough free margin for this lot size";
+
+   int    dg = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double sl = NormalizeDouble(buy ? price - slDist : price + slDist, dg);
+   double tp = NormalizeDouble(buy ? price + tpDist : price - tpDist, dg);
+   if(!StopsAllowed(sym, buy ? (long)POSITION_TYPE_BUY : (long)POSITION_TYPE_SELL, price, sl, tp))
+      return "The stop or target is too close for this broker's rules";
+
+   g_trade.SetExpertMagicNumber(26101);
+   g_trade.SetTypeFillingBySymbol(sym);
+   bool sent = buy ? g_trade.Buy(lots, sym, 0.0, sl, tp, cmt) : g_trade.Sell(lots, sym, 0.0, sl, tp, cmt);
+   if(!sent || g_trade.ResultRetcode() != TRADE_RETCODE_DONE)
+      return "Broker refused: " + g_trade.ResultRetcodeDescription();
+   ok = true;
+   return "Opened " + dirS + " " + DoubleToString(lots, ld) + " " + sym + " at " + DoubleToString(g_trade.ResultPrice(), dg)
+        + ", stop " + DoubleToString(sl, dg) + ", target " + DoubleToString(tp, dg);
+}
+
 void PollCommand()
 {
-   if(!InpAllowRemoteClose && !InpAllowManage)
+   if(!InpAllowRemoteClose && !InpAllowManage && !InpAllowExecute)
       return;
    char data[];
    char result[];
@@ -576,12 +642,32 @@ void PollCommand()
    string resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
    if(InpAllowManage)
       ParseManage(resp);
-   if(!InpAllowRemoteClose)
-      return;
    string cmd  = JsonGet(resp, "cmd");
    if(StringLen(cmd) == 0)
       return;
    long id     = JsonGetNum(resp, "id");
+   if(cmd == "open")
+   {
+      if(!InpAllowExecute)
+      {
+         ReportResult(id, false, 0, 1, "AllowExecute is switched off in the EA settings");
+         return;
+      }
+      bool   okOpen = false;
+      string msgOpen = OpenTrade(JsonGet(resp, "sym"), JsonGet(resp, "dir"), StringToDouble(JsonGet(resp, "lots")),
+                                 StringToDouble(JsonGet(resp, "sl_dist")), StringToDouble(JsonGet(resp, "tp_dist")),
+                                 StringToDouble(JsonGet(resp, "ref")), StringToDouble(JsonGet(resp, "maxdev")),
+                                 JsonGet(resp, "cmt"), okOpen);
+      g_cmdMsg = (okOpen ? "Opened from app: " : "Open refused: ") + msgOpen;
+      ReportResult(id, okOpen, 0, okOpen ? 0 : 1, msgOpen);
+      g_lastFull = 0;
+      return;
+   }
+   if(!InpAllowRemoteClose)
+   {
+      ReportResult(id, false, 0, 1, "AllowRemoteClose is switched off in the EA settings");
+      return;
+   }
    long ticket = JsonGetNum(resp, "ticket");
 
    int    closed = 0;
@@ -695,7 +781,7 @@ void DrawPanel()
    const int px = 10;
    const int py = 20;
    const int w  = 300;
-   int h = g_collapsed ? 34 : 184;
+   int h = g_collapsed ? 34 : 200;
 
    Rect(PFX + "bg", px, py, w, h, CLR_BG, CLR_ACCENT);
    Rect(PFX + "hdr", px + 1, py + 1, w - 2, 32, CLR_PANEL, CLR_PANEL);
@@ -712,6 +798,7 @@ void DrawPanel()
       ObjectDelete(0, PFX + "net");
       ObjectDelete(0, PFX + "cmd");
       ObjectDelete(0, PFX + "mg");
+      ObjectDelete(0, PFX + "ex");
       return;
    }
 
@@ -736,6 +823,7 @@ void DrawPanel()
    Lbl(PFX + "l2", px + 10, py + 82, g_l2, clrWhite, 9);
    Lbl(PFX + "l3", px + 10, py + 102, g_l3, sc, 9);
    Lbl(PFX + "net", px + 10, py + 126, netText, nc, 8);
+   Lbl(PFX + "ex", px + 10, py + 180, (InpAllowExecute ? "Open trade from app: ON" : "Open trade from app: off"), clrSilver, 8);
    Lbl(PFX + "mg", px + 10, py + 162, (StringLen(g_mgMsg) > 0 ? g_mgMsg : (InpAllowManage ? (g_be_on || g_tsl_on || g_ttp_on ? "Auto-manage: ON" : "Auto-manage: allowed, switched off in the app") : "Auto-manage: off")), clrSilver, 8);
    Lbl(PFX + "cmd", px + 10, py + 144, (StringLen(g_cmdMsg) > 0 ? g_cmdMsg : (InpAllowRemoteClose ? "Remote close: ON" : "Remote close: off")), clrSilver, 8);
 }
@@ -768,7 +856,7 @@ void OnTimer()
          g_lastFull = now;
          Sync();
       }
-      else if((InpAllowRemoteClose || InpAllowManage) && g_net == "Connected")
+      else if((InpAllowRemoteClose || InpAllowManage || InpAllowExecute) && g_net == "Connected")
          PollCommand();
       ManagePositions();
    }

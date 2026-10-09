@@ -16,11 +16,11 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import auth, dbx, radar
+from . import auth, dbx, journal, radar
 from . import signals as S
 from .config import INSTRUMENTS
 
-CFG = {"min_publish_t": -1.0, "fallback_rr": 1.5, "limit_default": 5, "limit_max": 10, "scan_seconds": 300,
+CFG = {"exec_max_dev_r": 0.5, "min_publish_t": -1.0, "fallback_rr": 1.5, "limit_default": 5, "limit_max": 10, "scan_seconds": 300,
        "view_hours": 12, "min_pooled_n": 300}
 try:
     radar._merge(CFG, json.loads(__import__("os").environ.get("DRIVERLINE_FEED_CONFIG", "{}")))
@@ -286,6 +286,60 @@ async def open_signal(request):
     return JSONResponse(out)
 
 
+async def execute_signal(request):
+    """The member clicked "Open trade". Queues one order for THEIR OWN EA, with the stop and target attached.
+    Lot size 0 or empty means the symbol's minimum lot, which the EA looks up."""
+    from . import ea
+    user, sid = auth.require_user(request), request.path_params["sid"]
+    if not paid(user):
+        raise HTTPException(403, "Opening trades from the app is for paid members with MT5 connected")
+    d = await _json(request)
+    raw = d.get("lots")
+    try:
+        lots = 0.0 if raw in (None, "", 0, "0") else float(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(422, "Enter the lot size as a number, or leave it empty for the minimum lot")
+    if lots < 0 or lots > 1000 or lots != lots:
+        raise HTTPException(422, "That lot size is not valid")
+    now = int(time.time())
+    with closing(db()) as con:
+        sig = con.execute("SELECT * FROM signals WHERE id=?", (sid,)).fetchone()
+        if not sig:
+            raise HTTPException(404, "Signal not found")
+        if not con.execute("SELECT 1 FROM signal_opens WHERE user_id=? AND signal_id=?", (user["id"], sid)).fetchone():
+            raise HTTPException(403, "Open the setup first. That is what counts it towards your daily limit.")
+        if sig["status"] != "open" or now > sig["expires_at"]:
+            raise HTTPException(409, "This setup is no longer fresh enough to trade.")
+        with closing(ea.db()) as ec:
+            k = ec.execute("SELECT last_seen FROM ea_keys WHERE user_id=?", (user["id"],)).fetchone()
+            s = ec.execute("SELECT state, specs FROM ea_state WHERE user_id=?", (user["id"],)).fetchone()
+            if not (k and k["last_seen"] and now - k["last_seen"] < 120 and s):
+                raise HTTPException(409, "Your MT5 is not connected right now.")
+            state = json.loads(s["state"])
+            if not state["account"].get("execute_allowed"):
+                raise HTTPException(409, "Switch on AllowExecute in the EA settings in MT5 to open trades from the app.")
+            rules = ea.get_rules(ec, user["id"])
+            if ea.risk_check(state, rules)["status"] == "STOP":
+                raise HTTPException(409, f"You reached your own daily loss limit of {rules['daily_loss_pct']:g}%. Opening trades is paused for today.")
+            if len(state["positions"]) >= rules["max_positions"]:
+                raise HTTPException(409, f"You already have {len(state['positions'])} open positions, your own maximum.")
+            name = INSTRUMENTS.get(sig["instrument"], ("", sig["instrument"]))[1]
+            want = journal._norm(name)
+            symbol = next((x["symbol"] for x in json.loads(s["specs"] or "[]") if journal._norm(x["symbol"]) == want), None)
+            if not symbol:
+                raise HTTPException(409, f"{name} was not found in your MT5 Market Watch. Add it there first.")
+            for r in ec.execute("SELECT payload FROM ea_commands WHERE user_id=? AND kind='open' AND status IN "
+                                "('pending','sent','done') AND created_at>?", (user["id"], now - 6 * 3600)).fetchall():
+                if r["payload"] and json.loads(r["payload"]).get("signal_id") == sid:
+                    raise HTTPException(409, "You already sent this setup to MT5.")
+            sd = abs(sig["entry"] - sig["stop"])
+            cid = ea.queue_open(ec, user["id"], {
+                "symbol": symbol, "dir": "BUY" if sig["direction"] > 0 else "SELL", "lots": lots, "sl_dist": sd,
+                "tp_dist": abs(sig["target"] - sig["entry"]), "ref": sig["entry"], "maxdev": CFG["exec_max_dev_r"] * sd,
+                "signal_id": sid, "comment": f"TL-{sid}"})
+    return JSONResponse({"command_id": cid, "symbol": symbol})
+
+
 async def set_limit(request):
     user = auth.require_user(request)
     if not paid(user):
@@ -359,4 +413,5 @@ routes = [
     Route("/api/signals/limit", set_limit, methods=["POST"]),
     Route("/api/signals/notify", notify_prefs, methods=["GET", "POST"]),
     Route("/api/signals/{sid:int}/open", open_signal, methods=["POST"]),
+    Route("/api/signals/{sid:int}/execute", execute_signal, methods=["POST"]),
 ]

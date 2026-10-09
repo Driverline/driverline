@@ -16,7 +16,7 @@
 <div class="card"><h2>Connection</h2><div id="conn"><span class="mut">Loading...</span></div></div>
 
 <div class="card"><h2>Connect your MT5</h2>
-<div class="mut">1. Create a key. 2. Put the TradeLens EA on a chart in MT5 on a PC or VPS. 3. Paste your TradeLens address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA never opens trades. It closes or adjusts trades only if you switch those options on in its settings.</div>
+<div class="mut">1. Create a key. 2. Put the TradeLens EA on a chart in MT5 on a PC or VPS. 3. Paste your TradeLens address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA never opens a trade on its own. It opens, closes or adjusts a trade only when you click a button in the app and have allowed that in its settings.</div>
 <div class="btns"><button id="mk">Create or replace key</button><button id="rv" class="ghost">Revoke</button></div>
 <div id="keybox" style="margin-top:10px"></div>
 <div class="mut" style="margin-top:8px">Your TradeLens address: <b id="addr"></b></div></div>
@@ -82,7 +82,7 @@ async function load(){
     else if(n&&s.connected)p.append(el('div','mut','Closing from the app is off. Turn on AllowRemoteClose in the EA inputs.'));
     const cm=s.command;
     if(cm){const r=cm.result;p.append(el('div',cm.status==='done'?'win':(cm.status==='sent'||cm.status==='pending'?'mut':'warn'),
-      (cm.kind==='close_all'?'Close all':'Close '+cm.ticket)+': '+cm.status+(r?' ('+r.closed+' closed'+(r.failed?', '+r.failed+' failed':'')+(r.message?': '+r.message:'')+')':'')))}
+      (cm.kind==='close_all'?'Close all':cm.kind==='open'?'Open trade':'Close '+cm.ticket)+': '+cm.status+(r?' ('+r.closed+' closed'+(r.failed?', '+r.failed+' failed':'')+(r.message?': '+r.message:'')+')':'')))}
     if(!s.check)p.append(el('span','mut','Nothing yet. It fills in once the EA syncs.'));
     return s;
   }catch(e){$('conn').textContent=e.message}
