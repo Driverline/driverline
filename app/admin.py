@@ -114,7 +114,21 @@ async def backtest_status(request):
     return JSONResponse(signals.summary())
 
 
+async def research_start(request):
+    auth.require_admin(request)
+    from . import fxresearch
+    return JSONResponse({"started": fxresearch.start()})
+
+
+async def research_status(request):
+    auth.require_admin(request)
+    from . import fxresearch
+    return JSONResponse(fxresearch.summary())
+
+
 routes = [
+    Route("/api/admin/research", research_start, methods=["POST"]),
+    Route("/api/admin/research", research_status, methods=["GET"]),
     Route("/api/admin/backtest", backtest_start, methods=["POST"]),
     Route("/api/admin/backtest", backtest_status, methods=["GET"]),
     Route("/api/admin/radar", radar_info, methods=["GET"]),

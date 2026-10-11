@@ -71,12 +71,33 @@ function render(d){
     Object.entries(r).forEach(([k,x])=>vr.append(kv(k+' ('+x.code+')',x.found?'found':'NOT FOUND',x.found?'win':'loss')))}catch(e){vr.textContent=e.message}};
   v.append(vb,vr);root.append(v);
   const bt=el('div','card');bt.append(el('h2','','Signal backtest'));const bb=el('div');bt.append(bb);root.append(bt);loadBacktest(bb);
+  const rs=el('div','card');rs.append(el('h2','','Forex and gold research'));const rsb=el('div');rs.append(rsb);root.append(rs);loadResearch(rsb);
   const ri=el('div','card');ri.append(el('h2','','Smart Analysis Timing insights'));const rb=el('div');rb.append(el('span','mut','Loading...'));ri.append(rb);root.append(ri);loadRadarInfo(rb);
   if(pending){note(pending[0],pending[1]);pending=null}
 }
 const STY={scalp:'Scalp (M5)',day:'Day (M15)',swing:'Swing (H1)'},SET={ema_pullback:'EMA pullback',squeeze_breakout:'Squeeze breakout',range_breakout:'20-bar breakout',range_reversal:'Range reversal'};
 const pct=x=>Math.round(x*100)+'%',sg=x=>(x>=0?'+':'')+x.toFixed(2);
-let btTimer=null;
+let rsTimer=null;
+async function loadResearch(box){
+  try{
+    const r=await api('/research');box.textContent='';const st=r.state;
+    const run=el('button','',st.running?'Running...':'Run forex and gold research');run.disabled=st.running;
+    run.onclick=async()=>{if(!confirm('Test the forex and gold strategies on years of Deriv history? This takes several minutes.'))return;
+      try{await api('/research','POST');loadResearch(box)}catch(e){alert(e.message)}};
+    box.append(el('div','mut','Tests seven fixed strategies built for forex and gold, with spread costs, a held-out later period and a wider-spread stress test. Nothing here is shown to members.'),run);
+    if(st.running)box.append(el('div','mut','Progress: '+st.done+' of '+st.total+' symbols'+(st.current?' ('+st.current+')':'')+'...'));
+    if(st.error)box.append(el('div','err',st.error));
+    clearTimeout(rsTimer);if(st.running)rsTimer=setTimeout(()=>loadResearch(box),5000);
+    const x=r.result;if(!x){box.append(el('div','mut','No results yet.'));return}
+    box.append(el('h2','',x.tested+' combinations tested, '+x.passed+' passed every check'));
+    box.append(el('div','mut','On random data with no edge, about 1 full run in 30 still shows a false pass. A pass is a candidate to confirm, not proof.'));
+    const nm=g=>g==='metal'?'Gold':'Forex',f=v=>v===null||v===undefined?'-':sg(v);
+    x.rows.slice(0,14).forEach(w=>{
+      const d=el('div',w.passed?'win':'mut',(w.passed?'PASS \u00b7 ':'')+w.label+' \u00b7 '+nm(w.group)+' \u00b7 '+w.rr+'R: '+w.n+' trades, average '+f(w.avg_r)+'R (t='+(w.t===null?'-':w.t)+'), first 60% '+f(w.train_avg)+', last 40% '+f(w.test_avg)+', wider spread '+f(w.stress_avg)+(w.group==='forex'?', positive on '+w.pairs_positive+' of '+w.pairs+' pairs':'')+(w.passed?'':'. Fails: '+w.why_not[0]));
+      d.style.marginTop='8px';box.append(d)});
+    box.append(el('div','mut','Spreads assumed (price units): '+Object.entries(x.spreads).map(([k,v])=>k+' '+v).join(', ')+'. History (H1 days): '+Object.entries(x.history).map(([k,v])=>k+' '+(v.H1?v.H1.days:'-')).join(', ')+'.'));
+  }catch(e){box.textContent=e.message}
+}
 async function loadBacktest(box){
   try{
     const r=await api('/backtest');box.textContent='';
