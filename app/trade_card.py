@@ -7,14 +7,25 @@ import httpx
 API_URL = "https://api.anthropic.com/v1/messages"
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 
-SYSTEM = """You are a market-structure education assistant for Deriv Synthetic Indices.
+_HEAD_SYNTHETIC = """You are a market-structure education assistant for Deriv Synthetic Indices.
 You receive PRE-COMPUTED indicator facts per timeframe as JSON. Interpret only those numbers.
 Never invent prices, levels or indicators that are not in the input. Synthetic indices are
 RNG-generated, so never claim a pattern is predictive; frame output as structure and risk.
 Boom, Crash and Jump indices produce sudden spikes: treat single spike candles as outliers, and
 warn that stops can be skipped by spikes.
 
-Respond with a JSON object with these fields:
+"""
+
+_HEAD_REAL = """You are a market-structure education assistant for forex and gold (XAUUSD).
+You receive PRE-COMPUTED indicator facts per timeframe as JSON. Interpret only those numbers.
+Never invent prices, levels, indicators, news or economic data that are not in the input.
+These are real markets: news releases, central-bank decisions, session opens and thin liquidity can move price
+suddenly, spreads widen at rollover and around news, and price can gap over a stop (especially at the weekly open).
+Never claim a pattern is predictive; frame output as structure and risk, and mention event risk when relevant.
+
+"""
+
+_TAIL = """Respond with a JSON object with these fields:
 {
   "headline": "one sentence summary",
   "timeframes": {"D1": "...", "H4": "...", "H1": "...", "M30": "...", "M15": "..."},
@@ -32,6 +43,9 @@ Respond with a JSON object with these fields:
 }
 Default to NO TRADE when timeframes conflict, price is mid-range, or reward:risk is below 1.5.
 Entry, stop and target must come from provided swing levels or range boundaries."""
+
+SYSTEM = _HEAD_SYNTHETIC + _TAIL
+SYSTEM_REAL = _HEAD_REAL + _TAIL
 
 REQUIRED = ["headline", "timeframes", "plain_words", "status", "why", "next_step"]
 
@@ -156,8 +170,9 @@ async def claude_json(system: str, content: str, schema: dict, max_tokens: int =
     return parse_json(text)
 
 
-async def generate_trade_card(symbol_name: str, facts: dict) -> dict:
-    card = await claude_json(SYSTEM, f"Symbol: {symbol_name}\nFacts:\n{json.dumps(facts)}", CARD_SCHEMA)
+async def generate_trade_card(symbol_name: str, facts: dict, real_market: bool = False) -> dict:
+    card = await claude_json(SYSTEM_REAL if real_market else SYSTEM,
+                             f"Symbol: {symbol_name}\nFacts:\n{json.dumps(facts)}", CARD_SCHEMA)
     if isinstance(card.get("direction"), str):
         card["direction"] = card["direction"].upper()
     return validate_card(card)

@@ -1,4 +1,5 @@
 import os
+import re
 
 # Deriv's current public market-data WebSocket (no login or app_id needed).
 # The old ws.derivws.com/websockets/v3 endpoint returned HTTP 520. Override with the
@@ -7,7 +8,7 @@ DERIV_WS_URL = os.environ.get("DERIV_WS_URL", "wss://api.derivws.com/trading/v1/
 
 # key -> (Deriv symbol code, display name). Add new instruments here.
 # Run /api/verify to confirm every code exists on your Deriv account.
-INSTRUMENTS = {
+SYNTHETIC = {
     "step":     ("stpRNG",     "Step Index"),
     "v10":      ("R_10",       "Volatility 10"),
     "v25":      ("R_25",       "Volatility 25"),
@@ -31,6 +32,48 @@ INSTRUMENTS = {
     "jump75":   ("JD75",       "Jump 75"),
     "jump100":  ("JD100",      "Jump 100"),
 }
+
+# Forex majors and gold (real markets). Analysis only for now: they are NOT scanned for live signals and NOT part
+# of the signal backtest until they have been backtested on their own with realistic costs.
+# Display names are the plain MT5 symbol names so they match the symbols in members' Market Watch.
+REAL_MARKETS = {
+    "eurusd":   ("frxEURUSD",  "EURUSD"),
+    "gbpusd":   ("frxGBPUSD",  "GBPUSD"),
+    "usdjpy":   ("frxUSDJPY",  "USDJPY"),
+    "usdchf":   ("frxUSDCHF",  "USDCHF"),
+    "audusd":   ("frxAUDUSD",  "AUDUSD"),
+    "usdcad":   ("frxUSDCAD",  "USDCAD"),
+    "nzdusd":   ("frxNZDUSD",  "NZDUSD"),
+    "xauusd":   ("frxXAUUSD",  "XAUUSD"),
+}
+INSTRUMENTS = {**SYNTHETIC, **REAL_MARKETS}
+
+
+def market(key: str) -> str:
+    """"synthetic", "forex" or "metal"."""
+    return "synthetic" if key in SYNTHETIC else ("metal" if key == "xauusd" else "forex")
+
+
+# Brokers add endings to symbol names (XAUUSDm, XAUUSDmicro, EURUSD.a, EURUSDpro ...). One instrument can therefore
+# have several MT5 symbols; match_key() maps any of them back to the instrument.
+_SUFFIXES = {"m", "micro", "mini", "pro", "raw", "ecn", "std", "c", "i", "r", "z", "a", "b", "x"}
+
+
+def _flat(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s).lower().replace("index", ""))
+
+
+def match_key(symbol: str):
+    """Instrument key for an MT5 symbol name, or None. Exact names win; broker endings are accepted for forex and gold only."""
+    s = _flat(symbol)
+    for key, (_, name) in INSTRUMENTS.items():
+        if s == _flat(name):
+            return key
+    for key, (_, name) in REAL_MARKETS.items():
+        base = _flat(name)
+        if s.startswith(base) and s[len(base):] in _SUFFIXES:
+            return key
+    return None
 
 # Timeframe label -> granularity in seconds (Deriv candle granularities)
 TIMEFRAMES = {

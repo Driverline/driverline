@@ -77,8 +77,9 @@ def range_stats(recent: list[dict], er_max: float = 0.3):
     path = sum(abs(y - x) for x, y in zip(closes, closes[1:]))
     er = abs(closes[-1] - closes[0]) / path if path else 0.0
     pos = (closes[-1] - lo) / (hi - lo) if hi > lo else 0.5
+    d = 6 if hi < 50 else 4   # forex quotes like 1.08345 need more decimals than index prices
     return {
-        "high": round(hi, 4), "low": round(lo, 4), "atr": round(atr, 4),
+        "high": round(hi, d), "low": round(lo, d), "atr": round(atr, d),
         "width_atr": round((hi - lo) / atr, 2) if atr else None,
         "efficiency": round(er, 2),
         "is_consolidating": bool(er <= er_max and 0.15 <= pos <= 0.85),
@@ -94,19 +95,20 @@ def analyze_timeframe(candles: list[dict]) -> dict:
     highs, lows = swing_points(candles)
     last_high = highs[-1][1] if highs else None
     last_low = lows[-1][1] if lows else None
+    d = 6 if price < 50 else 4
     return {
-        "price": round(price, 4),
-        "ema20": round(e20, 4), "ema50": round(e50, 4), "ema200": round(e200, 4),
+        "price": round(price, d),
+        "ema20": round(e20, d), "ema50": round(e50, d), "ema200": round(e200, d),
         "price_vs_ema50": "above" if price > e50 else "below",
         "ema_stack": ("bullish" if e20 > e50 > e200 else
                       "bearish" if e20 < e50 < e200 else "mixed"),
-        "macd_hist": round(hist[-1], 4), "macd_hist_prev": round(hist[-2], 4),
+        "macd_hist": round(hist[-1], d), "macd_hist_prev": round(hist[-2], d),
         "rsi": round(r[-1], 1) if r else None,
         "structure": classify_structure(highs, lows),
-        "last_swing_high": round(last_high, 4) if last_high else None,
-        "last_swing_low": round(last_low, 4) if last_low else None,
-        "dist_to_swing_high": round(last_high - price, 4) if last_high else None,
-        "dist_to_swing_low": round(price - last_low, 4) if last_low else None,
+        "last_swing_high": round(last_high, d) if last_high else None,
+        "last_swing_low": round(last_low, d) if last_low else None,
+        "dist_to_swing_high": round(last_high - price, d) if last_high else None,
+        "dist_to_swing_low": round(price - last_low, d) if last_low else None,
         "range": detect_range(candles),
     }
 

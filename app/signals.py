@@ -15,7 +15,7 @@ import time
 from contextlib import closing
 
 from . import dbx, radar
-from .config import INSTRUMENTS
+from .config import SYNTHETIC as INSTRUMENTS   # forex and gold are analysis-only for now
 from .indicators import ema, rsi
 
 STYLES = {

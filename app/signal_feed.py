@@ -18,7 +18,7 @@ from starlette.routing import Route
 
 from . import auth, dbx, journal, radar
 from . import signals as S
-from .config import INSTRUMENTS
+from .config import SYNTHETIC as INSTRUMENTS   # forex and gold are analysis-only for now
 
 CFG = {"exec_max_dev_r": 0.5, "min_publish_t": -1.0, "fallback_rr": 1.5, "limit_default": 5, "limit_max": 10, "scan_seconds": 300,
        "view_hours": 12, "min_pooled_n": 300}

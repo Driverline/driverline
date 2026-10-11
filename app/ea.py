@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from . import auth, dbx, journal
+from .config import match_key
 
 MAX_BODY = 300_000
 CMD_TTL = 60  # seconds a close command stays valid
@@ -389,7 +390,9 @@ async def specs(request):
     u = auth.require_user(request)
     with closing(db()) as con:
         s = con.execute("SELECT specs FROM ea_state WHERE user_id=?", (u["id"],)).fetchone()
-    return JSONResponse(json.loads(s["specs"]) if s and s["specs"] else [])
+    rows = json.loads(s["specs"]) if s and s["specs"] else []
+    # "key" tells the pages which TradeLens instrument a broker symbol (XAUUSDm, XAUUSDmicro ...) belongs to
+    return JSONResponse([{**x, "key": match_key(x.get("symbol", ""))} for x in rows if isinstance(x, dict)])
 
 
 routes = [

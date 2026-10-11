@@ -11,7 +11,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import admin, auth, ea, journal, push, radar, signal_feed
-from .config import INSTRUMENTS
+from .config import INSTRUMENTS, market
 from .deriv import fetch_candles, fetch_active_symbols
 from .indicators import analyze_all
 from .summary import summarize_facts
@@ -31,7 +31,17 @@ async def _facts(key: str):
         candles = await fetch_candles(symbol)
     except Exception as e:
         raise HTTPException(502, f"Deriv: {e}")
-    return symbol, name, analyze_all(candles)
+    return symbol, name, analyze_all(candles), candles
+
+
+def _closed_note(key: str, candles: dict):
+    """Forex and gold close at weekends. If the newest candle is old, say so instead of analysing stale prices."""
+    if market(key) == "synthetic":
+        return None
+    last = max((c[-1]["epoch"] for c in candles.values() if c), default=0)
+    if time.time() - last > 3 * 3600:
+        return "This market looks closed right now (no new prices for several hours). Analysis resumes when it reopens. No analysis credit was used."
+    return None
 
 
 def _friendly(msg: str) -> str:
@@ -71,7 +81,7 @@ async def verify(request):
 
 async def analysis(request):
     auth.require_user(request)
-    symbol, name, facts = await _facts(request.path_params["key"])
+    symbol, name, facts, _ = await _facts(request.path_params["key"])
     return JSONResponse({"symbol": symbol, "name": name, "facts": facts})
 
 
@@ -85,16 +95,20 @@ async def tradecard(request):
         out = _fresh(key)  # another member may have filled the cache while we waited
         if out:
             return JSONResponse({**out, "cached": True})
-        symbol, name, facts = await _facts(key)
+        symbol, name, facts, candles = await _facts(key)
         out = {"symbol": symbol, "name": name, "facts": facts, "summary": summarize_facts(facts), "card": None}
-        if not auth.has_quota(user):
+        closed = _closed_note(key, candles)
+        if closed:
+            out["card_error"], out["market_closed"] = closed, True
+        elif not auth.has_quota(user):
             used, limit = auth.quota(user)
             out["card_error"] = f"Daily AI limit reached ({used}/{limit}). Showing computed facts only."
         else:
             try:
-                out["card"] = await generate_trade_card(name, facts)
+                out["card"] = await generate_trade_card(name, facts, real_market=market(key) != "synthetic")
                 auth.consume_quota(user)
-                radar.record_analysis(key, out["card"])  # feeds Smart Analysis Timing; never raises
+                if market(key) == "synthetic":
+                    radar.record_analysis(key, out["card"])  # feeds Smart Analysis Timing; never raises
                 _cache[key] = (time.time(), dict(out))
             except Exception as e:  # fall back to computed facts only
                 print(f"[ai] {type(e).__name__}: {redact(str(e))[:300]}", flush=True)

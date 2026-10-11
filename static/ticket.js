@@ -16,8 +16,8 @@
   };
   // The exact symbol name MT5 uses, when the companion EA has reported it.
   let specs=null;
-  window.dlSymbolName=async function(name){
+  window.dlSymbolName=async function(name,key){
     try{if(!specs)specs=await (await fetch('/api/ea/specs')).json();
-      const m=specs.find(x=>norm(x.symbol)===norm(name));return m?m.symbol:name}catch(e){return name}
+      const m=specs.find(x=>norm(x.symbol)===norm(name))||(key&&specs.find(x=>x.key===key));return m?m.symbol:name}catch(e){return name}
   };
 })();

@@ -22,7 +22,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 from . import auth, dbx
-from .config import INSTRUMENTS
+from .config import SYNTHETIC as INSTRUMENTS   # forex and gold are analysis-only for now
 from .indicators import classify_structure, ema, macd, range_stats, rsi, swing_points
 
 DEFAULT_CONFIG = {

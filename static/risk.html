@@ -69,8 +69,11 @@ async function syncMt5(){
     const st=await (await fetch('/api/ea/status')).json();
     if(st.connected&&st.account&&Number(st.account.balance)>0){$('bal').value=st.account.balance;store.set('dl_bal',String(st.account.balance));note='Balance'}
     const sp=await (await fetch('/api/ea/specs')).json();let n=0;
-    sp.forEach(x=>{const inst=list.find(i=>norm(i.name)===norm(x.symbol));
-      if(inst){store.set('dl_spec_'+inst.key,{ts:x.tick_size,tv:x.tick_value,vmin:x.vol_min,vstep:x.vol_step,vmax:x.vol_max,cs:x.contract_size});n++}});
+    const put=(inst,x)=>{store.set('dl_spec_'+inst.key,{ts:x.tick_size,tv:x.tick_value,vmin:x.vol_min,vstep:x.vol_step,vmax:x.vol_max,cs:x.contract_size});n++};
+    const done=new Set();
+    sp.forEach(x=>{const inst=list.find(i=>norm(i.name)===norm(x.symbol));if(inst){put(inst,x);done.add(inst.key)}});
+    // broker variants such as XAUUSDm or XAUUSDmicro: used only when the plain symbol is not in Market Watch
+    sp.forEach(x=>{const inst=x.key&&!done.has(x.key)&&list.find(i=>i.key===x.key);if(inst){put(inst,x);done.add(inst.key)}});
     if(n)note+=(note?' and ':'')+'contract specs';
     if(note)$('mt5note').textContent=note+' synced from your MT5 account.';
     loadSpec();update();

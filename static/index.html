@@ -18,7 +18,7 @@
 <footer>
 <button id="go" disabled>Analyze</button>
 <small class="dis"><span id="me"></span> <a href="#" id="signout" style="color:var(--gold)">Sign out</a></small>
-<small class="dis">Education and risk analysis only, not financial advice. Synthetic indices are RNG-generated.</small>
+<small class="dis">Education and risk analysis only, not financial advice. Synthetic indices are RNG-generated. Forex and gold follow real markets and can gap on news.</small>
 </footer>
 <script>
 const feed=document.getElementById('feed'),btn=document.getElementById('go'),sym=document.getElementById('sym');
@@ -28,7 +28,7 @@ function section(title,body){const c=el('div','card');c.append(el('h2','',title)
 function factsBlock(d){const det=el('details');det.append(el('summary','','Computed facts'),el('pre','',JSON.stringify(d.facts,null,1)));return det}
 function renderFallback(d){
   const box=el('div','msg'),s=d.summary||{};
-  const w=el('div','card');w.append(el('h2','','AI analysis unavailable'),el('div','',d.card_error||'Claude did not respond.'),el('div','hello','Showing computed facts only. This is not a trade signal.'));
+  const w=el('div','card');w.append(el('h2','',d.market_closed?'Market closed':'AI analysis unavailable'),el('div','',d.card_error||'Claude did not respond.'),el('div','hello','Showing computed facts only. This is not a trade signal.'));
   box.append(w,section('Bias (computed)',s.bias||'-'));
   const tfs=el('div');for(const [k,v] of Object.entries(s.timeframes||{})){const r=el('div','tf');r.append(el('b','',k),el('span','',v));tfs.append(r)}
   box.append(section('Timeframes',tfs));
@@ -44,7 +44,7 @@ function trow(k,v,copy){
 }
 function ticketSection(c){
   const box=el('div'),name=sym.selectedOptions[0].text,L=window.dlLots&&dlLots(sym.value,c.entry,c.stop);
-  const [r1,s1]=trow('Symbol',name,true);window.dlSymbolName&&dlSymbolName(name).then(n=>{s1.textContent=n});
+  const [r1,s1]=trow('Symbol',name,true);window.dlSymbolName&&dlSymbolName(name,sym.value).then(n=>{s1.textContent=n});
   box.append(r1,trow('Order',c.direction+' (market)',false)[0],trow('Volume (lots)',L?String(L.lots):'Set up the Risk page',!!L)[0],
     trow('Stop loss',String(c.stop),true)[0],trow('Take profit',String(c.target),true)[0]);
   if(L&&L.warn)box.append(el('div','warn','The minimum lot already risks more than your risk %. Consider skipping.'));
