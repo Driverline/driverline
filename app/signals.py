@@ -15,7 +15,7 @@ import time
 from contextlib import closing
 
 from . import dbx, radar
-from .config import SYNTHETIC as INSTRUMENTS   # forex and gold are analysis-only for now
+from .config import INSTRUMENTS, market, spread as spread_of
 from .indicators import ema, rsi
 
 STYLES = {
@@ -137,8 +137,10 @@ def find_signals(setup: str, F: dict, ctx: list) -> list:
 
 
 # ---------------------------------------------------------------- trade simulation
-def simulate(F: dict, signals: list, rr: float, horizon: int, cfg: dict = None) -> list:
-    """Sequential, non-overlapping trades. Returns [(net R, hit target?)] in time order."""
+def simulate(F: dict, signals: list, rr: float, horizon: int, cfg: dict = None, spread: float = 0.0) -> list:
+    """Sequential, non-overlapping trades. Returns [(net R, hit target?)] in time order.
+    With spread > 0 (forex, gold) the cost of each trade is that spread in price units divided by the trade's stop
+    distance, so a tight stop costs more R. The trade tuple then carries that cost as a third item."""
     cfg = cfg or BT_CFG
     o, h, l, c, atr = F["o"], F["h"], F["l"], F["c"], F["atr"]
     cost_r = cfg["cost_atr"] / cfg["stop_atr"]
@@ -150,19 +152,20 @@ def simulate(F: dict, signals: list, rr: float, horizon: int, cfg: dict = None) 
         if sd <= 0:
             continue
         stop, target = entry - d * sd, entry + d * rr * sd
+        cost = spread / sd if spread > 0 else cost_r
         end, res = min(F["n"] - 1, i + horizon), None
         for j in range(i + 1, end + 1):
             hit_stop = (l[j] <= stop) if d > 0 else (h[j] >= stop)
             hit_tgt = (h[j] >= target) if d > 0 else (l[j] <= target)
             if hit_stop:                       # cautious: a candle touching both counts as a loss
-                res, free_from = (-1.0 - cost_r, False), j + 1
+                res, free_from = (-1.0 - cost, False), j + 1
                 break
             if hit_tgt:
-                res, free_from = (rr - cost_r, True), j + 1
+                res, free_from = (rr - cost, True), j + 1
                 break
         if res is None:                        # time ran out: close at the last candle
-            res, free_from = (d * (c[end] - entry) / sd - cost_r, False), end + 1
-        trades.append(res)
+            res, free_from = (d * (c[end] - entry) / sd - cost, False), end + 1
+        trades.append(res + (cost,) if spread > 0 else res)
     return trades
 
 
@@ -181,13 +184,15 @@ def trade_stats(trades: list, span_days: float, rr: float, cfg: dict = None) -> 
         streak = streak + 1 if x < 0 else 0
         best = max(best, streak)
     cost_r = cfg["cost_atr"] / cfg["stop_atr"]
+    if len(trades[0]) > 2:               # spread-based costs: use the average cost actually paid
+        cost_r = sum(t[2] for t in trades) / n
     return {"n": n, "per_day": n / span_days if span_days else None, "hit_rate": sum(1 for t in trades if t[1]) / n,
             "avg_r": mean, "avg_r_h1": sum(r[:half]) / half, "avg_r_h2": sum(r[half:]) / (n - half),
             "t_stat": mean / (sd / math.sqrt(n)) if sd > 0 else 0.0, "pf": wins / losses if losses else None,
             "be_rate": (1 + cost_r) / (1 + rr), "max_loss_streak": best, "sd_r": sd}
 
 
-def backtest_symbol(data: dict, spiky: bool = False, cfg: dict = None) -> list:
+def backtest_symbol(data: dict, spiky: bool = False, cfg: dict = None, spread: float = 0.0) -> list:
     cfg = cfg or BT_CFG
     rows = []
     for style, sp in STYLES.items():
@@ -199,7 +204,7 @@ def backtest_symbol(data: dict, spiky: bool = False, cfg: dict = None) -> list:
         for setup in SETUPS:
             sigs = find_signals(setup, F, ctx)
             for rr in RRS:
-                st = trade_stats(simulate(F, sigs, rr, sp["horizon"], cfg), span, rr, cfg)
+                st = trade_stats(simulate(F, sigs, rr, sp["horizon"], cfg, spread), span, rr, cfg)
                 if st:
                     rows.append({"style": style, "setup": setup, "rr": rr, "span_days": span, **st})
     return rows
@@ -233,7 +238,7 @@ async def run_backtest():
             try:
                 d = (await deriv.fetch_multi([code], ("M5", "M15", "H1", "H4"), BT_CFG["history"])).get(code)
                 if d:
-                    rows = await asyncio.to_thread(backtest_symbol, d, radar.family(key) in ("spike", "jump"))
+                    rows = await asyncio.to_thread(backtest_symbol, d, radar.family(key) in ("spike", "jump"), None, spread_of(key))
                     with closing(db()) as con:
                         for r in rows:
                             con.execute(
@@ -267,8 +272,8 @@ def summary() -> dict:
         return out
     groups, min_n = {}, BT_CFG["min_n"]
     for r in rows:
-        groups.setdefault((r["style"], r["setup"], r["rr"]), []).append(r)
-    for (style, setup, rr), g in groups.items():
+        groups.setdefault((market(r["instrument"]), r["style"], r["setup"], r["rr"]), []).append(r)
+    for (mkt, style, setup, rr), g in groups.items():
         tot = sum(x["n"] for x in g)
         sds = [x["sd_r"] for x in g]
         t_pool = None
@@ -276,7 +281,7 @@ def summary() -> dict:
             se = math.sqrt(sum(x["n"] * x["sd_r"] ** 2 for x in g)) / tot
             t_pool = (sum(x["avg_r"] * x["n"] for x in g) / tot) / se if se > 0 else None
         out["pooled"].append({
-            "t_pooled": t_pool, "style": style, "setup": setup, "rr": rr, "symbols": len(g), "n": tot,
+            "t_pooled": t_pool, "market": mkt, "style": style, "setup": setup, "rr": rr, "symbols": len(g), "n": tot,
             "per_day_all": sum(x["per_day"] or 0 for x in g),
             "hit_rate": sum(x["hit_rate"] * x["n"] for x in g) / tot, "be_rate": g[0]["be_rate"],
             "avg_r": sum(x["avg_r"] * x["n"] for x in g) / tot,
@@ -285,7 +290,7 @@ def summary() -> dict:
     big = [r for r in rows if r["n"] >= min_n]
     out["best"] = [{**{k: r[k] for k in ("instrument", "style", "setup", "rr", "n", "per_day", "hit_rate", "be_rate",
                                          "avg_r", "avg_r_h1", "avg_r_h2", "t_stat")},
-                    "name": INSTRUMENTS.get(r["instrument"], ("", r["instrument"]))[1]}
+                    "market": market(r["instrument"]), "name": INSTRUMENTS.get(r["instrument"], ("", r["instrument"]))[1]}
                    for r in sorted(big, key=lambda r: -r["t_stat"])[:12]]
     out["share_t_over_2"] = round(sum(1 for r in big if r["t_stat"] > 2) / len(big), 3) if big else None
     out["tested_combinations"] = len(big)

@@ -59,6 +59,7 @@ function renderAdvice(){
   if(state&&state.paid&&hasEA){const l=el('a','','Manage your trades in the MT5 tab');l.href='/mt5.html';l.style.cssText='display:block;margin-top:8px;color:var(--gold2)';a.append(l)}
   else a.append(el('div','mut',state&&state.paid?'Connect your MT5 in the MT5 tab to track, close and auto-manage trades here. Until then, check your trades in your MT5 app.':'Check your open trades in your MT5 app, and close or adjust positions there.'));
 }
+const px=(s,v)=>Number(v).toFixed(s.market==='forex'?(Number(v)>20?3:5):2);
 function copyBtn(text){const b=el('button','ghost','Copy for MT5');b.style.cssText='width:auto;padding:8px 12px';b.onclick=async()=>{try{await navigator.clipboard.writeText(text);b.textContent='Copied'}catch(e){prompt('Copy this:',text)}};return b}
 function card(s){
   const c=el('div','card'),h=el('div','hd');
@@ -77,19 +78,19 @@ function card(s){
     return c;
   }
   if(s.entry!==undefined){
-    const lv=el('div','lv');[['Entry (near market)',s.entry],['Stop',s.stop],['Target ('+s.rr+'R)',s.target]].forEach(([n,v])=>{const d=el('div');d.append(el('small','',n),el('b','',Number(v).toFixed(2)));lv.append(d)});c.append(lv);
+    const lv=el('div','lv');[['Entry (near market)',s.entry],['Stop',s.stop],['Target ('+s.rr+'R)',s.target]].forEach(([n,v])=>{const d=el('div');d.append(el('small','',n),el('b','',px(s,v)));lv.append(d)});c.append(lv);
     c.append(el('div','mut',btText(s.bt)));
     if(s.risk_notes)c.append(el('div','mut','Risk notes: '+s.risk_notes+'.'));
     if(s.status==='open'){
       c.append(el('div','warn','Set the stop when you enter. Track and close your trades; never leave them unattended.'));
       if(state.paid)c.append(execBlock(s));
-      const row=el('div','btns');row.append(copyBtn(s.name+' '+s.direction+' SL '+s.stop.toFixed(2)+' TP '+s.target.toFixed(2)));
+      const row=el('div','btns');row.append(copyBtn(s.name+' '+s.direction+' SL '+px(s,s.stop)+' TP '+px(s,s.target)));
       const lg=el('button','ghost','Log / size it');lg.onclick=()=>{try{localStorage.setItem('dl_last',JSON.stringify({key:s.instrument,direction:s.direction,entry:s.entry,stop:s.stop,target:s.target}))}catch(e){}location.href='/risk.html'};row.append(lg);c.append(row);
     }
   }
   return c;
 }
-function specFor(s){return specs.find(x=>norm(x.symbol)===norm(s.name))||null}
+function specFor(s){return specs.find(x=>norm(x.symbol)===norm(s.name))||specs.find(x=>x.key&&x.key===s.instrument)||null}
 function riskText(s,lots){
   const sp=specFor(s);if(!sp)return '';
   const unit=(sp.tick_size>0&&sp.tick_value>0)?sp.tick_value/sp.tick_size:(sp.contract_size||0);
@@ -111,7 +112,7 @@ function execBlock(s){
   go.onclick=async()=>{
     const lots=lot.value===''?null:Number(lot.value),r=riskText(s,lots||0);
     let q='Open a REAL trade in your MT5 now?\n\n'+s.name+' '+s.direction+'\nLot size: '+(lots?lots:(r&&r.lots?r.lots+' (the minimum lot)':'the minimum lot'))+
-      '\nStop loss and take profit are attached, set from the price at the moment the order is placed (about '+s.stop.toFixed(2)+' and '+s.target.toFixed(2)+').'+
+      '\nStop loss and take profit are attached, set from the price at the moment the order is placed (about '+px(s,s.stop)+' and '+px(s,s.target)+').'+
       (r&&r.text?'\n'+r.text:'')+'\n\nYou are placing this order yourself. You can close or adjust it at any time.';
     if(!confirm(q))return;
     if(r&&r.pct!==null&&ea.rules&&r.pct>ea.rules.max_risk_pct&&!confirm('WARNING: this risks about '+r.pct.toFixed(2)+'% of your balance, more than the '+ea.rules.max_risk_pct+'% you set as your own limit.\n\nPlace it anyway?'))return;
@@ -146,7 +147,7 @@ async function renderRecord(){
     const r=await api('/api/signals/record'),box=$('record');box.textContent='';
     box.append(el('div','mut',r.open+' setups are being tracked right now. Results below use the same costs as the backtest.'));
     if(!r.live.length)box.append(el('div','mut','No finished setups yet.'));
-    r.live.forEach(x=>box.append(el('div','mut',STY[x.style]+' \u00b7 '+SET[x.setup]+': '+x.n+' finished, target reached '+pct(x.target_rate)+', average '+sg(x.avg_r)+'R')));
+    r.live.forEach(x=>box.append(el('div','mut',(x.market&&x.market!=='synthetic'?(x.market==='metal'?'Gold':'Forex')+' \u00b7 ':'')+STY[x.style]+' \u00b7 '+SET[x.setup]+': '+x.n+' finished, target reached '+pct(x.target_rate)+', average '+sg(x.avg_r)+'R')));
   }catch(e){$('record').textContent=e.message}
 }
 // ---- notifications (paid members) ----

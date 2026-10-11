@@ -1,3 +1,4 @@
+import json
 import os
 import re
 
@@ -47,6 +48,24 @@ REAL_MARKETS = {
     "xauusd":   ("frxXAUUSD",  "XAUUSD"),
 }
 INSTRUMENTS = {**SYNTHETIC, **REAL_MARKETS}
+
+
+# Assumed round-trip trading cost per trade for the signal backtest and for tracking live signals, in PRICE units
+# (spread plus a little slippage). These are deliberately on the cautious side of typical retail spreads: check them
+# against your own broker and override with the DRIVERLINE_SPREADS environment variable, for example
+# {"eurusd": 0.0001, "xauusd": 0.25}. Synthetic indices keep the flat fraction-of-ATR cost used so far.
+SPREADS = {"eurusd": 0.00015, "gbpusd": 0.00020, "usdjpy": 0.018, "usdchf": 0.00022, "audusd": 0.00018,
+           "usdcad": 0.00022, "nzdusd": 0.00025, "xauusd": 0.40}
+try:
+    SPREADS.update({k: float(v) for k, v in json.loads(os.environ.get("DRIVERLINE_SPREADS", "{}")).items()
+                    if k in REAL_MARKETS and float(v) > 0})
+except (ValueError, TypeError, AttributeError):
+    pass
+
+
+def spread(key: str) -> float:
+    """Assumed trading cost in price units; 0 means "use the flat synthetic-index cost"."""
+    return SPREADS.get(key, 0.0)
 
 
 def market(key: str) -> str:

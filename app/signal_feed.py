@@ -18,10 +18,13 @@ from starlette.routing import Route
 
 from . import auth, dbx, journal, radar
 from . import signals as S
-from .config import SYNTHETIC as INSTRUMENTS   # forex and gold are analysis-only for now
+from .config import INSTRUMENTS, market, match_key, spread as spread_of
 
 CFG = {"exec_max_dev_r": 0.5, "min_publish_t": -1.0, "fallback_rr": 1.5, "limit_default": 5, "limit_max": 10, "scan_seconds": 300,
-       "view_hours": 12, "min_pooled_n": 300}
+       "view_hours": 12, "min_pooled_n": 300,
+       # Forex and gold are judged on their own backtest results and stay OFF until real_markets_enabled is switched on
+       # (DRIVERLINE_FEED_CONFIG='{"real_markets_enabled": true}') after the owner has reviewed those results.
+       "real_markets_enabled": False, "min_publish_t_real": 0.0}
 try:
     radar._merge(CFG, json.loads(__import__("os").environ.get("DRIVERLINE_FEED_CONFIG", "{}")))
 except ValueError:
@@ -62,7 +65,8 @@ _combos = {"ts": 0.0, "data": {}}
 
 
 def allowed_combos(force: bool = False) -> dict:
-    """{(style, setup): stats of its best target multiple}, from the latest finished backtest."""
+    """{(market, style, setup): stats of its best target multiple}, from the latest finished backtest.
+    Synthetic indices, forex and gold are never pooled together: each market is judged on its own results."""
     if not force and _combos["data"] and time.time() - _combos["ts"] < 1800:
         return _combos["data"]
     best: dict = {}
@@ -72,8 +76,10 @@ def allowed_combos(force: bool = False) -> dict:
             rows = con.execute("SELECT * FROM backtest_results WHERE run_id=?", (run["id"],)).fetchall() if run else []
         groups: dict = {}
         for r in rows:
-            groups.setdefault((r["style"], r["setup"], r["rr"]), []).append(r)
-        for (st, su, rr), g in groups.items():
+            groups.setdefault((market(r["instrument"]), r["style"], r["setup"], r["rr"]), []).append(r)
+        for (mk, st, su, rr), g in groups.items():
+            if mk != "synthetic" and not CFG["real_markets_enabled"]:
+                continue
             tot = sum(x["n"] for x in g)
             if tot < CFG["min_pooled_n"] or any(x["sd_r"] is None for x in g):
                 continue
@@ -82,20 +88,23 @@ def allowed_combos(force: bool = False) -> dict:
             t = mean / se if se > 0 else 0.0
             rec = {"rr": rr, "n": tot, "hit": sum(x["hit_rate"] * x["n"] for x in g) / tot, "be": g[0]["be_rate"],
                    "avg_r": mean, "t": t}
-            if t >= CFG["min_publish_t"] and ((st, su) not in best or mean > best[(st, su)]["avg_r"]):
-                best[(st, su)] = rec
+            bar = CFG["min_publish_t"] if mk == "synthetic" else CFG["min_publish_t_real"]
+            if t >= bar and ((mk, st, su) not in best or mean > best[(mk, st, su)]["avg_r"]):
+                best[(mk, st, su)] = rec
     except Exception as e:
         print(f"[feed] could not read backtest: {e}", flush=True)
     if not best and not rows:   # no backtest has been run yet: publish everything with the fallback target, flagged
         for st in S.STYLES:
             for su in S.SETUPS:
-                best[(st, su)] = {"rr": CFG["fallback_rr"], "n": 0, "hit": None, "be": None, "avg_r": None, "t": None}
+                best[("synthetic", st, su)] = {"rr": CFG["fallback_rr"], "n": 0, "hit": None, "be": None, "avg_r": None, "t": None}
     _combos.update(ts=time.time(), data=best)
     return best
 
 
 def risk_rating(setup: str, key: str, style: str, d: int, ctx_d: int, vol_ratio) -> tuple:
     pts, notes = 0, []
+    if market(key) != "synthetic":
+        pts += 1; notes.append("Real market: news can move price suddenly and past your stop")
     if radar.family(key) in ("spike", "jump"):
         pts += 2; notes.append("This index can spike through stops")
     if setup == "range_reversal":
@@ -114,8 +123,9 @@ def evaluate(sig: dict, candles: list, now: int):
     """Real outcome of a published setup, from the candles after it. Same rules as the backtest."""
     per = S.PERIOD[S.STYLES[sig["style"]]["tf"]]
     horizon = S.STYLES[sig["style"]]["horizon"]
-    cost_r = S.BT_CFG["cost_atr"] / S.BT_CFG["stop_atr"]
     d, sd = sig["direction"], abs(sig["entry"] - sig["stop"])
+    sp = spread_of(sig["instrument"])      # forex and gold: cost is the assumed spread relative to the stop distance
+    cost_r = sp / sd if sp > 0 and sd > 0 else S.BT_CFG["cost_atr"] / S.BT_CFG["stop_atr"]
     bars = [c for c in candles if c["epoch"] >= sig["bar_epoch"] + per]
     for c in bars[:horizon]:
         hit_stop = (c["low"] <= sig["stop"]) if d > 0 else (c["high"] >= sig["stop"])
@@ -131,12 +141,18 @@ def evaluate(sig: dict, candles: list, now: int):
 
 async def scan_signals(data: dict = None) -> list:
     """Checks the latest closed candles for setups and updates open ones. Returns the new signals."""
+    combos = allowed_combos()
+    # Scan synthetic indices always; forex and gold only while they have published setups or still-open signals to track.
+    with closing(db()) as con:
+        tracked = {r["instrument"] for r in con.execute("SELECT DISTINCT instrument FROM signals WHERE status='open'").fetchall()}
+    live = {m for (m, _, _) in combos}
+    active = {k: v for k, v in INSTRUMENTS.items() if market(k) == "synthetic" or market(k) in live or k in tracked}
     if data is None:
         from . import deriv
-        data = await deriv.fetch_multi([v[0] for v in INSTRUMENTS.values()], ("M5", "M15", "H1", "H4"), 300)
-    combos, now, new = allowed_combos(), int(time.time()), []
+        data = await deriv.fetch_multi([v[0] for v in active.values()], ("M5", "M15", "H1", "H4"), 300)
+    now, new = int(time.time()), []
     with closing(db()) as con:
-        for key, (code, name) in INSTRUMENTS.items():
+        for key, (code, name) in active.items():
             d = data.get(code)
             if not d:
                 continue
@@ -159,7 +175,7 @@ async def scan_signals(data: dict = None) -> list:
                 if i < 120:
                     continue
                 for setup in S.SETUPS:
-                    combo = combos.get((style, setup))
+                    combo = combos.get((market(key), style, setup))
                     if not combo:
                         continue
                     dirn = S._detect(setup, F, ctx, i)
@@ -231,7 +247,8 @@ def _public(row: dict, opened: bool, now: int) -> dict:
     actionable = row["status"] == "open" and now <= row["expires_at"]
     out = {"id": row["id"], "created_at": row["created_at"], "instrument": row["instrument"],
            "name": INSTRUMENTS.get(row["instrument"], ("", row["instrument"]))[1], "style": row["style"],
-           "setup": row["setup"], "direction": "BUY" if row["direction"] > 0 else "SELL", "risk": row["risk"],
+           "setup": row["setup"], "market": market(row["instrument"]),
+           "direction": "BUY" if row["direction"] > 0 else "SELL", "risk": row["risk"],
            "status": row["status"], "actionable": actionable, "expires_at": row["expires_at"],
            "opened": opened, "result_r": row["result_r"]}
     if opened or not actionable:       # finished setups are shown openly, as the track record
@@ -325,7 +342,10 @@ async def execute_signal(request):
                 raise HTTPException(409, f"You already have {len(state['positions'])} open positions, your own maximum.")
             name = INSTRUMENTS.get(sig["instrument"], ("", sig["instrument"]))[1]
             want = journal._norm(name)
-            symbol = next((x["symbol"] for x in json.loads(s["specs"] or "[]") if journal._norm(x["symbol"]) == want), None)
+            specs = [x for x in json.loads(s["specs"] or "[]") if isinstance(x, dict)]
+            # the exact symbol first; otherwise a broker variant such as XAUUSDm or XAUUSDmicro
+            symbol = (next((x["symbol"] for x in specs if journal._norm(x["symbol"]) == want), None)
+                      or next((x["symbol"] for x in specs if match_key(x.get("symbol", "")) == sig["instrument"]), None))
             if not symbol:
                 raise HTTPException(409, f"{name} was not found in your MT5 Market Watch. Add it there first.")
             for r in ec.execute("SELECT payload FROM ea_commands WHERE user_id=? AND kind='open' AND status IN "
@@ -395,15 +415,15 @@ async def notify_prefs(request):
 async def record(request):
     auth.require_user(request)
     with closing(db()) as con:
-        rows = con.execute("SELECT style, setup, status, result_r, rr FROM signals WHERE status<>'open'").fetchall()
+        rows = con.execute("SELECT instrument, style, setup, status, result_r, rr FROM signals WHERE status<>'open'").fetchall()
         open_n = con.execute("SELECT COUNT(*) AS c FROM signals WHERE status='open'").fetchone()["c"]
     groups: dict = {}
     for r in rows:
-        g = groups.setdefault((r["style"], r["setup"]), {"n": 0, "target": 0, "sum": 0.0, "rr": r["rr"]})
+        g = groups.setdefault((market(r["instrument"]), r["style"], r["setup"]), {"n": 0, "target": 0, "sum": 0.0, "rr": r["rr"]})
         g["n"] += 1; g["target"] += r["status"] == "target"; g["sum"] += r["result_r"] or 0.0
-    out = [{"style": k[0], "setup": k[1], "n": g["n"], "target_rate": g["target"] / g["n"], "avg_r": g["sum"] / g["n"],
+    out = [{"market": k[0], "style": k[1], "setup": k[2], "n": g["n"], "target_rate": g["target"] / g["n"], "avg_r": g["sum"] / g["n"],
             "rr": g["rr"]} for k, g in groups.items()]
-    bt = {f"{k[0]}|{k[1]}": v for k, v in allowed_combos().items()}
+    bt = {f"{k[0]}|{k[1]}|{k[2]}": v for k, v in allowed_combos().items()}
     return JSONResponse({"live": sorted(out, key=lambda x: -x["n"]), "backtest": bt, "open": open_n})
 
 
