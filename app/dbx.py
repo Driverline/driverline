@@ -2,11 +2,13 @@
 SQLite file (data/journal.db) for local use and testing; PostgreSQL (for example Supabase)
 when the DATABASE_URL environment variable is set. SQL is written once with ? placeholders."""
 import os
+import re
 import sqlite3
 from pathlib import Path
 
 SQLITE_PATH = Path(__file__).resolve().parent.parent / "data" / "journal.db"
 _ready: set = set()
+_CREATE_TABLE = re.compile(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", re.I)
 
 
 def using_postgres() -> bool:
@@ -44,6 +46,11 @@ class Conn:
             for stmt in script.split(";"):
                 if stmt.strip():
                     self.raw.cursor().execute(stmt)
+                    # Supabase exposes every public table through its REST API. Turning row-level security on
+                    # (with no policies) closes that door; this app reaches the data directly as the table owner,
+                    # which is not affected. Safe to repeat.
+                    for t in _CREATE_TABLE.findall(stmt):
+                        self.raw.cursor().execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
         else:
             self.raw.executescript(script)
 
