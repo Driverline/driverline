@@ -51,12 +51,17 @@ CATALOG = {
     "pro": {"label": "Signals Pro", "usd": 30, "signals": 550, "days": 30, "notify": True, "mt5": True},
 }
 METHODS = {"trc20": "USDT (TRC20)", "bep20": "USDT (BEP20)", "ngn": "Naira bank transfer"}
-SETTING_KEYS = ("pay_trc20", "pay_bep20", "bank_name", "bank_account_name", "bank_account_number", "ngn_rate", "note")
+SETTING_KEYS = ("pay_trc20", "pay_bep20", "bank_name", "bank_account_name", "bank_account_number", "ngn_rate", "note",
+                "support")
+
+
+def _migrate(con):
+    con.add_column("billing_orders", "terms_at", "BIGINT")      # when the member accepted the terms for this order
 
 
 def db():
     auth.db().close()
-    return dbx.connect("credits", SCHEMA)
+    return dbx.connect("credits", SCHEMA, _migrate)
 
 
 def _now() -> int:
@@ -192,7 +197,7 @@ def _pay_info(s: dict) -> dict:
     return {"trc20": s["pay_trc20"], "bep20": s["pay_bep20"], "ngn_rate": rate or None,
             "bank": {"name": s["bank_name"], "account_name": s["bank_account_name"],
                      "account_number": s["bank_account_number"]} if s["bank_account_number"] else None,
-            "note": s["note"]}
+            "note": s["note"], "support": s["support"]}
 
 
 def _num(v):
@@ -224,12 +229,24 @@ async def billing_view(request):
         "pay": _pay_info(s) if on else None, "methods": METHODS, "orders": orders, "ledger": ledger})
 
 
+async def public_support(request):
+    """The support contact, shown on the public terms page (no sign-in needed). Nothing else is exposed."""
+    try:
+        with closing(db()) as con:
+            r = con.execute("SELECT value FROM billing_settings WHERE key='support'").fetchone()
+        return JSONResponse({"support": r["value"] if r else ""})
+    except Exception:
+        return JSONResponse({"support": ""})
+
+
 async def order_create(request):
     user = auth.require_user(request)
     if not billing_on():
         raise HTTPException(409, "Purchases are not open yet")
     d = await auth._json(request)
     product, method = d.get("product"), d.get("method")
+    if d.get("accepted") is not True:
+        raise HTTPException(422, "Please accept the Terms, Refunds and Support policy to continue")
     if product not in CATALOG:
         raise HTTPException(422, "Unknown product")
     if method not in METHODS:
@@ -253,8 +270,9 @@ async def order_create(request):
             raise HTTPException(429, "You already have open orders. Finish or cancel one before starting another.")
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         ref = "TL-" + "".join(secrets.choice(alphabet) for _ in range(6))
-        oid = con.insert("INSERT INTO billing_orders(user_id,product,method,amount_usd,amount_local,currency,ref,status,created_at) "
-                         "VALUES(?,?,?,?,?,?,?,?,?)", (user["id"], product, method, usd, local, cur, ref, "pending", now))
+        oid = con.insert("INSERT INTO billing_orders(user_id,product,method,amount_usd,amount_local,currency,ref,status,"
+                         "created_at,terms_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (user["id"], product, method, usd, local, cur, ref, "pending", now, now))
         con.commit()
         row = con.execute("SELECT * FROM billing_orders WHERE id=?", (oid,)).fetchone()
     return JSONResponse({"order": _order_public(row), "pay": _pay_info(s)})
@@ -402,6 +420,7 @@ async def admin_adjust(request):
 
 
 routes = [
+    Route("/api/public/support", public_support, methods=["GET"]),
     Route("/api/billing", billing_view, methods=["GET"]),
     Route("/api/billing/order", order_create, methods=["POST"]),
     Route("/api/billing/order/{oid:int}/paid", order_paid, methods=["POST"]),

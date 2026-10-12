@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Terms, Refunds and Support</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="icon" href="/favicon-48.png">
+<link rel="stylesheet" href="/theme.css">
+<style>
+ .top{padding:14px 16px;border-bottom:1px solid rgba(212,175,55,.4);background:#000}
+ .top a{color:var(--gold2);text-decoration:none;font:700 18px Georgia,serif;letter-spacing:.14em;text-transform:uppercase}
+ h1{font:700 22px Georgia,serif;color:var(--gold2);margin:4px 0 2px}
+ .card p,.card li{font-size:15px}
+ .card ul{margin:6px 0 0;padding-left:20px}
+ .eff{color:var(--mut);font-size:13px;margin-bottom:8px}
+</style>
+</head>
+<body>
+<div class="top"><a href="/">TradeLens</a></div>
+<main>
+<h1>Terms, Refunds and Support</h1>
+<div class="eff">TradeLens, operated by Driverline. Effective 12 October 2026.</div>
+
+<div class="card"><h2>1. What TradeLens is</h2>
+<p>TradeLens provides rule-based market setups, analysis and risk tools for education and information only. It is not financial, investment or trading advice, and nothing in it is a recommendation to buy or sell. TradeLens does not manage your money or trade for you. Any connection to your MT5 runs on your own device or server and works only with options you switch on.</p>
+<p>Trading carries a high risk of loss, and you can lose more than you expect. Test results and track records show how a setup behaved in the past. They are not a promise or prediction of future results. You alone decide whether and how to trade, and you are responsible for your decisions and results.</p></div>
+
+<div class="card"><h2>2. Signals, plans and your balance</h2>
+<ul>
+<li>Opening a setup uses 1 signal from your balance.</li>
+<li>New members receive a one-time welcome allocation of free signals. It is not renewed.</li>
+<li>Signals you buy in a pack do not expire. They have no cash value, cannot be transferred or sold, and cannot be converted back into money.</li>
+<li>A 30-day plan (Signals Plus or Signals Pro) adds its signals when your payment is confirmed and switches on its notifications, and for Pro the MT5 connection, for 30 days. When the plan ends, those features stop and the signals you already received stay in your balance.</li>
+<li>MT5 connectivity does not by itself guarantee that any trade is placed or closed.</li>
+<li>We may change features, prices and daily limits over time. A change does not take away signals you have already been credited.</li>
+</ul></div>
+
+<div class="card"><h2>3. How payment works</h2>
+<ul>
+<li>You choose a pack or plan, pay by USDT (TRC20 or BEP20) or by Naira bank transfer, then send us the transaction ID or transfer reference. We check the payment by hand and add your signals once it is confirmed. We cannot promise how long that takes.</li>
+<li>Pay the exact amount, to the exact address or account shown for your order, on the exact network shown. Funds sent on the wrong network, to the wrong address, or for a different amount may be lost or delayed, and we are not responsible for that.</li>
+<li>Any network, exchange or bank fees are yours. If a fee leaves us with less than the price, we may ask for the difference before adding your signals.</li>
+<li>Naira prices follow the exchange rate shown when you start your order.</li>
+</ul></div>
+
+<div class="card"><h2>4. Refund policy</h2>
+<p><b>All payments for signals, packs and plans are non-refundable once paid.</b> This includes unused signals, plans you stop using or that run out, and results that did not meet your expectations, as well as a change of mind.</p>
+<p>We will still put right a real mistake on our side:</p>
+<ul>
+<li>If you paid and we confirmed your payment but the signals or plan were not added, we will add what you paid for.</li>
+<li>If you paid twice or sent more than the price, contact us with both references. We may credit the extra amount to your balance as signals instead of paying it back.</li>
+</ul>
+<p>Nothing in this policy limits any right you have under the law of your country that cannot be excluded.</p></div>
+
+<div class="card"><h2>5. Support</h2>
+<p id="sup">Contact us through the details shown on the Billing page.</p>
+<p>Always include your account email and your order reference (it starts with TL-) so we can find your payment quickly. We will reply as soon as we reasonably can.</p></div>
+
+<div class="card"><h2>6. Your account</h2>
+<ul>
+<li>Keep your login private. You are responsible for activity on your account.</li>
+<li>The welcome signals are for one person. We may remove signals and suspend accounts used to claim them more than once, to pay with stolen funds, or to abuse or attack the service.</li>
+<li>TradeLens is independent of Deriv, which is a separate company with its own terms. If you open a Deriv account through a TradeLens referral link, TradeLens may receive a commission from Deriv. It does not change the price you pay us.</li>
+</ul></div>
+
+<div class="card"><h2>7. Changes</h2>
+<p>We may update these terms. The date at the top shows the latest version, and continued use means you accept the current version.</p></div>
+<small class="dis">Education and risk analysis only, not financial advice.</small>
+</main>
+<script>
+fetch('/api/public/support').then(r=>r.json()).then(d=>{if(d.support)document.getElementById('sup').textContent='Support: '+d.support}).catch(()=>{});
+</script>
+</body>
+</html>

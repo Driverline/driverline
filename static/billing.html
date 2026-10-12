@@ -19,7 +19,8 @@
 <div id="shop"></div>
 <div class="card"><h2>Your orders</h2><div id="orders"><span class="mut">Loading...</span></div></div>
 <div class="card"><h2>Signal history</h2><div id="ledger"><span class="mut">Loading...</span></div></div>
-<small class="dis">Signals are rule-based setups for education and risk analysis, not financial advice. Past results do not guarantee future results. Signals are added after your payment is confirmed.</small>
+<small class="dis">Signals are rule-based setups for education and risk analysis, not financial advice. Past results do not guarantee future results. Signals are added after your payment is confirmed. Payments are non-refundable. <a href="/terms.html" style="color:var(--gold2)">Terms, Refunds and Support</a></small>
+<div class="mut" id="sup" style="text-align:center;margin:6px 0"></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -61,12 +62,17 @@ function renderShop(){
 }
 function choose(p,row){
   const old=row.querySelector('.pick');if(old){old.remove();return}
-  const box=el('div','pick');box.style.marginTop='8px';box.append(el('div','mut','How would you like to pay?'));
+  const box=el('div','pick');box.style.marginTop='8px';
+  const ok=document.createElement('input');ok.type='checkbox';ok.style.cssText='width:auto;margin-right:8px';
+  const tl=el('label','');tl.style.cssText='display:flex;align-items:flex-start;gap:6px;font-size:14px;color:var(--tx)';
+  const ta=el('a','','Terms, Refunds and Support');ta.href='/terms.html';ta.target='_blank';ta.style.color='var(--gold2)';
+  const tx=el('span');tx.append(document.createTextNode('I accept the '),ta,document.createTextNode('. Payments are non-refundable.'));tl.append(ok,tx);
+  box.append(tl,el('div','mut','How would you like to pay?'));
   const btns=el('div','btns');btns.style.flexWrap='wrap';
   Object.entries(D.methods).forEach(([m,label])=>{
     const ok=m==='ngn'?(D.pay.ngn_rate&&D.pay.bank):D.pay[m];
     const b=el('button','ghost',label+(m==='ngn'&&ok?' \u20a6'+Math.round(p.usd*D.pay.ngn_rate).toLocaleString():''));b.disabled=!ok;
-    b.onclick=async()=>{b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
+    b.onclick=async()=>{if(!ok.checked){alert('Please tick the box to accept the Terms first.');return}b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m,accepted:true});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
   box.append(btns);row.append(box);
 }
 function renderOpen(){
@@ -109,7 +115,8 @@ function renderLedger(){
   D.ledger.forEach(x=>{const r=el('div','kv');r.append(el('span','',(KIND[x.kind]||x.kind)+' \u00b7 '+date(x.created_at)),el('span',x.delta>0?'win':'mut',(x.delta>0?'+':'')+x.delta));b.append(r)});
 }
 async function load(){
-  try{D=await api('/api/billing');renderBalance();renderOpen();renderShop();renderOrders();renderLedger()}
+  try{D=await api('/api/billing');renderBalance();renderOpen();renderShop();renderOrders();renderLedger();
+    try{const s=await (await fetch('/api/public/support')).json();$('sup').textContent=s.support?'Support: '+s.support:''}catch(e){}}
   catch(e){$('bal').textContent=e.message}
 }
 load();

@@ -85,7 +85,7 @@ async function loadBilling(box){
     const on=document.createElement('input');on.type='checkbox';on.checked=r.enabled;on.style.width='auto';
     const lab=el('label','sw');lab.append(on,document.createTextNode(' Billing is open to members'));box.append(lab);
     const f={};const field=(k,label,ph)=>{box.append(el('label','',label));const i=document.createElement('input');i.value=r.settings[k]||'';i.placeholder=ph||'';f[k]=i;box.append(i)};
-    field('pay_trc20','USDT (TRC20) address');field('pay_bep20','USDT (BEP20) address');field('bank_name','Bank name');field('bank_account_name','Bank account name');field('bank_account_number','Bank account number');field('ngn_rate','Naira per 1 USD','for example 1600');field('note','Note shown to members (optional)');
+    field('pay_trc20','USDT (TRC20) address');field('pay_bep20','USDT (BEP20) address');field('bank_name','Bank name');field('bank_account_name','Bank account name');field('bank_account_number','Bank account number');field('ngn_rate','Naira per 1 USD','for example 1600');field('note','Note shown to members (optional)');field('support','Support contact shown to members (email or WhatsApp)','for example support@yourdomain.com');
     const msg=el('div','mut');
     const save=el('button','','Save billing settings');save.style.marginTop='10px';
     save.onclick=async()=>{try{if(on.checked&&!r.enabled&&!confirm('Open billing to members now?'))return;
