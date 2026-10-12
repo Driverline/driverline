@@ -41,8 +41,11 @@ function btText(b){return(!b||!b.n)?'No historical test is available for this se
 
 function renderBudget(b,paid){
   const c=$('budget');c.textContent='';
-  if(b.kind==='limit'){
-    c.append(el('h2','','Your daily limit'),el('div','',b.used+' of '+b.limit+' signals opened today'+(b.paused?'. You have reached your limit, so new signals are paused until tomorrow (00:00 UTC).':'.')));
+  if(b.kind==='limit'||b.kind==='credits'){
+    if(b.kind==='credits'){
+      c.append(el('h2','','Your signals'),el('div','big',String(b.balance)),el('div','',b.used+' of '+b.limit+' opened today'+(b.paused?(b.balance<=0?'. You have no signals left.':'. You have reached your daily limit, so new signals are paused until tomorrow (00:00 UTC).'):'.')));
+      const bl=el('a','','Buy more signals');bl.href='/billing.html';bl.style.cssText='display:block;margin:6px 0;color:var(--gold2)';c.append(bl);
+    }else c.append(el('h2','','Your daily limit'),el('div','',b.used+' of '+b.limit+' signals opened today'+(b.paused?'. You have reached your limit, so new signals are paused until tomorrow (00:00 UTC).':'.')));
     c.append(el('div','mut','You choose this limit yourself. Fewer, better-chosen trades is a skill worth building.'));
     const row=el('div','row');const i=document.createElement('input');i.type='number';i.min=1;i.max=b.max;i.value=b.limit;i.inputMode='numeric';
     const s=el('button','','Set my limit');s.onclick=async()=>{try{const r=await api('/api/signals/limit','POST',{limit:Number(i.value)});$('lmsg').textContent=r.message;load()}catch(e){$('lmsg').textContent=e.message}};
@@ -70,11 +73,11 @@ function card(s){
     const r=s.result_r;c.append(el('div',r>0?'win':'loss','Finished: '+({target:'target reached',stop:'stop hit',timeout:'time ran out'}[s.status]||s.status)+(r===null?'':' ('+sg(r)+'R after costs)')));
   }else if(!s.actionable)c.append(el('div','mut','This setup is no longer fresh enough to enter.'));
   else if(!s.opened){
-    const cost=state.budget.kind==='limit'?'Counts towards your daily limit.':'Uses one of your daily analyses.';
+    const cost=state.budget.kind==='credits'?'Uses 1 signal from your balance.':state.budget.kind==='limit'?'Counts towards your daily limit.':'Uses one of your daily analyses.';
     c.append(el('div','mut',left(s.expires_at)+(left(s.expires_at)?'. ':'')+cost));
     const b=el('button','','Open setup');b.style.marginTop='8px';b.disabled=state.budget.paused;
     b.onclick=async()=>{b.disabled=true;try{await api('/api/signals/'+s.id+'/open','POST');load()}catch(e){alert(e.message);load()}};c.append(b);
-    if(state.budget.paused)c.append(el('div','warn',state.budget.kind==='limit'?'You have reached your daily limit.':'You have used your daily analyses.'));
+    if(state.budget.paused)c.append(el('div','warn',state.budget.kind==='credits'?(state.budget.balance<=0?'You have no signals left.':'You have reached your daily limit.'):state.budget.kind==='limit'?'You have reached your daily limit.':'You have used your daily analyses.'));
     return c;
   }
   if(s.entry!==undefined){

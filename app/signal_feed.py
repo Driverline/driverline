@@ -16,7 +16,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import auth, dbx, journal, radar
+from . import auth, credits, dbx, journal, radar
 from . import fxresearch as FX
 from . import signals as S
 from .config import INSTRUMENTS, market, match_key, spread as spread_of
@@ -313,8 +313,21 @@ def _prefs(con, uid: int) -> dict:
     return p
 
 
+def budget_credits(con, user: dict) -> dict:
+    p = _prefs(con, user["id"])
+    used = con.execute("SELECT COUNT(*) AS c FROM signal_opens WHERE user_id=? AND day=? AND counted=1",
+                       (user["id"], _today())).fetchone()["c"]
+    bal = credits.balance(user["id"])
+    return {"kind": "credits", "balance": bal, "used": used, "limit": p["limit"], "pending": p.get("pending_limit"),
+            "max": CFG["limit_max"], "paused": bal <= 0 or used >= p["limit"]}
+
+
 def budget(con, user: dict) -> dict:
-    """Paid members: signals opened today against their own limit. Free members: their daily analyses."""
+    """Paid members: signals opened today against their own limit. Free members: their daily analyses.
+    Once billing is open, everyone who is not a member or admin spends signals from their balance instead."""
+    if credits.billing_on() and not credits.grandfathered(user):
+        credits.ensure_welcome(user["id"])
+        return budget_credits(con, user)
     if paid(user):
         p = _prefs(con, user["id"])
         used = con.execute("SELECT COUNT(*) AS c FROM signal_opens WHERE user_id=? AND day=? AND counted=1",
@@ -355,7 +368,7 @@ async def view(request):
                                                        (user["id"],)).fetchall()}
         b = budget(con, user)
     return JSONResponse({"signals": [_public(dict(r), r["id"] in opened, now) for r in rows], "budget": b,
-                         "paid": paid(user), "ts": now})
+                         "paid": credits.entitled(user, "notify"), "ts": now})
 
 
 async def open_signal(request):
@@ -371,12 +384,16 @@ async def open_signal(request):
             if actionable:
                 b = budget(con, user)
                 if b["paused"]:
+                    if b["kind"] == "credits" and b["balance"] <= 0:
+                        raise HTTPException(429, "You have no signals left. Buy more in the Billing tab.")
                     raise HTTPException(429, (f"You have opened {b['used']} of your {b['limit']} signals today. "
                                               "You set this limit yourself, and it keeps your trading disciplined. "
-                                              "New signals resume tomorrow (00:00 UTC).") if b["kind"] == "limit" else
+                                              "New signals resume tomorrow (00:00 UTC).") if b["kind"] in ("limit", "credits") else
                                         "You have used your daily analyses. Signals open again tomorrow (00:00 UTC).")
                 if b["kind"] == "analyses":
                     auth.consume_quota(user)
+                elif b["kind"] == "credits" and not credits.spend(user["id"], f"signal:{sid}"):
+                    raise HTTPException(429, "You have no signals left. Buy more in the Billing tab.")
             con.execute("INSERT INTO signal_opens(user_id,signal_id,day,created_at,counted) VALUES(?,?,?,?,?)",
                         (user["id"], sid, _today(), now, 1 if actionable else 0))
             con.commit()
@@ -390,7 +407,7 @@ async def execute_signal(request):
     Lot size 0 or empty means the symbol's minimum lot, which the EA looks up."""
     from . import ea
     user, sid = auth.require_user(request), request.path_params["sid"]
-    if not paid(user):
+    if not (paid(user) or credits.entitled(user, "mt5")):
         raise HTTPException(403, "Opening trades from the app is for paid members with MT5 connected")
     d = await _json(request)
     raw = d.get("lots")
@@ -444,7 +461,7 @@ async def execute_signal(request):
 
 async def set_limit(request):
     user = auth.require_user(request)
-    if not paid(user):
+    if not paid(user) and not (credits.billing_on() and not credits.grandfathered(user)):
         raise HTTPException(403, "Daily limits are for paid members. Free members are limited by their daily analyses.")
     d = await _json(request)
     try:
@@ -472,7 +489,7 @@ async def set_limit(request):
 
 async def notify_prefs(request):
     user = auth.require_user(request)
-    if not paid(user):
+    if not credits.entitled(user, "notify"):
         raise HTTPException(403, "Notifications are for paid members")
     with closing(db()) as con:
         if request.method == "POST":

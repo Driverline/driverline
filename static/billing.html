@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Billing</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main>
+<div class="card" id="bal"><span class="mut">Loading...</span></div>
+<div id="open"></div>
+<div id="shop"></div>
+<div class="card"><h2>Your orders</h2><div id="orders"><span class="mut">Loading...</span></div></div>
+<div class="card"><h2>Signal history</h2><div id="ledger"><span class="mut">Loading...</span></div></div>
+<small class="dis">Signals are rule-based setups for education and risk analysis, not financial advice. Past results do not guarantee future results. Signals are added after your payment is confirmed.</small>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+async function api(path,method,body){
+  const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
+const STATUS={pending:'Waiting for your payment',submitted:'Being checked',approved:'Signals added',rejected:'Not confirmed',cancelled:'Cancelled',expired:'Expired'};
+const KIND={welcome:'Welcome signals',purchase:'Purchase',spend:'Setup opened',adjust:'Adjustment by support'};
+let D=null,openId=null;
+const date=t=>new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});
+const usd=x=>'$'+(Number.isInteger(x)?x:x.toFixed(2));
+const per=p=>'$'+(p.usd/p.signals).toFixed(5).replace(/0+$/,'')+' per signal';
+function copyBtn(text){const b=el('button','ghost','Copy');b.style.cssText='width:auto;padding:6px 12px';b.onclick=async()=>{try{await navigator.clipboard.writeText(text);b.textContent='Copied'}catch(e){prompt('Copy this:',text)}};return b}
+function line(k,v,copy){const d=el('div','kv');const s=el('span','',v);s.style.wordBreak='break-all';d.append(el('span','',k));if(copy){const w=el('span');w.style.cssText='display:flex;gap:8px;align-items:center;justify-content:flex-end;text-align:right';w.append(s,copyBtn(v));d.append(w)}else d.append(s);return d}
+
+function renderBalance(){
+  const c=$('bal');c.textContent='';
+  c.append(el('h2','','Your signals'),el('div','big',String(D.balance)));
+  if(D.grandfathered)c.append(el('div','mut','Your member access is unchanged. Signals you buy here are added on top.'));
+  else c.append(el('div','mut','Opening a setup uses 1 signal. Signals never expire. New members get '+D.welcome+' free signals once.'));
+  D.plans.forEach(p=>c.append(el('div','win',p.label+' is active until '+date(p.ends_at)+'.')));
+  const a=el('a','','Back to Signals');a.href='/signals.html';a.style.cssText='display:block;margin-top:8px;color:var(--gold2)';c.append(a);
+}
+function renderShop(){
+  const s=$('shop');s.textContent='';
+  if(!D.enabled){const c=el('div','card');c.append(el('h2','','Buying signals'),el('div','mut','Purchases are not open yet. They will appear here soon.'));s.append(c);return}
+  const groups=[['Signal packs','Buy what you need. No subscription, and the signals never expire.',D.catalog.filter(p=>!p.days)],
+                ['Plans for 30 days','Signals plus notifications, and MT5 connection with Pro.',D.catalog.filter(p=>p.days)]];
+  groups.forEach(([title,sub,items])=>{
+    const c=el('div','card');c.append(el('h2','',title),el('div','mut',sub));
+    items.forEach(p=>{
+      const row=el('div');row.style.cssText='border-top:1px solid var(--line);margin-top:10px;padding-top:10px';
+      const h=el('div','hd');h.append(el('span','',p.label),el('span','',usd(p.usd)+(p.days?' / '+p.days+' days':'')));
+      row.append(h,el('div','mut',p.signals.toLocaleString()+' signals \u00b7 '+per(p)+(p.notify?' \u00b7 notifications':'')+(p.mt5?' \u00b7 MT5 connection':'')));
+      if(p.key==='pro')row.append(el('div','mut','MT5 connection does not by itself guarantee automatic trade execution.'));
+      const b=el('button','','Buy '+p.label);b.style.marginTop='8px';b.onclick=()=>choose(p,row);row.append(b);c.append(row)});
+    s.append(c)});
+}
+function choose(p,row){
+  const old=row.querySelector('.pick');if(old){old.remove();return}
+  const box=el('div','pick');box.style.marginTop='8px';box.append(el('div','mut','How would you like to pay?'));
+  const btns=el('div','btns');btns.style.flexWrap='wrap';
+  Object.entries(D.methods).forEach(([m,label])=>{
+    const ok=m==='ngn'?(D.pay.ngn_rate&&D.pay.bank):D.pay[m];
+    const b=el('button','ghost',label+(m==='ngn'&&ok?' \u20a6'+Math.round(p.usd*D.pay.ngn_rate).toLocaleString():''));b.disabled=!ok;
+    b.onclick=async()=>{b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
+  box.append(btns);row.append(box);
+}
+function renderOpen(){
+  const w=$('open');w.textContent='';
+  const o=D.orders.find(x=>x.id===openId&&x.status==='pending');if(!o)return;
+  const c=el('div','card');c.append(el('h2','','Pay for '+o.label));
+  c.append(el('div','mut','Order reference '+o.ref+'. Pay exactly the amount shown, then enter your transaction ID below.'));
+  if(o.method==='ngn'){
+    const b=D.pay.bank;c.append(line('Amount','\u20a6'+Math.round(o.amount_local).toLocaleString(),true),line('Bank',b.name),line('Account name',b.account_name,true),line('Account number',b.account_number,true));
+    c.append(el('div','mut','Put '+o.ref+' in the transfer narration if your bank allows it.'));
+  }else{
+    const net=o.method==='trc20'?'TRON (TRC20)':'BNB Smart Chain (BEP20)';
+    c.append(line('Amount',o.amount_usd+' USDT',true),line('Network',net),line('Address',D.pay[o.method],true));
+    c.append(el('div','warn','Send only USDT, on the '+net+' network. Funds sent on the wrong network can be lost.'));
+  }
+  if(D.pay.note)c.append(el('div','mut',D.pay.note));
+  const lab=el('label','','Transaction ID or transfer reference');const i=document.createElement('input');i.placeholder='Paste it here';
+  const msg=el('div','err');
+  const go=el('button','','I have paid');go.style.marginTop='8px';
+  go.onclick=async()=>{go.disabled=true;try{await api('/api/billing/order/'+o.id+'/paid','POST',{txid:i.value});openId=null;await load()}catch(e){msg.textContent=e.message;go.disabled=false}};
+  const cx=el('button','ghost','Cancel this order');cx.style.marginTop='8px';
+  cx.onclick=async()=>{try{await api('/api/billing/order/'+o.id+'/cancel','POST');openId=null;await load()}catch(e){msg.textContent=e.message}};
+  c.append(lab,i,go,cx,msg);w.append(c);
+}
+function renderOrders(){
+  const b=$('orders');b.textContent='';
+  if(!D.orders.length){b.append(el('span','mut','No orders yet.'));return}
+  D.orders.forEach(o=>{
+    const r=el('div');r.style.cssText='border-top:1px solid var(--line);padding:8px 0';
+    const h=el('div','hd');h.append(el('span','',o.label),el('span',o.status==='approved'?'win':o.status==='rejected'?'loss':'mut',STATUS[o.status]||o.status));
+    r.append(h,el('div','mut',o.ref+' \u00b7 '+o.method_label+' \u00b7 '+(o.currency==='NGN'?'\u20a6'+Math.round(o.amount_local).toLocaleString():usd(o.amount_usd))+' \u00b7 '+date(o.created_at)));
+    if(o.status==='rejected'&&o.note)r.append(el('div','warn',o.note));
+    if(o.status==='submitted')r.append(el('div','mut','We are checking your payment. Your signals are added once it is confirmed.'));
+    if(o.status==='pending'){const k=el('button','ghost','Continue payment');k.style.cssText='width:auto;padding:6px 12px;margin-top:6px';k.onclick=()=>{openId=o.id;renderOpen();window.scrollTo({top:0,behavior:'smooth'})};r.append(k)}
+    b.append(r)});
+}
+function renderLedger(){
+  const b=$('ledger');b.textContent='';
+  if(!D.ledger.length){b.append(el('span','mut','Nothing yet.'));return}
+  D.ledger.forEach(x=>{const r=el('div','kv');r.append(el('span','',(KIND[x.kind]||x.kind)+' \u00b7 '+date(x.created_at)),el('span',x.delta>0?'win':'mut',(x.delta>0?'+':'')+x.delta));b.append(r)});
+}
+async function load(){
+  try{D=await api('/api/billing');renderBalance();renderOpen();renderShop();renderOrders();renderLedger()}
+  catch(e){$('bal').textContent=e.message}
+}
+load();
+</script>
+</body>
+</html>

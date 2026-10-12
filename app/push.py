@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import auth, dbx
+from . import auth, credits, dbx
 
 SCHEMA = """
     CREATE TABLE IF NOT EXISTS push_subs(id {ID}, user_id INTEGER NOT NULL, endpoint TEXT UNIQUE NOT NULL,
@@ -73,14 +73,15 @@ def notify_new(signal_ids: list, sender=None):
     sender, sent = sender or _send, 0
     now = datetime.now(timezone.utc)
     with closing(F.db()) as con:
-        subs = con.execute("SELECT s.*, u.tier FROM push_subs s JOIN users u ON u.id=s.user_id WHERE u.blocked=0 "
-                           "AND u.tier IN ('member','admin')").fetchall()
+        subs = con.execute("SELECT s.*, u.tier FROM push_subs s JOIN users u ON u.id=s.user_id WHERE u.blocked=0").fetchall()
         for sid in signal_ids:
             sig = con.execute("SELECT * FROM signals WHERE id=?", (sid,)).fetchone()
             if not sig:
                 continue
             for sub in [dict(s) for s in subs]:
                 uid = sub["user_id"]
+                if not credits.entitled({"id": uid, "tier": sub["tier"]}, "notify"):
+                    continue                      # members and admin always; others only with an active plan
                 p = F._prefs(con, uid)
                 if sig["style"] not in (p.get("notify_styles") or "").split(",") or _quiet(p, now):
                     continue
@@ -120,7 +121,7 @@ async def public_key(request):
 
 async def subscribe(request):
     user = auth.require_user(request)
-    if user["tier"] not in ("member", "admin"):
+    if not credits.entitled(user, "notify"):
         raise HTTPException(403, "Notifications are for paid members")
     d = await auth._json(request)
     k = d.get("keys") or {}

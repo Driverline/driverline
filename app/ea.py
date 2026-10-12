@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import auth, dbx, journal
+from . import auth, credits, dbx, journal
 from .config import match_key
 
 MAX_BODY = 300_000
@@ -117,10 +117,12 @@ async def report(request):
     if not isinstance(acc, dict):
         raise HTTPException(422, "account is required")
     with closing(db()) as con:
-        r = con.execute("SELECT k.user_id, u.blocked FROM ea_keys k JOIN users u ON u.id=k.user_id "
+        r = con.execute("SELECT k.user_id, u.blocked, u.tier FROM ea_keys k JOIN users u ON u.id=k.user_id "
                         "WHERE k.key_hash=?", (_hash(key),)).fetchone()
         if not r or r["blocked"]:
             raise HTTPException(401, "Invalid or revoked connection key")
+        if not credits.mt5_allowed({"id": r["user_id"], "tier": r["tier"]}):
+            raise HTTPException(403, "The MT5 connection is part of Signals Pro. Renew it in the Billing tab.")
         uid, now = r["user_id"], time.time()
         if now - _last_report.get(uid, 0) < 3:
             raise HTTPException(429, "Too many reports; wait a few seconds")
@@ -150,10 +152,12 @@ def _key_user(con, request) -> int:
     key = request.headers.get("x-driverline-key", "")
     if not key:
         raise HTTPException(401, "Missing connection key")
-    r = con.execute("SELECT k.user_id, u.blocked FROM ea_keys k JOIN users u ON u.id=k.user_id "
+    r = con.execute("SELECT k.user_id, u.blocked, u.tier FROM ea_keys k JOIN users u ON u.id=k.user_id "
                     "WHERE k.key_hash=?", (_hash(key),)).fetchone()
     if not r or r["blocked"]:
         raise HTTPException(401, "Invalid or revoked connection key")
+    if not credits.mt5_allowed({"id": r["user_id"], "tier": r["tier"]}):
+        raise HTTPException(403, "The MT5 connection is part of Signals Pro. Renew it in the Billing tab.")
     return r["user_id"]
 
 
@@ -322,6 +326,8 @@ def queue_open(con, uid: int, payload: dict) -> int:
 
 async def key_create(request):
     u = auth.require_user(request)
+    if not credits.mt5_allowed(u):
+        raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
     raw = "dlk_" + secrets.token_urlsafe(24)
     with closing(db()) as con:
         con.execute("INSERT INTO ea_keys(user_id,key_hash,created_at) VALUES(?,?,?) "
@@ -350,7 +356,7 @@ async def status(request):
                           "ORDER BY id DESC LIMIT 1", (u["id"],)).fetchone()
     now = time.time()
     seen = k["last_seen"] if k else None
-    out = {"has_key": bool(k), "connected": bool(seen and now - seen < 120),
+    out = {"mt5_allowed": credits.mt5_allowed(u), "has_key": bool(k), "connected": bool(seen and now - seen < 120),
            "last_seen_ago": int(now - seen) if seen else None, "rules": rules, "manage": mg}
     if s:
         st = json.loads(s["state"])

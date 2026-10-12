@@ -58,6 +58,7 @@ async function load(){
     if(mgFirst){['be_on','tsl_on','ttp_on'].forEach(k=>{$(k).checked=!!mg[k]});['be_trigger','be_offset','tsl_start','tsl_dist','ttp_near','ttp_step'].forEach(k=>{$(k).value=mg[k]});mgFirst=false}
     $('mgnote').textContent=s.can_manage?'Auto-manage is allowed in your EA and ready.':(s.connected?'Switch on AllowManage in the EA settings in MT5 to use this.':'Connect your MT5 first, using the steps above.');
     const c=$('conn');c.textContent='';
+    if(s.mt5_allowed===false){const w=el('div','warn','The MT5 connection is part of Signals Pro. Buy or renew it in the Billing tab.');w.style.marginBottom='8px';c.append(w)}
     c.append(kv('Status',s.connected?'Connected':(s.has_key?'Key created, EA not connected':'Not set up'),s.connected?'win':'mut'));
     if(s.last_seen_ago!==null)c.append(kv('Last sync',s.last_seen_ago+' seconds ago'));
     if(s.account){const a=s.account;

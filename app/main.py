@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, ea, journal, push, radar, signal_feed
+from . import admin, auth, credits, ea, journal, push, radar, signal_feed
 from .config import INSTRUMENTS, market
 from .deriv import fetch_candles, fetch_active_symbols
 from .indicators import analyze_all
@@ -156,6 +156,7 @@ routes = [
     *ea.routes,
     *signal_feed.routes,
     *push.routes,
+    *credits.routes,
     *journal.routes,
     Mount("/", app=StaticFiles(directory=str(STATIC_DIR), html=True), name="static"),
 ]
