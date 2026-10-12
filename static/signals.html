@@ -25,7 +25,7 @@
 </main>
 <script>
 const $=id=>document.getElementById(id);
-const STY={scalp:'Scalp',day:'Day',swing:'Swing'},SET={ema_pullback:'EMA pullback',squeeze_breakout:'Squeeze breakout',range_breakout:'20-bar breakout',range_reversal:'Range reversal'};
+const STY={scalp:'Scalp',day:'Day',swing:'Swing',h4:'H4'},SET={trend_pullback:'Trend pullback',ema_pullback:'EMA pullback',squeeze_breakout:'Squeeze breakout',range_breakout:'20-bar breakout',range_reversal:'Range reversal'};
 const pct=x=>Math.round(x*100)+'%',sg=x=>(x>=0?'+':'')+x.toFixed(2);
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
 function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||'',v));return d}
@@ -140,7 +140,7 @@ function renderList(){
 }
 function renderChips(){
   const c=$('chips');c.textContent='';
-  [['all','All'],['scalp','Scalp'],['day','Day'],['swing','Swing']].forEach(([k,t])=>{const b=el('button',k===filter?'':'ghost',t);b.onclick=()=>{filter=k;renderChips();renderList()};c.append(b)});
+  [['all','All'],['scalp','Scalp'],['day','Day'],['swing','Swing'],['h4','H4 gold']].forEach(([k,t])=>{const b=el('button',k===filter?'':'ghost',t);b.onclick=()=>{filter=k;renderChips();renderList()};c.append(b)});
 }
 async function renderRecord(){
   try{
@@ -160,8 +160,8 @@ async function renderNotif(){
   try{p=await api('/api/signals/notify')}catch(e){}
   const sub=('serviceWorker' in navigator&&'PushManager' in window)?await pushState():null;
   n.append(el('div','mut',sub?'Notifications are on for this device.':'Notifications are off for this device. On iPhone, add TradeLens to your home screen first.'));
-  const styles=['scalp','day','swing'],boxes={};
-  styles.forEach(k=>{const l=el('label','sw');const i=document.createElement('input');i.type='checkbox';i.checked=p.styles.includes(k);boxes[k]=i;l.append(i,document.createTextNode(STY[k]+' setups'));n.append(l)});
+  const styles=['scalp','day','swing','h4'],boxes={};
+  styles.forEach(k=>{const l=el('label','sw');const i=document.createElement('input');i.type='checkbox';i.checked=p.styles.includes(k);boxes[k]=i;l.append(i,document.createTextNode((k==='h4'?'H4 gold':STY[k])+' setups'));n.append(l)});
   const row=el('div','row'),qs=document.createElement('input'),qe=document.createElement('input');
   [qs,qe].forEach(i=>{i.type='number';i.min=0;i.max=23;i.inputMode='numeric'});qs.placeholder='Quiet from (hour)';qe.placeholder='Quiet until (hour)';
   qs.value=p.quiet_start??'';qe.value=p.quiet_end??'';row.append(qs,qe);n.append(row);

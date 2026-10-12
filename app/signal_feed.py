@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from . import auth, dbx, journal, radar
+from . import fxresearch as FX
 from . import signals as S
 from .config import INSTRUMENTS, market, match_key, spread as spread_of
 
@@ -24,7 +25,10 @@ CFG = {"exec_max_dev_r": 0.5, "min_publish_t": -1.0, "fallback_rr": 1.5, "limit_
        "view_hours": 12, "min_pooled_n": 300,
        # Forex and gold are judged on their own backtest results and stay OFF until real_markets_enabled is switched on
        # (DRIVERLINE_FEED_CONFIG='{"real_markets_enabled": true}') after the owner has reviewed those results.
-       "real_markets_enabled": False, "min_publish_t_real": 0.0}
+       "real_markets_enabled": False, "min_publish_t_real": 0.0,
+       # Strategies in VALIDATED below passed the forex/gold research on 6 years of broker history. They stay OFF until
+       # validated_enabled is switched on (DRIVERLINE_FEED_CONFIG='{"validated_enabled": true}').
+       "validated_enabled": False}
 try:
     radar._merge(CFG, json.loads(__import__("os").environ.get("DRIVERLINE_FEED_CONFIG", "{}")))
 except ValueError:
@@ -50,6 +54,19 @@ SCHEMA = """
 def db():
     auth.db().close()
     return dbx.connect("feed", SCHEMA)
+
+
+# Styles beyond the backtest's three: the H4 setups of the validated real-market strategies.
+PERIOD = {**S.PERIOD, "D1": 86400}
+ALL_STYLES = {**S.STYLES, "h4": {"tf": "H4", "ctx": "D1", "horizon": 30}}
+# (market, style, setup) -> a strategy that passed the offline research (see fxresearch.py), with its measured results
+# on 6 years of broker history (spread 0.40 per ounce, 261 trades). They are shown to members as the historical test.
+VALIDATED = {
+    ("metal", "h4", "trend_pullback"): {
+        "instruments": ("xauusd",), "tf": "H4", "ctx": "D1", "rr": 2.0, "stop_atr": 2.0,
+        "bt": {"n": 261, "hit": 0.38, "be": 0.34, "avg_r": 0.29, "t": 3.3},
+        "note": "Gold rose strongly over the test years, which helped this trend setup; long trades did better than short ones"},
+}
 
 
 def _today() -> str:
@@ -121,13 +138,15 @@ def risk_rating(setup: str, key: str, style: str, d: int, ctx_d: int, vol_ratio)
 # ---------------------------------------------------------------- scanning and tracking
 def evaluate(sig: dict, candles: list, now: int):
     """Real outcome of a published setup, from the candles after it. Same rules as the backtest."""
-    per = S.PERIOD[S.STYLES[sig["style"]]["tf"]]
-    horizon = S.STYLES[sig["style"]]["horizon"]
+    per = PERIOD[ALL_STYLES[sig["style"]]["tf"]]
+    horizon = ALL_STYLES[sig["style"]]["horizon"]
     d, sd = sig["direction"], abs(sig["entry"] - sig["stop"])
     sp = spread_of(sig["instrument"])      # forex and gold: cost is the assumed spread relative to the stop distance
     cost_r = sp / sd if sp > 0 and sd > 0 else S.BT_CFG["cost_atr"] / S.BT_CFG["stop_atr"]
     bars = [c for c in candles if c["epoch"] >= sig["bar_epoch"] + per]
     for c in bars[:horizon]:
+        if sp > 0 and ((d > 0 and c["open"] <= sig["stop"]) or (d < 0 and c["open"] >= sig["stop"])):
+            return "stop", d * (c["open"] - sig["entry"]) / sd - cost_r      # gapped through the stop: filled at the open
         hit_stop = (c["low"] <= sig["stop"]) if d > 0 else (c["high"] >= sig["stop"])
         hit_tgt = (c["high"] >= sig["target"]) if d > 0 else (c["low"] <= sig["target"])
         if hit_stop:
@@ -139,8 +158,70 @@ def evaluate(sig: dict, candles: list, now: int):
     return None
 
 
+async def scan_validated(now: int, data: dict = None) -> list:
+    """The validated real-market strategies. New signals only while validated_enabled is on; setups that are already
+    open keep being tracked either way. Returns the new signal ids."""
+    new = []
+    with closing(db()) as con:
+        has_open = con.execute("SELECT 1 FROM signals WHERE style='h4' AND status='open' LIMIT 1").fetchone()
+    if not CFG["validated_enabled"] and not has_open:
+        return new
+    if data is None:
+        from . import deriv
+        data = {}
+        for key in {k for v in VALIDATED.values() for k in v["instruments"]}:
+            try:
+                data.update(await deriv.fetch_multi([INSTRUMENTS[key][0]], ("H4", "D1"), 300))
+            except Exception as e:
+                print(f"[feed] validated fetch failed for {key}: {type(e).__name__}", flush=True)
+    with closing(db()) as con:
+        for (mk, style, setup), v in VALIDATED.items():
+            per = PERIOD[v["tf"]]
+            for key in v["instruments"]:
+                d = data.get(INSTRUMENTS[key][0])
+                if not d or v["tf"] not in d or v["ctx"] not in d or len(d[v["tf"]]) < 250 or len(d[v["ctx"]]) < 100:
+                    continue
+                for row in con.execute("SELECT * FROM signals WHERE instrument=? AND style=? AND setup=? AND status='open'",
+                                       (key, style, setup)).fetchall():
+                    res = evaluate(dict(row), d[v["tf"]], now)
+                    if res:
+                        con.execute("UPDATE signals SET status=?, result_r=?, closed_at=? WHERE id=?",
+                                    (res[0], res[1], now, row["id"]))
+                if not CFG["validated_enabled"]:
+                    continue
+                F, X = S.build(d[v["tf"]], False), S.build(d[v["ctx"]], False)
+                ctx = S.ctx_direction(F, X, per, PERIOD[v["ctx"]])
+                i = F["n"] - 1
+                if F["epoch"][i] + per > now:      # the newest candle is still forming
+                    i -= 1
+                if i < 210:
+                    continue
+                dirn, expires = FX.pullback_dir(F, ctx, i), F["epoch"][i] + 3 * per
+                if not dirn or now > expires:
+                    continue
+                if con.execute("SELECT 1 FROM signals WHERE instrument=? AND style=? AND setup=? AND bar_epoch=?",
+                               (key, style, setup, F["epoch"][i])).fetchone():
+                    continue
+                entry, atr = F["c"][i], F["atr"][i]
+                sd = v["stop_atr"] * atr
+                mean_atr = sum(F["atr"][i - 100:i]) / 100
+                risk, notes = risk_rating(setup, key, style, dirn, ctx[i], atr / mean_atr if mean_atr else None)
+                bt = v["bt"]
+                sid = con.insert(
+                    "INSERT INTO signals(created_at,bar_epoch,instrument,style,setup,direction,entry,stop,target,rr,atr,"
+                    "risk,risk_notes,bt_n,bt_hit,bt_be,bt_avg_r,bt_t,expires_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (now, F["epoch"][i], key, style, setup, dirn, entry, entry - dirn * sd, entry + dirn * v["rr"] * sd,
+                     v["rr"], atr, risk, "; ".join(notes + [v["note"]]), bt["n"], bt["hit"], bt["be"], bt["avg_r"], bt["t"],
+                     expires))
+                new.append(sid)
+        con.commit()
+    return new
+
+
 async def scan_signals(data: dict = None) -> list:
     """Checks the latest closed candles for setups and updates open ones. Returns the new signals."""
+    provided = data
     combos = allowed_combos()
     # Scan synthetic indices always; forex and gold only while they have published setups or still-open signals to track.
     with closing(db()) as con:
@@ -198,6 +279,7 @@ async def scan_signals(data: dict = None) -> list:
                          combo["hit"], combo["be"], combo["avg_r"], combo["t"], expires))
                     new.append(sid)
         con.commit()
+    new += await scan_validated(now, provided)
     return new
 
 
@@ -395,7 +477,7 @@ async def notify_prefs(request):
     with closing(db()) as con:
         if request.method == "POST":
             d = await _json(request)
-            styles = [s for s in d.get("styles", []) if s in S.STYLES]
+            styles = [s for s in d.get("styles", []) if s in ALL_STYLES]
             qs, qe = d.get("quiet_start"), d.get("quiet_end")
             tz = int(d.get("tz_offset") or 0)
             ok = lambda x: x is None or (isinstance(x, int) and 0 <= x <= 23)

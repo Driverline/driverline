@@ -53,14 +53,23 @@ LABELS = {"trend_pullback_h4": "H4 trend pullback", "donchian_h4": "H4 55-bar br
 
 
 # ---------------------------------------------------------------- the strategies: lists of (bar index, +1 buy / -1 sell)
-def sig_trend_pullback(F, ctx):
+def pullback_dir(F, ctx, i):
+    """+1 buy, -1 sell, 0 nothing, judged on the candle that just closed at index i (needs i >= 210).
+    Used by the research AND by the live scanner, so the two can never drift apart."""
     o, h, l, c, e20, e50 = F["o"], F["h"], F["l"], F["c"], F["e20"], F["e50"]
+    if ctx[i] > 0 and e20[i] > e50[i] > e50[i - 6] and c[i] > e20[i] and c[i] > o[i] and min(l[i - 2:i + 1]) <= e20[i]:
+        return 1
+    if ctx[i] < 0 and e20[i] < e50[i] < e50[i - 6] and c[i] < e20[i] and c[i] < o[i] and max(h[i - 2:i + 1]) >= e20[i]:
+        return -1
+    return 0
+
+
+def sig_trend_pullback(F, ctx):
     out = []
     for i in range(210, F["n"] - 1):
-        if ctx[i] > 0 and e20[i] > e50[i] > e50[i - 6] and c[i] > e20[i] and c[i] > o[i] and min(l[i - 2:i + 1]) <= e20[i]:
-            out.append((i, 1))
-        elif ctx[i] < 0 and e20[i] < e50[i] < e50[i - 6] and c[i] < e20[i] and c[i] < o[i] and max(h[i - 2:i + 1]) >= e20[i]:
-            out.append((i, -1))
+        d = pullback_dir(F, ctx, i)
+        if d:
+            out.append((i, d))
     return out
 
 
