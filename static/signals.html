@@ -14,12 +14,14 @@
 <body>
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
 <main>
+<div class="card" id="dvnote" hidden></div>
 <div class="card" id="budget"><span class="mut">Loading...</span></div>
 <div class="card"><h2>Look after your trades</h2>
 <div id="advice"></div></div>
 <div class="card" id="notif" hidden></div>
 <div class="chips" id="chips"></div>
 <div id="list"></div>
+<div class="card" id="dvtrades" hidden></div>
 <div class="card"><h2>Track record</h2><div id="record"><span class="mut">Loading...</span></div></div>
 <small class="dis">Setups are candidates, not predictions. On these indices the historical average result is close to zero after costs. Education and risk analysis only, not financial advice.</small>
 </main>
@@ -32,7 +34,7 @@ function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||
 async function api(path,method,body){
   const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
-let filter='all',state=null,hasEA=false,ea={},specs=[],execMsg={};
+let filter='all',state=null,hasEA=false,ea={},specs=[],execMsg={},dv={enabled:false},dvAcc=null,dvMsg={},hold=0;
 const norm=s=>String(s).toLowerCase().replace(/index/g,'').replace(/[^a-z0-9]/g,'');
 
 function ago(t){const m=Math.max(0,Math.round((Date.now()/1000-t)/60));return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'}
@@ -87,6 +89,7 @@ function card(s){
     if(s.status==='open'){
       c.append(el('div','warn','Set the stop when you enter. Track and close your trades; never leave them unattended.'));
       if(state.paid)c.append(execBlock(s));
+      if(dv.enabled&&s.market==='synthetic')c.append(derivBlock(s));
       const row=el('div','btns');row.append(copyBtn(s.name+' '+s.direction+' SL '+px(s,s.stop)+' TP '+px(s,s.target)));
       const lg=el('button','ghost','Log / size it');lg.onclick=()=>{try{localStorage.setItem('dl_last',JSON.stringify({key:s.instrument,direction:s.direction,entry:s.entry,stop:s.stop,target:s.target}))}catch(e){}location.href='/risk.html'};row.append(lg);c.append(row);
     }
@@ -134,6 +137,79 @@ function execBlock(s){
   };
   b.append(lot,info,go,out,el('div','mut','You decide to take each trade. TradeLens only passes your click to your own MT5. Manage open trades in the MT5 tab.'));
   return b;
+}
+
+// ---- take a setup as a Deriv trade (every member, free or paid) ----
+async function dvAccounts(force){
+  if(dvAcc&&!force&&Date.now()-dvAcc.t<300000)return dvAcc.list;
+  const r=await api('/api/deriv/accounts');dvAcc={t:Date.now(),list:r.accounts};return r.accounts}
+const usd=x=>Number(x).toFixed(2);
+function derivBlock(s){
+  const b=el('div');b.style.cssText='margin-top:12px;border-top:1px solid var(--line);padding-top:10px';
+  b.append(el('h2','','Take this trade on Deriv'));
+  if(!dv.connected){
+    b.append(el('div','mut','Connect your Deriv account to place this trade yourself. You choose how much you are willing to lose, review the trade, then confirm. TradeLens never trades without your tap.'));
+    const c=el('button','','Connect Deriv to trade');c.style.marginTop='8px';c.onclick=()=>{location.href='/auth/deriv/trade/start'};b.append(c);
+    return b}
+  const body=el('div');b.append(body);
+  (async()=>{
+    let list;try{list=await dvAccounts()}catch(e){body.append(el('div','err',e.message));if(/connect/i.test(e.message)){dv.connected=false}return}
+    if(!list.length){body.append(el('div','mut','No USD Deriv trading account was found on this connection.'));return}
+    const acc=document.createElement('select');
+    list.forEach(a=>{const o=document.createElement('option');o.value=a.id;o.textContent=(a.type==='real'?'REAL':'DEMO')+' \u00b7 '+a.id+(a.balance!==null?' \u00b7 '+usd(a.balance)+' '+a.currency:'');acc.append(o)});
+    try{const last=localStorage.getItem('dl_dv_acc');if(last&&list.some(a=>a.id===last))acc.value=last}catch(e){}
+    const risk=document.createElement('input');risk.type='number';risk.step='any';risk.min=dv.min_risk;risk.max=dv.max_risk;risk.inputMode='decimal';
+    risk.placeholder='Amount you will lose if the stop is hit (USD)';
+    try{risk.value=localStorage.getItem('dl_dv_risk')||'1'}catch(e){risk.value='1'}
+    const prev=el('button','','Preview trade');prev.style.marginTop='8px';
+    const out=el('div'),res=el('div',dvMsg[s.id]&&dvMsg[s.id].ok?'win':'err',dvMsg[s.id]?dvMsg[s.id].text:'');
+    body.append(el('div','mut','Choose a demo account to practise first. Real accounts use real money.'),acc,risk,prev,out,res);
+    const dis=el('button','ghost','Disconnect Deriv');dis.style.cssText='width:auto;padding:8px 12px;margin-top:8px';
+    dis.onclick=async()=>{try{await api('/api/deriv/disconnect','POST');dvAcc=null;load()}catch(e){res.textContent=e.message}};body.append(dis);
+    prev.onclick=async()=>{
+      out.textContent='';res.textContent='';prev.disabled=true;hold=1;
+      try{localStorage.setItem('dl_dv_acc',acc.value);localStorage.setItem('dl_dv_risk',risk.value)}catch(e){}
+      try{
+        const q=await api('/api/deriv/quote','POST',{signal_id:s.id,account_id:acc.value,risk:Number(risk.value)}),p=q.plan,real=q.account_type==='real';
+        out.append(el('h2','',q.direction+' '+q.name+' \u00b7 Multiplier x'+p.multiplier));
+        [['Account',(real?'REAL ':'DEMO ')+q.account_id],['Stake (the most you can lose)',usd(p.stake)+' USD'],['Stop loss',usd(p.stop_loss)+' USD (at the setup\u2019s stop)'],['Take profit',usd(p.take_profit)+' USD (at the setup\u2019s target)'],['Highest price we will accept',usd(q.max_price)+' USD']].forEach(([k,v])=>out.append(kv(k,v)));
+        out.append(el('div','mut','Deriv sets the final price when the trade is placed. A TradeLens markup of up to '+q.markup+'% is built into the price Deriv charges. In fast markets the stop can fill beyond its level, so the stake is your true maximum loss.'));
+        let ok=null;
+        if(real){const l=el('label','sw');ok=document.createElement('input');ok.type='checkbox';l.append(ok,document.createTextNode('This uses real money and I am placing this trade myself.'));out.append(l)}
+        const go=el('button','','Place trade on Deriv'),cx=el('button','ghost','Cancel');go.style.marginTop='8px';cx.style.cssText='width:auto;padding:8px 12px;margin-top:8px';
+        const rel=()=>{hold=0;prev.disabled=false};
+        cx.onclick=()=>{out.textContent='';rel()};
+        go.onclick=async()=>{
+          if(real&&!ok.checked){res.className='err';res.textContent='Tick the box to confirm this real-money trade.';return}
+          go.disabled=true;res.className='mut';res.textContent='Placing your trade on Deriv...';
+          try{
+            const r=await api('/api/deriv/trade','POST',{signal_id:s.id,account_id:q.account_id,plan:p,max_price:q.max_price,exp:q.exp,sig:q.sig,confirm_real:real&&ok.checked});
+            dvMsg[s.id]={ok:true,text:'Trade placed on your '+(real?'REAL':'DEMO')+' account. Contract '+r.contract_id+(r.buy_price!==undefined&&r.buy_price!==null?', cost '+usd(r.buy_price)+' USD':'')+'. Manage or close it in your Deriv app.'};
+            out.textContent='';res.className='win';res.textContent=dvMsg[s.id].text;rel();loadDvTrades();
+          }catch(e){dvMsg[s.id]=null;res.className='err';res.textContent=e.message;go.disabled=false}
+        };
+        out.append(go,cx);
+      }catch(e){res.className='err';res.textContent=e.message;rel()}
+    };
+  })();
+  return b;
+}
+async function loadDvTrades(){
+  const box=$('dvtrades');
+  if(!dv.enabled){box.hidden=true;return}
+  try{
+    const r=await api('/api/deriv/trades');box.textContent='';
+    if(!r.trades.length){box.hidden=true;return}
+    box.hidden=false;box.append(el('h2','','Your Deriv trades from TradeLens'));
+    r.trades.forEach(t=>box.append(el('div','mut',new Date(t.created_at*1000).toLocaleString()+' \u00b7 '+(t.account_type||'').toUpperCase()+' \u00b7 '+t.symbol+' '+(t.contract_type==='MULTUP'?'BUY':'SELL')+' x'+t.multiplier+' \u00b7 stake '+usd(t.stake)+' \u00b7 '+(t.status==='placed'?'placed (contract '+t.contract_id+')':'not placed'))));
+    box.append(el('div','mut','Results and open positions are in your Deriv app.'));
+  }catch(e){box.hidden=true}
+}
+function dvBanner(){
+  const q=new URLSearchParams(location.search).get('deriv');if(!q)return;
+  const n=$('dvnote');n.hidden=false;
+  n.textContent=q==='connected'?'Deriv is connected. Open a setup, choose an account and amount, and preview your trade. The connection lasts about an hour, then you tap Connect again.':'Deriv connection was cancelled, so nothing was changed.';
+  history.replaceState(null,'',location.pathname);
 }
 function renderList(){
   const l=$('list');l.textContent='';
@@ -190,11 +266,12 @@ async function load(){
   try{
     state=await api('/api/signals');
     try{const s=await api('/api/ea/status');hasEA=!!s.connected;ea=s;if(!specs.length)specs=await api('/api/ea/specs')}catch(e){ea={}}
-    renderBudget(state.budget,state.paid);renderAdvice();renderChips();renderList();
+    try{dv=await api('/api/deriv/status')}catch(e){dv={enabled:false}}
+    renderBudget(state.budget,state.paid);renderAdvice();renderChips();renderList();loadDvTrades();
   }catch(e){$('budget').textContent=e.message}
 }
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
-load();renderRecord();setInterval(load,60000);
+dvBanner();load();renderRecord();setInterval(()=>{if(!hold)load()},60000);
 setTimeout(async()=>{if(state)renderNotif()},900);
 </script>
 </body>

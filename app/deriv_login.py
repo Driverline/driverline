@@ -3,8 +3,8 @@
 What it does, step by step:
   1. The person taps "Continue with Deriv". We send them to Deriv's own OAuth page (authorization code with PKCE).
   2. Deriv sends them back with a one-time code. We swap it for an access token, read the list of their Deriv account
-     IDs once, and THROW THE TOKEN AWAY. Nothing about the token is stored or logged, and TradeLens never calls any
-     trading or payment endpoint.
+     IDs once, and THROW THE TOKEN AWAY. Nothing about the token is stored or logged, and this sign-up step never calls
+     any trading or payment endpoint (trading from a signal is a separate, optional step: see deriv_trade.py).
   3. If none of those Deriv accounts is linked to a TradeLens user yet, we issue one single-use invite code (a person
      who comes back before using it gets the same code, not a new one). The invite is remembered against their Deriv
      account IDs.
@@ -182,9 +182,12 @@ def _invite_open(code: str) -> bool:
 
 
 async def callback(request):
+    from . import deriv_trade
+    state = request.query_params.get("state", "")
+    if deriv_trade.owns_state(state):          # started from "Connect Deriv to trade" on a signal, not from sign-up
+        return await deriv_trade.callback(request)
     c = _cfg()
     q = request.query_params
-    state = q.get("state", "")
     verifier = _take_state(state)
     if not c["on"]:
         return _again("Deriv sign-in is not open yet.", 503)
@@ -228,8 +231,8 @@ async def callback(request):
                  "border-radius:12px;background:linear-gradient(135deg,var(--gold2),var(--gold));color:#0a0a0a;"
                  "text-decoration:none;font-weight:700'>Continue to create your account</a></div>"
                  "<p class='mut'>New members get free welcome signals when they sign up with this code. "
-                 "We read your Deriv account ID once to check it is real. TradeLens never places trades or moves money, "
-                 "and does not keep your Deriv access token.</p>")
+                 "This sign-in step only reads your Deriv account ID once to check it is real. It does not keep your Deriv "
+                 "access token and does not place trades. TradeLens never moves your money.</p>")
 
 
 def on_signup(uid: int, code: str):
