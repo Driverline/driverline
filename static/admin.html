@@ -91,6 +91,25 @@ async function loadBilling(box){
     save.onclick=async()=>{try{if(on.checked&&!r.enabled&&!confirm('Open billing to members now?'))return;
       const b={enabled:on.checked};Object.keys(f).forEach(k=>b[k]=f[k].value);await api('/billing/settings','POST',b);loadBilling(box)}catch(e){msg.className='err';msg.textContent=e.message}};
     box.append(save,msg);
+    box.append(el('h2','','Continue with Deriv'));
+    const dvOn=document.createElement('input');dvOn.type='checkbox';dvOn.checked=r.settings.deriv_enabled==='1';dvOn.style.width='auto';
+    const dvl=el('label','sw');dvl.append(dvOn,document.createTextNode(' Deriv sign-in is open on the sign-in page'));box.append(dvl);
+    const dv={};const dfield=(k,label,ph)=>{box.append(el('label','',label));const i=document.createElement('input');i.value=r.settings[k]||'';i.placeholder=ph||'';dv[k]=i;box.append(i)};
+    dfield('deriv_app_id','Deriv App ID');dfield('deriv_ib_link','Your Deriv IB link');dfield('deriv_cashier_url','Link behind "Fund your Deriv account" (optional)','https://...');
+    const dsave=el('button','','Save Deriv settings');dsave.style.marginTop='10px';const dmsg=el('div','mut');
+    dsave.onclick=async()=>{try{if(dvOn.checked&&r.settings.deriv_enabled!=='1'&&!confirm('Open Deriv sign-in to the public now?'))return;
+      const b={deriv_enabled:dvOn.checked?'1':'0'};Object.keys(dv).forEach(k=>b[k]=dv[k].value);await api('/billing/settings','POST',b);loadBilling(box)}catch(e){dmsg.className='err';dmsg.textContent=e.message}};
+    box.append(dsave,dmsg);
+    box.append(el('h2','','Help someone whose Deriv account is already linked'));
+    const la=document.createElement('input');la.placeholder='Deriv account ID (for example CR1234567)';const lo=el('div','mut');
+    const lk=el('button','ghost','Look up');lk.style.marginTop='8px';
+    lk.onclick=async()=>{lo.textContent='';lo.className='mut';try{const x=await api('/deriv/lookup?account_id='+encodeURIComponent(la.value.trim()));
+      if(!x.found){lo.textContent='Not linked to anyone and no invite issued for it.';return}
+      lo.textContent=x.linked?'Linked to '+(x.email||'a TradeLens user')+'.':'Verified, invite '+(x.invite_open?'not used yet.':'already used or removed.');
+      if(x.linked||x.invite_open){const ul=el('button','ghost','Unlink so they can verify again');ul.style.marginTop='8px';
+        ul.onclick=async()=>{if(!confirm('Unlink this Deriv account? Only do this once you are sure the person is the real owner. Welcome signals already given stay as they are.'))return;
+          try{await api('/deriv/unlink','POST',{account_id:la.value.trim()});lo.textContent='Unlinked.';ul.remove()}catch(e){alert(e.message)}};lo.append(document.createElement('br'),ul)}}catch(e){lo.className='err';lo.textContent=e.message}};
+    box.append(la,lk,lo);
     box.append(el('h2','','Orders waiting for you'));
     if(!r.open.length)box.append(el('div','mut','None right now.'));
     const money=o=>o.currency==='NGN'?'\u20a6'+Math.round(o.amount_local).toLocaleString():'$'+o.amount_usd;

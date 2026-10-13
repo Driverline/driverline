@@ -199,6 +199,11 @@ async def signup(request):
             raise
         con.execute("UPDATE invites SET uses_left=uses_left-1 WHERE code=?", (code,))
         con.commit()
+    try:                                       # a Deriv-verified invite links the Deriv account and gives welcome signals
+        from . import deriv_login
+        deriv_login.on_signup(uid, code)
+    except Exception as e:
+        print(f"[deriv] could not link account after signup: {type(e).__name__}", flush=True)
     return _session(JSONResponse({"ok": True}), uid, ph)
 
 

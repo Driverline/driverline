@@ -17,6 +17,7 @@
 <div class="card" id="bal"><span class="mut">Loading...</span></div>
 <div id="open"></div>
 <div id="shop"></div>
+<div class="card" id="fund" hidden><h2>Fund your Deriv account</h2><div class="mut">Deposits are made on Deriv's own secure site. TradeLens never handles your Deriv payments or funds.</div><a id="fundgo" href="#" target="_blank" rel="noopener" style="display:block;margin-top:8px;color:var(--gold2)">Open Deriv</a></div>
 <div class="card"><h2>Your orders</h2><div id="orders"><span class="mut">Loading...</span></div></div>
 <div class="card"><h2>Signal history</h2><div id="ledger"><span class="mut">Loading...</span></div></div>
 <small class="dis">Signals are rule-based setups for education and risk analysis, not financial advice. Past results do not guarantee future results. Signals are added after your payment is confirmed. Payments are non-refundable. <a href="/terms.html" style="color:var(--gold2)">Terms, Refunds and Support</a></small>
@@ -116,6 +117,7 @@ function renderLedger(){
 }
 async function load(){
   try{D=await api('/api/billing');renderBalance();renderOpen();renderShop();renderOrders();renderLedger();
+    try{const dv=await (await fetch('/api/public/deriv')).json();if(dv.enabled&&dv.cashier_url){$('fundgo').href=dv.cashier_url;$('fund').hidden=false}}catch(e){}
     try{const s=await (await fetch('/api/public/support')).json();$('sup').textContent=s.support?'Support: '+s.support:''}catch(e){}}
   catch(e){$('bal').textContent=e.message}
 }

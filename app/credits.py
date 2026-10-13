@@ -52,7 +52,7 @@ CATALOG = {
 }
 METHODS = {"trc20": "USDT (TRC20)", "bep20": "USDT (BEP20)", "ngn": "Naira bank transfer"}
 SETTING_KEYS = ("pay_trc20", "pay_bep20", "bank_name", "bank_account_name", "bank_account_number", "ngn_rate", "note",
-                "support")
+                "support", "deriv_enabled", "deriv_app_id", "deriv_ib_link", "deriv_cashier_url")
 
 
 def _migrate(con):
