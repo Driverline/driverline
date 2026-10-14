@@ -15,7 +15,7 @@ from .. import auth, deriv
 from ..config import DERIV_WS_URL
 from . import features as FT
 from . import research as RS
-from . import store, validate as VAL
+from . import store, structure as ST, validate as VAL
 
 TF = 300      # the stored timeframe: M5
 # Symbols we expect to exist. The codes are NOT confirmed: the probe checks them against Deriv's live symbol list, and
@@ -73,23 +73,62 @@ def bar_tick_stats(times: list, prices: list, bar: int = TF) -> dict:
 
 
 async def fetch_ticks(ws, symbol: str, start: int, end: int) -> tuple:
-    """All ticks between start and end, oldest first, paged backwards from `end`."""
-    got = {}
-    cur = end
+    """All ticks between start and end, oldest first, paged backwards from `end`. Returns (times, prices, info), where
+    info says how far back Deriv actually served and why the download stopped."""
+    got, cur, pages, reason = {}, end, 0, "reached_start"
     while True:
-        resp = await deriv._request(ws, {"ticks_history": symbol, "end": cur, "count": 5000, "style": "ticks"}, expect="history")
+        try:
+            resp = await deriv._request(ws, {"ticks_history": symbol, "end": cur, "count": 5000, "style": "ticks"}, expect="history")
+        except Exception as e:
+            reason = f"error: {str(e)[:80]}"
+            break
+        pages += 1
         h = resp["history"]
         times, prices = h.get("times") or [], h.get("prices") or []
         before = len(got)
         for t, p in zip(times, prices):
             if t >= start:
                 got[int(t)] = float(p)
-        if not times or len(got) == before or min(times) <= start:
+        if not times:
+            reason = "deriv_returned_no_older_ticks"
+            break
+        if min(times) <= start:
+            break
+        if len(got) == before:
+            reason = "no_progress"
             break
         cur = int(min(times)) - 1
         await asyncio.sleep(0.15)
     ts = sorted(got)
-    return ts, [got[t] for t in ts]
+    info = {"pages": pages, "ticks": len(ts), "oldest": ts[0] if ts else None, "newest": ts[-1] if ts else None,
+            "hours": round((ts[-1] - ts[0]) / 3600, 1) if len(ts) > 1 else 0, "stopped": reason}
+    return ts, [got[t] for t in ts], info
+
+
+async def tick_depth(ws, symbol: str, max_pages: int = 40) -> dict:
+    """How far back Deriv serves ticks for this symbol (pages of 5,000)."""
+    cur, oldest, newest, pages, total, reason = "latest", None, None, 0, 0, "page_limit"
+    while pages < max_pages:
+        try:
+            r = await deriv._request(ws, {"ticks_history": symbol, "end": cur, "count": 5000, "style": "ticks"}, expect="history")
+        except Exception as e:
+            reason = f"error: {str(e)[:80]}"
+            break
+        times = r["history"].get("times") or []
+        if not times:
+            reason = "no_more_data"
+            break
+        pages += 1
+        total += len(times)
+        lo, hi = int(min(times)), int(max(times))
+        newest = hi if newest is None else newest
+        if oldest is not None and lo >= oldest:
+            reason = "no_progress"
+            break
+        oldest, cur = lo, lo - 1
+        await asyncio.sleep(0.1)
+    return {"pages": pages, "ticks": total, "hours": round((newest - oldest) / 3600, 1) if oldest and newest else 0,
+            "stopped": reason}
 
 
 # ---------------------------------------------------------------- jobs
@@ -133,6 +172,10 @@ async def probe_job():
                     rec["ticks"] = tick_sample_stats([int(t) for t in r["history"]["times"]], [float(p) for p in r["history"]["prices"]])
                 except Exception as e:
                     rec["ticks"] = {"error": str(e)[:120]}
+                try:
+                    rec["tick_depth"] = await tick_depth(ws, code)
+                except Exception as e:
+                    rec["tick_depth"] = {"error": str(e)[:120]}
             result["symbols"][code] = rec
             await asyncio.sleep(0.3)
     rid = store.start_run("probe", params={"expected": list(EXPECTED)})
@@ -161,11 +204,13 @@ async def ingest_job(symbol: str, days: int, tick_days: int):
         if tick_days:
             _state["detail"] = f"downloading {symbol} ticks ({tick_days} days)"
             end = int(time.time())
-            times, prices = await fetch_ticks(ws, symbol, end - tick_days * 86400, end)
+            times, prices, tick_info = await fetch_ticks(ws, symbol, end - tick_days * 86400, end)
             stats = await asyncio.to_thread(bar_tick_stats, times, prices)
             await asyncio.to_thread(store.update_tick_stats, symbol, TF, stats)
     _state["detail"] = f"validating {symbol}"
     res = await asyncio.to_thread(_validate_and_register, symbol)
+    if tick_days:
+        res["ticks"] = tick_info
     rid = store.start_run("ingest", symbol, res["dataset_id"], params={"days": days, "tick_days": tick_days})
     store.finish_run(rid, res)
 
@@ -203,6 +248,40 @@ def _baselines_sync(symbol: str):
 
 async def baselines_job(symbol: str):
     await asyncio.to_thread(_baselines_sync, symbol)
+
+
+def _structure_sync(symbol: str, n_surrogates: int):
+    ds = store.latest_dataset(symbol, TF)
+    if not ds:
+        raise RuntimeError("There is no validated dataset for this symbol. Ingest it first.")
+    if ds["status"] == "invalid":
+        raise RuntimeError("The latest dataset failed validation, so it cannot be used.")
+    bars = store.load_candles(symbol, TF)
+    if VAL.dataset_hash(bars) != ds["sha256"]:
+        raise RuntimeError("The stored candles changed since they were validated. Validate again first.")
+    fam = ST.family_of(symbol)
+    fh, ch = FT.feature_spec_hash(), store.file_hash(ST.__file__)
+    for hyp in ST.FAMILY_TESTS[fam]:        # pre-registration: the hypotheses are on record before any test runs
+        store.register_model("hypothesis", f"hypothesis:{fam}:{hyp}", 1, {
+            "description": ST.HYPOTHESES[hyp], "family": fam, "alpha": ST.ALPHA, "segments": ["dev", "val"],
+            "horizons": ST.EVENT_H.get(hyp), "multiplicity": "Holm within each segment",
+            "replication_rule": "significant after adjustment in development AND validation, same direction"}, fh, ch)
+    bounds = RS.split_bounds(len(bars))
+    run_id = store.start_run("structure", symbol, ds["id"], split={k: list(v) for k, v in bounds.items() if k != "test"},
+                             params={"n_surrogates": n_surrogates, "family": fam, "dataset_sha": ds["sha256"]})
+    try:
+        res = ST.run_structure(bars, symbol, n_surrogates,
+                               lambda label, seg, params, metrics: store.log_trial(run_id, label, seg, params, metrics),
+                               lambda i, n: _state.update(detail=f"surrogate {i} of {n}"))
+        res["dataset"] = {"id": ds["id"], "sha256": ds["sha256"], "status": ds["status"]}
+        store.finish_run(run_id, res)
+    except Exception:
+        store.finish_run(run_id, {"error": "run failed"}, ok=False)
+        raise
+
+
+async def structure_job(symbol: str, n_surrogates: int):
+    await asyncio.to_thread(_structure_sync, symbol, n_surrogates)
 
 
 # ---------------------------------------------------------------- job runner and API
@@ -257,6 +336,19 @@ async def api_validate(request):
     return JSONResponse({"started": _start(validate_job(sym), "validate", sym)})
 
 
+async def api_structure(request):
+    auth.require_admin(request)
+    d = await auth._json(request)
+    sym = _symbol(d)
+    try:
+        n = int(d.get("n_surrogates", ST.SURROGATES_DEFAULT))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "n_surrogates must be a whole number")
+    if not 20 <= n <= 200:
+        raise HTTPException(422, "Use 20 to 200 surrogates")
+    return JSONResponse({"started": _start(structure_job(sym, n), "structure", sym)})
+
+
 async def api_baselines(request):
     auth.require_admin(request)
     sym = _symbol(await auth._json(request))
@@ -286,9 +378,11 @@ async def api_status(request):
                              "GROUP BY symbol, tf) m ON m.mid=d.id ORDER BY d.symbol").fetchall()
             runs = con.execute("SELECT id, symbol, result, finished_at FROM research_runs WHERE kind='baseline' "
                                "AND status='done' ORDER BY id DESC LIMIT 4").fetchall()
-        return probe, ds, runs
+            structure = con.execute("SELECT id, symbol, result, finished_at FROM research_runs WHERE kind='structure' "
+                                    "AND status='done' ORDER BY id DESC LIMIT 4").fetchall()
+        return probe, ds, runs, structure
 
-    probe, ds, runs = await asyncio.to_thread(read)
+    probe, ds, runs, structure = await asyncio.to_thread(read)
     datasets = []
     for d in ds:
         rep = json.loads(d["report"])
@@ -300,8 +394,16 @@ async def api_status(request):
         res = json.loads(r["result"])
         out_runs.append({"id": r["id"], "symbol": r["symbol"], "finished_at": r["finished_at"], "notable": res.get("notable", []),
                          "lines": _condense(res), "bounds": res.get("bounds")})
+    out_struct = []
+    for r in structure:
+        res = json.loads(r["result"])
+        out_struct.append({"id": r["id"], "symbol": r["symbol"], "family": res.get("family"), "finished_at": r["finished_at"],
+                           "verdict": res.get("verdict"), "tests_per_segment": res.get("tests_per_segment"),
+                           "n_surrogates": res.get("n_surrogates"),
+                           "replicated": [{k: x[k] for k in ("hypothesis", "name", "dev", "val", "dev_p_adj", "val_p_adj")}
+                                          for x in res.get("replicated", [])[:10]]})
     return JSONResponse({"state": dict(_state), "probe": json.loads(probe["result"]) if probe else None,
-                         "datasets": datasets, "runs": out_runs})
+                         "datasets": datasets, "runs": out_runs, "structure": out_struct})
 
 
 routes = [
@@ -310,4 +412,5 @@ routes = [
     Route("/api/admin/engine/ingest", api_ingest, methods=["POST"]),
     Route("/api/admin/engine/validate", api_validate, methods=["POST"]),
     Route("/api/admin/engine/baselines", api_baselines, methods=["POST"]),
+    Route("/api/admin/engine/structure", api_structure, methods=["POST"]),
 ]

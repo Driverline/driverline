@@ -178,7 +178,7 @@ async function loadEngine(box){
       box.append(el('h2','','What Deriv offers ('+dt(r.probe.checked_at)+')'));
       Object.entries(r.probe.symbols).forEach(([code,s])=>{
         const d=s.depth||{};const dep=['D1','H1','M5'].map(k=>d[k]?(d[k].error?k+' error':k+' '+d[k].days+'d'+(d[k].capped_by_request?'+':'')):'').filter(Boolean).join(', ');
-        const tk=s.ticks&&s.ticks.n?', ticks every '+s.ticks.median_gap_seconds+'s, steps '+(s.ticks.top_step_sizes||[]).map(x=>x.size+' ('+Math.round(x.share*100)+'%)').join('/'):'';
+        const tk=s.ticks&&s.ticks.n?', ticks every '+s.ticks.median_gap_seconds+'s, steps '+(s.ticks.top_step_sizes||[]).map(x=>x.size+' ('+Math.round(x.share*100)+'%)').join('/')+(s.tick_depth&&s.tick_depth.hours!==undefined?'; Deriv serves about '+s.tick_depth.hours+' hours of ticks (stopped: '+s.tick_depth.stopped+')':''):'';
         box.append(el('div',s.listed?'mut':'warn',code+' \u00b7 '+(s.display||s.label)+' \u00b7 '+(s.listed?'listed. History: '+dep+tk:'NOT on Deriv\'s list (the expected code is wrong or unavailable)')))});
     }
     box.append(el('h2','','Download and check history'));
@@ -195,7 +195,14 @@ async function loadEngine(box){
         el('div','mut','Tick statistics on '+Math.round((d.tick_stats_share||0)*100)+'% of bars'+(d.reasons.length?'. '+d.reasons.join('; '):'')));
       const row=el('div','btns');row.append(run('Validate again','/validate',{symbol:d.symbol}));
       if(d.status!=='invalid')row.append(run('Run baselines','/baselines',{symbol:d.symbol},'Run the baseline study on '+d.symbol+'? It uses development and validation data only.'));
+      if(d.status!=='invalid')row.append(run('Run structure tests','/structure',{symbol:d.symbol,n_surrogates:80},'Run the pre-registered structure tests on '+d.symbol+'? It registers the hypotheses first, uses development and validation data only, and takes a few minutes.'));
       c.append(row);box.append(c)});
+    box.append(el('h2','','Structure tests (pre-registered, Holm-adjusted, must replicate in both periods)'));
+    if(!(r.structure||[]).length)box.append(el('div','mut','No structure runs yet.'));
+    (r.structure||[]).forEach(u=>{
+      box.append(el('div','mut',u.symbol+' \u00b7 '+(u.family==='range_break'?'Range Break':'Step Index')+' \u00b7 run '+u.id+' \u00b7 '+dt(u.finished_at)+' \u00b7 '+u.tests_per_segment+' tests per period, '+u.n_surrogates+' shuffled copies'));
+      box.append(el('div',u.replicated.length?'warn':'mut',u.verdict));
+      u.replicated.forEach(x=>{const d=el('div','mut',x.hypothesis+' ('+x.name+'): development '+(x.dev===null?'-':Number(x.dev).toFixed(3))+', validation '+(x.val===null?'-':Number(x.val).toFixed(3))+', adjusted p '+Number(x.dev_p_adj).toExponential(1)+' / '+Number(x.val_p_adj).toExponential(1));d.style.fontSize='13px';box.append(d)})});
     box.append(el('h2','','Baseline results (1.5R target, average result after costs with 95% interval)'));
     if(!r.runs.length)box.append(el('div','mut','No baseline runs yet.'));
     r.runs.forEach(u=>{

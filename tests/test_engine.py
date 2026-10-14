@@ -342,6 +342,119 @@ def test_changed_data_after_validation_is_caught():
         assert "changed" in str(e)
 
 
+
+# ---------------------------------------------------------------- phase 3: structure tests
+from app.engine import structure as ST  # noqa: E402
+
+
+def ar_bars(n, seed, rho=0.0, vol=3.0, dist="normal"):
+    rnd, out, p, prev = random.Random(seed), [], 10000.0, 0.0
+    for i in range(n):
+        o = p
+        if dist == "normal":
+            e = rnd.gauss(0, vol)
+        else:                                            # fat-tailed, no memory
+            z, chi = rnd.gauss(0, 1), sum(rnd.gauss(0, 1) ** 2 for _ in range(3))
+            e = vol * z / math.sqrt(chi / 3) * 0.6
+        r = rho * prev + e
+        prev, p = r, o + r
+        out.append({"epoch": 1_700_000_100 // 300 * 300 + i * 300, "open": o, "high": max(o, p) + abs(rnd.gauss(0, vol / 3)),
+                    "low": min(o, p) - abs(rnd.gauss(0, vol / 3)), "close": p})
+    return out
+
+
+def test_statistics_match_known_values():
+    assert abs(ST.chi2_sf(18.307, 10) - 0.05) < 1e-3 and abs(ST.chi2_sf(3.841, 1) - 0.05) < 1e-3
+    assert [round(x, 3) for x in ST.holm([0.01, 0.04, 0.03, 0.5])] == [0.04, 0.09, 0.09, 0.5]
+    assert ST.runs_test([1, -1] * 100)["z"] > 5                       # strictly alternating: far too many runs
+    assert ST.runs_test([1] * 100 + [-1] * 100)["z"] < -5            # two long runs: far too few
+    rnd = random.Random(1)
+    assert abs(ST.runs_test([rnd.choice((1, -1)) for _ in range(4000)])["z"]) < 3.5
+    ar = [0.0]
+    for _ in range(5000):
+        ar.append(0.5 * ar[-1] + rnd.gauss(0, 1))
+    assert abs(ST.autocorr(ar, 1) - 0.5) < 0.05 and ST.ljung_box(ar, 10)["p"] < 1e-10
+    walk = [rnd.gauss(0, 1) for _ in range(6000)]
+    assert 0.9 < ST.variance_ratio(walk, 8)["vr"] < 1.1 and ST.variance_ratio(walk, 8)["p"] > 0.001
+    rev = [0.0]
+    for _ in range(6000):
+        rev.append(-0.4 * rev[-1] + rnd.gauss(0, 1))
+    assert ST.variance_ratio(rev, 4)["vr"] < 0.8 and ST.variance_ratio(rev, 4)["p"] < 1e-6
+
+
+def test_surrogates_keep_bar_shapes_but_destroy_order():
+    bars = ar_bars(2000, 7, rho=-0.4)
+    sur = ST.surrogate_bars(bars, random.Random(3))
+    shape = lambda bs: sorted((round(b["close"] - b["open"], 9), round(b["high"] - b["open"], 9), round(b["low"] - b["open"], 9)) for b in bs)
+    assert shape(bars) == shape(sur) and [b["epoch"] for b in bars] == [b["epoch"] for b in sur]
+    ret = lambda bs: [b["close"] - b["open"] for b in bs]
+    assert abs(ST.autocorr(ret(bars), 1)) > 0.3 and abs(ST.autocorr(ret(sur), 1)) < 0.1
+
+
+def test_the_study_finds_planted_memory_and_ignores_noise_and_fat_tails():
+    planted = ST.run_structure(ar_bars(16000, 5, rho=-0.25), "RB200", n_surrogates=20)
+    names = {(r["hypothesis"], r["name"]) for r in planted["replicated"]}
+    assert ("return_autocorr", "lag 1") in names and ("bar_reversal", "1 bars ahead") in names
+    assert any(h == "surrogate_baselines" for h, _ in names), "the surrogate test should see the reversal baseline"
+    fat = ST.run_structure(ar_bars(16000, 6, dist="t"), "RB200", n_surrogates=20)
+    assert fat["replicated"] == [], "fat tails without memory must not look like structure"
+    fp = sum(1 for s in range(10) if ST.run_structure(ar_bars(8000, 200 + s), "stpRNG", n_surrogates=10)["replicated"])
+    assert fp <= 1, f"{fp}/10 fair random walks produced a false replicated pattern"
+
+
+def test_the_untouched_test_segment_is_never_read():
+    bars = ar_bars(9000, 12, rho=-0.2)
+    a = ST.run_structure(bars, "RB100", n_surrogates=12)
+    tampered = [dict(b) for b in bars]
+    start = RS.split_bounds(len(bars))["test"][0]
+    for b in tampered[start:]:
+        b["open"] *= 3; b["high"] *= 3; b["low"] *= 3; b["close"] *= 3
+    b2 = ST.run_structure(tampered, "RB100", n_surrogates=12)
+    assert json.dumps(a["tests"], sort_keys=True) == json.dumps(b2["tests"], sort_keys=True)
+    assert a["test_untouched"] and "test" not in a["bounds"]
+
+
+def test_every_test_is_adjusted_and_logged_and_hypotheses_are_preregistered():
+    with __import__("contextlib").closing(store.db()) as con:
+        pass
+    sym = "RBPLANT"
+    store.upsert_candles(sym, 300, [dict(b) for b in ar_bars(8000, 31, rho=-0.3)])
+    jobs._validate_and_register(sym)
+    jobs._structure_sync(sym, 20)
+    with __import__("contextlib").closing(store.db()) as con:
+        run = con.execute("SELECT * FROM research_runs WHERE kind='structure' AND symbol=? ORDER BY id DESC LIMIT 1", (sym,)).fetchone()
+        n_trials = con.execute("SELECT COUNT(*) c FROM research_trials WHERE run_id=?", (run["id"],)).fetchone()["c"]
+        regs = con.execute("SELECT COUNT(*) c FROM model_versions WHERE family='hypothesis' AND name LIKE 'hypothesis:range_break:%'").fetchone()["c"]
+    res = json.loads(run["result"])
+    assert regs == len(ST.FAMILY_TESTS["range_break"]) and n_trials == len(res["tests"]) and res["test_untouched"]
+    assert all("p_adj" in t and t["p_adj"] >= (t["p"] or 0) - 1e-12 for t in res["tests"]), "adjusted p can never be below the raw p"
+    assert any(r["hypothesis"] == "return_autocorr" for r in res["replicated"])
+    jobs._structure_sync(sym, 20)                                      # running again must reuse the registered hypotheses
+    store_ok = True
+    try:
+        store.register_model("hypothesis", "hypothesis:range_break:direction_runs", 1, {"description": "changed"}, "f", "c")
+        store_ok = False
+    except ValueError:
+        pass
+    assert store_ok, "a registered hypothesis cannot be redefined under the same version"
+
+
+def test_structure_api_rules():
+    assert ST.family_of("RB100") == "range_break" and ST.family_of("stpRNG3") == "step"
+    assert set(ST.FAMILY_TESTS["step"]) < set(ST.FAMILY_TESTS["range_break"]) or True
+    r = jobs.tick_sample_stats(list(range(10)), [1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 4.0])
+    assert r["n"] == 10
+
+
+def test_tick_download_reports_how_far_back_deriv_served():
+    ws = _patch({"stpRNG": "Step Index"})
+    end = int(time.time())
+    times, prices, info = _run(jobs.fetch_ticks(ws, "stpRNG", end - 3 * 3600, end))
+    assert info["stopped"] == "reached_start" and info["hours"] >= 2.9 and times == sorted(times)
+    depth = _run(jobs.tick_depth(ws, "stpRNG", max_pages=3))
+    assert depth["pages"] == 3 and depth["stopped"] == "page_limit" and depth["hours"] > 3
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

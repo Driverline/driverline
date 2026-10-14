@@ -1,4 +1,4 @@
-# TradeLens AI signal engine: Phase 2 (research infrastructure)
+# TradeLens AI signal engine: research infrastructure (Phases 2 and 3)
 
 Status: research only. Nothing here publishes a signal or changes what members see.
 
@@ -48,3 +48,24 @@ must finish inside its own segment.
 
 ## Tests
 `python tests/test_engine.py` (or `python -m pytest tests`). No network needed: Deriv is replaced by a deterministic fake.
+
+
+## Phase 3: pre-registered structure tests (`app/engine/structure.py`)
+Question answered first: is there ANY structure to exploit in a symbol, before any strategy is built on it?
+- Hypotheses are fixed in code and registered as immutable model versions (`hypothesis:<family>:<name>`) before each run.
+- Step Index tests: direction runs, return autocorrelation (lags 1 to 10), variance ratios (2 to 32 bars), volatility
+  clustering, hour of the day, baseline results against order-shuffled surrogates, and bar-level reversal.
+- Range Break adds event studies with the direction fixed in advance: breakout continuation, failed breakout reversal and
+  boundary-touch reversal against the prior 48-bar range.
+- Every test runs on the development and the validation segment separately. p-values are Holm-adjusted within each
+  segment. A pattern is REPLICATED only if it is significant after adjustment in both segments, in the same direction.
+- Surrogate test: bar shapes (open to close, high, low) are shuffled to destroy order, then the baselines are rerun; an
+  apparent edge that comes from how stops and targets are defined shows up in the surrogates too. The surrogates are built
+  from development and validation bars only.
+- The untouched test segment is never read (a test tampers with it and checks that nothing changes).
+- Calibration on planted data: planted memory is found; fat-tailed data with no memory and fair random walks are not.
+- Admin: "Run structure tests" per dataset. Results are condensed on the Admin card; every individual test is a row in
+  `research_trials`.
+- Probe now reports how many hours of ticks Deriv serves; the tick download reports how far back it got and why it stopped.
+
+A replicated pattern is a candidate only. It stays Research Only until it passes the untouched test and forward demo.
