@@ -38,6 +38,7 @@ function render(d){
   const s=el('div','card');s.append(el('h2','','Overview'),kv('Members',d.totals.users),kv('Paid (member)',d.totals.member),kv('Free',d.totals.free),kv('AI analyses used today',d.totals.ai_today),
     kv('Reset emails',d.mail_configured?'sending by email':'not set up: use "Reset link" below','mut'));root.append(s);
   const lb=el('div','card');lb.id='linkbox';lb.hidden=true;root.append(lb);
+  const gr=el('div','card');gr.append(el('h2','','Growth: which ads bring members'));const grb=el('div');gr.append(grb);root.append(gr);loadGrowth(grb);
 
   const inv=el('div','card');inv.append(el('h2','','Invite codes'));
   const t=document.createElement('select');opt(t,'free','free');opt(t,'member','member');
@@ -79,6 +80,37 @@ function render(d){
 }
 const STY={scalp:'Scalp (M5)',day:'Day (M15)',swing:'Swing (H1)'},SET={ema_pullback:'EMA pullback',squeeze_breakout:'Squeeze breakout',range_breakout:'20-bar breakout',range_reversal:'Range reversal'};
 const pct=x=>Math.round(x*100)+'%',sg=x=>(x>=0?'+':'')+x.toFixed(2);
+async function loadGrowth(box){
+  box.textContent='';
+  // 1. tracked-link builder
+  box.append(el('div','mut','Make a tracked link for each ad, creator or post. Use a different content tag for each video, so you can see which one wins.'));
+  const f={};[['source','Source (tiktok, instagram, youtube, creator name)','tiktok'],['campaign','Campaign (e.g. rules-before-clicks)','launch'],['content','Content / video (e.g. hook-a-20s)','hook-a']].forEach(([k,ph,v])=>{
+    const i=document.createElement('input');i.placeholder=ph;i.value=v;f[k]=i;box.append(i)});
+  const out=document.createElement('input');out.readOnly=true;out.onfocus=()=>out.select();
+  const mk=()=>{const q=new URLSearchParams();q.set('utm_source',f.source.value.trim()||'direct');q.set('utm_medium','paid');
+    q.set('utm_campaign',f.campaign.value.trim()||'none');q.set('utm_content',f.content.value.trim()||'none');
+    out.value=location.origin+'/login.html?'+q.toString()};
+  Object.values(f).forEach(i=>i.oninput=mk);mk();
+  const cp=el('button','','Copy link');cp.style.marginTop='8px';cp.onclick=async()=>{try{await navigator.clipboard.writeText(out.value);cp.textContent='Copied'}catch(e){out.select()}};
+  box.append(el('label','','Tracked link'),out,cp);
+  // 2. funnel
+  const days=document.createElement('select');[7,30,90].forEach(n=>opt(days,n,'Last '+n+' days'));days.value=30;days.style.marginTop='12px';
+  const res=el('div');box.append(days,res);
+  const pct=(a,b)=>b?Math.round(100*a/b)+'%':'-';
+  const show=async()=>{res.textContent='Loading...';
+    try{const d=await api('/funnel?days='+days.value);res.textContent='';
+      const t=d.totals;
+      res.append(el('h2','','All campaigns'),kv('Visits',t.visits),kv('Signups',t.signups+' ('+pct(t.signups,t.visits)+' of visits)'),
+        kv('Verified with Deriv',t.verified),kv('Opened a setup',t.opened+' ('+pct(t.opened,t.signups)+' of signups)'),
+        kv('Connected Deriv to trade',t.connected),kv('Placed a trade',t.traded+' ('+pct(t.traded,t.signups)+' of signups)'));
+      if(d.untracked_users)res.append(el('div','mut',d.untracked_users+' members joined before tracking started or without a campaign link, so they are not in the table below.'));
+      d.rows.forEach(r=>{const c=el('div','card');
+        c.append(el('h2','',r.source+' / '+r.campaign+' / '+r.content),kv('Visits',r.visits),kv('Signups',r.signups+' ('+pct(r.signups,r.visits)+')'),
+          kv('Verified with Deriv',r.verified),kv('Opened a setup',r.opened),kv('Connected Deriv',r.connected),kv('Placed a trade',r.traded));res.append(c)});
+      if(!d.rows.length)res.append(el('div','mut','No tracked visits yet. Share a tracked link and check back.'));
+    }catch(e){res.textContent=e.message}};
+  days.onchange=show;show();
+}
 async function loadBilling(box){
   try{
     const r=await api('/billing');box.textContent='';

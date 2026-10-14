@@ -223,6 +223,11 @@ async def signup(request):
         deriv_login.on_signup(uid, code)
     except Exception as e:
         print(f"[deriv] could not link account after signup: {type(e).__name__}", flush=True)
+    try:                                       # remember which ad or link brought this member (see track.py)
+        from . import track
+        track.record_signup(uid, request)
+    except Exception as e:
+        print(f"[track] could not record attribution: {type(e).__name__}", flush=True)
     return _session(JSONResponse({"ok": True}), uid, ph)
 
 
