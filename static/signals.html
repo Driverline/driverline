@@ -201,8 +201,23 @@ async function loadDvTrades(){
     const r=await api('/api/deriv/trades');box.textContent='';
     if(!r.trades.length){box.hidden=true;return}
     box.hidden=false;box.append(el('h2','','Your Deriv trades from TradeLens'));
-    r.trades.forEach(t=>box.append(el('div','mut',new Date(t.created_at*1000).toLocaleString()+' \u00b7 '+(t.account_type||'').toUpperCase()+' \u00b7 '+t.symbol+' '+(t.contract_type==='MULTUP'?'BUY':'SELL')+' x'+t.multiplier+' \u00b7 stake '+usd(t.stake)+' \u00b7 '+(t.status==='placed'?'placed (contract '+t.contract_id+')':'not placed'))));
-    box.append(el('div','mut','Results and open positions are in your Deriv app.'));
+    r.trades.forEach(t=>{
+      const row=el('div','mut');
+      row.append(document.createTextNode(new Date(t.created_at*1000).toLocaleString()+' \u00b7 '+(t.account_type||'').toUpperCase()+' \u00b7 '+t.symbol+' '+(t.contract_type==='MULTUP'?'BUY':'SELL')+' x'+t.multiplier+' \u00b7 stake '+usd(t.stake)+' \u00b7 '+(t.status==='placed'?'contract '+t.contract_id:'not placed')));
+      if(t.status==='placed'){
+        if(t.result_status&&t.profit!==null){row.append(el('b',t.profit>=0?'win':'loss',' \u00b7 closed: '+(t.profit>=0?'made ':'lost ')+usd(Math.abs(t.profit))+' USD'))}
+        else{
+          const msg=el('span','mut'),b=el('button','ghost','Check result');b.style.cssText='width:auto;padding:6px 10px;margin:4px 0 0 8px';
+          b.onclick=async()=>{b.disabled=true;msg.className='mut';msg.textContent=' Asking Deriv...';
+            try{const c=await api('/api/deriv/trades/'+t.id+'/check','POST');
+              if(c.closed){loadDvTrades();return}
+              msg.className='mut';msg.textContent=' Still open'+(c.profit!==null?'. Profit or loss right now: '+(c.profit>=0?'+':'-')+usd(Math.abs(c.profit))+' USD':'')+'.';
+            }catch(e){msg.className='err';msg.textContent=' '+e.message}
+            b.disabled=false};
+          row.append(b,msg)}
+      }
+      box.append(row)});
+    box.append(el('div','mut','You can also see every trade in your Deriv app under Reports.'));
   }catch(e){box.hidden=true}
 }
 function dvBanner(){

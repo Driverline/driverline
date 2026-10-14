@@ -80,9 +80,15 @@ SCHEMA = """
     CREATE UNIQUE INDEX IF NOT EXISTS ux_dtrades_active ON deriv_trades(user_id, signal_id) WHERE status IN ('sending','placed')"""
 
 
+def _migrate(con):
+    con.add_column("deriv_trades", "result_status", "TEXT")
+    con.add_column("deriv_trades", "profit", "DOUBLE PRECISION")
+    con.add_column("deriv_trades", "checked_at", "BIGINT")
+
+
 def db():
     auth.db().close()
-    return dbx.connect("dtrade", SCHEMA)
+    return dbx.connect("dtrade", SCHEMA, _migrate)
 
 
 def _enabled():
@@ -503,7 +509,8 @@ def _err_text(resp: dict):
     return " | ".join(parts)
 
 
-async def _buy_once(app_id: str, token: str, account_id: str, code: str, plan: dict, max_price: float, with_markup: bool):
+async def _otp_url(app_id: str, token: str, account_id: str) -> str:
+    """A one-time authenticated WebSocket address for one Deriv account. Never logged."""
     async with httpx.AsyncClient(timeout=20) as cl:
         r = await cl.post(f"{ACCOUNTS_URL}/{account_id}/otp", headers=_headers(app_id, token))
     if r.status_code in (401, 403):
@@ -512,6 +519,11 @@ async def _buy_once(app_id: str, token: str, account_id: str, code: str, plan: d
     url = (r.json().get("data") or {}).get("url", "")
     if not (isinstance(url, str) and url.startswith(WS_PREFIX)):
         raise RuntimeError("Deriv returned an unexpected connection address")
+    return url
+
+
+async def _buy_once(app_id: str, token: str, account_id: str, code: str, plan: dict, max_price: float, with_markup: bool):
+    url = await _otp_url(app_id, token, account_id)
     params = {"contract_type": plan["contract_type"], "currency": "USD", "underlying_symbol": code, "amount": plan["stake"],
               "basis": "stake", "multiplier": _mult(plan["multiplier"]),
               "limit_order": {"stop_loss": plan["stop_loss"], "take_profit": plan["take_profit"]}}
@@ -624,9 +636,53 @@ async def my_trades(request):
     user = auth.require_user(request)
     with closing(db()) as con:
         rows = con.execute("SELECT id, signal_id, account_type, symbol, contract_type, multiplier, stake, stop_loss, "
-                           "take_profit, buy_price, contract_id, status, created_at FROM deriv_trades WHERE user_id=? "
+                           "take_profit, buy_price, contract_id, status, created_at, result_status, profit FROM deriv_trades WHERE user_id=? "
                            "AND status IN ('placed','failed') ORDER BY id DESC LIMIT 15", (user["id"],)).fetchall()
     return JSONResponse({"trades": [dict(r) for r in rows]})
+
+
+def _num_or_none(v):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+async def check_trade(request):
+    """Asks Deriv whether one of the member's contracts is still open, and what it made or lost. Read-only."""
+    user = auth.require_user(request)
+    tid = request.path_params["tid"]
+    app_id, token = _session(user)
+    with closing(db()) as con:
+        r = con.execute("SELECT account_id, contract_id FROM deriv_trades WHERE id=? AND user_id=? AND status='placed'",
+                        (tid, user["id"])).fetchone()
+    try:
+        cid = int(r["contract_id"]) if r else 0
+    except (TypeError, ValueError):
+        cid = 0
+    if not cid:
+        raise HTTPException(404, "Trade not found")
+    try:
+        url = await _otp_url(app_id, token, r["account_id"])
+        async with websockets.connect(url, open_timeout=15) as ws:
+            resp = await asyncio.wait_for(deriv._request(ws, {"proposal_open_contract": 1, "contract_id": cid},
+                                                         expect="proposal_open_contract"), timeout=20)
+    except PermissionError:
+        _drop_token(user["id"])
+        raise HTTPException(409, "Your Deriv connection has expired. Tap Connect Deriv to trade again, then check again.")
+    except RuntimeError as e:
+        raise HTTPException(422, "Deriv could not give the result: " + str(e).replace("Deriv API error: ", "")[:200])
+    except (asyncio.TimeoutError, OSError, httpx.HTTPError, websockets.WebSocketException):
+        raise HTTPException(502, "Deriv did not answer just now. Please try again in a moment.")
+    c = resp.get("proposal_open_contract") or {}
+    status = str(c.get("status") or "").lower()
+    closed = bool(c.get("is_sold")) or status in ("won", "lost", "sold")
+    profit = _num_or_none(c.get("profit"))
+    if profit is None and _num_or_none(c.get("sell_price")) is not None and _num_or_none(c.get("buy_price")) is not None:
+        profit = round(float(c["sell_price"]) - float(c["buy_price"]), 2)
+    if closed and profit is not None:
+        with closing(db()) as con:
+            con.execute("UPDATE deriv_trades SET result_status=?, profit=?, checked_at=? WHERE id=? AND user_id=?",
+                        (status or "closed", profit, int(time.time()), tid, user["id"]))
+            con.commit()
+    return JSONResponse({"closed": closed, "profit": profit, "status": status})
 
 
 routes = [
@@ -637,4 +693,5 @@ routes = [
     Route("/api/deriv/quote", quote, methods=["POST"]),
     Route("/api/deriv/trade", trade, methods=["POST"]),
     Route("/api/deriv/trades", my_trades, methods=["GET"]),
+    Route("/api/deriv/trades/{tid:int}/check", check_trade, methods=["POST"]),
 ]
