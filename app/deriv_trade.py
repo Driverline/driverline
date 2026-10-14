@@ -6,9 +6,10 @@ How it works, step by step:
   2. Deriv sends them back. We swap the one-time code for an access token. Deriv tokens last about one hour, so the token
      is stored ENCRYPTED with its expiry, used only for the member's own trades, and deleted when it expires or when the
      member taps Disconnect. After it expires the member simply taps Connect again.
-  3. On a signal the member has already opened, they enter how much they are willing to lose if the stop is hit. We turn
-     the setup into a Deriv Multiplier contract (MULTUP for a BUY, MULTDOWN for a SELL) with a stop loss and take profit
-     worked out from the setup's own stop and target distances, and we ask Deriv to price it (a quote).
+  3. On a signal the member has already opened, they may type a stake in USD. If they leave it empty we use the SMALLEST
+     stake Deriv allows for that index. We turn the setup into a Deriv Multiplier contract (MULTUP for a BUY, MULTDOWN for a
+     SELL) with a stop loss and take profit worked out from the setup's own stop and target distances, and we ask Deriv to
+     price it (a quote).
   4. The member reads the summary and taps "Place trade". Only then do we buy the contract through Deriv's
      authenticated WebSocket, with TradeLens's markup (DERIV_MARKUP_PCT, default 2, Deriv's maximum is 3) attached.
 The member always places the trade themselves. Nothing here ever trades without that tap, and nothing moves money in or out.
@@ -17,8 +18,7 @@ Environment variables (all optional):
   DERIV_TRADING=0       switches trading off everywhere without a redeploy of code
   DERIV_MARKUP_PCT=2    the markup you set on the app at developers.deriv.com (shown to members and recorded; 0 to 3)
   DERIV_SEND_MARKUP=1   also send it inside each purchase (off by default: Deriv applies the app's own markup)
-  DERIV_MAX_RISK=50     most a member may risk on one trade, in USD
-  DERIV_MAX_STAKE=100   largest stake allowed on one trade, in USD
+  DERIV_MAX_STAKE=100   largest stake a member may choose on one trade, in USD
 """
 import asyncio
 import base64
@@ -50,7 +50,7 @@ STATE_TTL = 600
 PLAN_TTL = 120            # seconds a quote stays valid before the member must preview again
 STOP_OUT_CAP = 0.8        # the multiplier is chosen so the stop sits well inside Deriv's own stop-out level
 PRICE_SLACK = 1.10        # the most we allow Deriv to charge above the quoted price (a safety ceiling, not a target)
-MIN_RISK = 0.5
+MIN_STAKE = 0.1
 # Used only when Deriv does not tell us which multipliers an index offers; each one is checked by a real quote.
 PROBE = [3000, 2000, 1000, 500, 400, 300, 200, 100, 60, 50, 40, 30, 20, 10, 5, 3, 2]
 
@@ -64,7 +64,6 @@ def _num(name: str, default: float) -> float:
 
 
 MARKUP = min(3.0, max(0.0, _num("DERIV_MARKUP_PCT", 2.0)))
-MAX_RISK = max(MIN_RISK, _num("DERIV_MAX_RISK", 50.0))
 MAX_STAKE = max(1.0, _num("DERIV_MAX_STAKE", 100.0))
 
 SCHEMA = """
@@ -244,22 +243,23 @@ def candidates(sig, options) -> list:
     return ok
 
 
-def plan_for(sig, risk: float, m: float) -> dict:
-    """Stake, stop loss and take profit (USD) so that hitting the setup's stop loses `risk` and its target wins risk x RR."""
+def plan_for(sig, stake: float, m: float) -> dict:
+    """Stop loss and take profit (USD) for a given stake and multiplier: hitting the setup's stop loses `stop_loss`, and its
+    target wins stop_loss x RR. The multiplier is chosen (see candidates) so the stop sits inside Deriv's stop-out."""
     f = stop_fraction(sig)
-    e, s, t = float(sig["entry"]), float(sig["stop"]), float(sig["target"])
-    stake = round(risk / (m * f), 2)
-    if stake <= 0:
-        raise PlanError("That amount is too small to trade.")
+    e, s_, t = float(sig["entry"]), float(sig["stop"]), float(sig["target"])
+    stake = round(float(stake), 2)
+    if not (stake > 0):
+        raise PlanError("That stake is too small to trade.")
+    if stake > MAX_STAKE:
+        raise PlanError(f"The largest stake allowed here is {MAX_STAKE:g} USD. Choose a smaller stake.")
     sl = round(stake * m * f, 2)
-    rr = abs(t - e) / abs(e - s)
+    rr = abs(t - e) / abs(e - s_)
     tp = round(sl * rr, 2)
     if not (0 < sl < stake) or tp <= 0:
-        raise PlanError("This setup cannot be sized at that amount. Try a different amount.")
-    if stake > MAX_STAKE:
-        raise PlanError(f"That needs a stake of {stake:g} USD, above the {MAX_STAKE:g} USD maximum per trade. Risk a smaller amount.")
+        raise PlanError("This setup cannot be sized at that stake. Try a larger stake.")
     return {"contract_type": "MULTUP" if int(sig["direction"]) > 0 else "MULTDOWN", "multiplier": m, "stake": stake,
-            "stop_loss": sl, "take_profit": tp, "risk": sl}
+            "stop_loss": sl, "take_profit": tp}
 
 
 def _n(v) -> str:
@@ -300,8 +300,9 @@ def _proposal_req(code: str, plan: dict) -> dict:
             "limit_order": {"stop_loss": plan["stop_loss"], "take_profit": plan["take_profit"]}}
 
 
-async def _quote_public(sig, risk: float):
-    """Returns (plan, proposal dict, spot). Raises PlanError with a message the member can act on."""
+async def _quote_public(sig, stake):
+    """Returns (plan, proposal dict, spot). `stake` None means: the smallest stake Deriv accepts for this index (found by
+    asking Deriv: its refusal names the minimum). Raises PlanError with a message the member can act on."""
     code = INSTRUMENTS[sig["instrument"]][0]
     async with websockets.connect(DERIV_WS_URL, open_timeout=15) as ws:
         options = []
@@ -312,14 +313,23 @@ async def _quote_public(sig, risk: float):
             pass
         spot = await _spot(ws, code)
         last = "Deriv could not price this trade."
-        for m in candidates(sig, options)[:6]:
-            plan = plan_for(sig, risk, m)
-            try:
-                resp = await deriv._request(ws, _proposal_req(code, plan), expect="proposal")
-            except RuntimeError as e:
-                last = str(e).replace("Deriv API error: ", "")
-                continue
-            return plan, resp.get("proposal") or {}, spot
+        for m in candidates(sig, options)[:5]:
+            use = stake if stake is not None else 1.0
+            for attempt in range(3):
+                plan = plan_for(sig, use, m)
+                try:
+                    resp = await deriv._request(ws, _proposal_req(code, plan), expect="proposal")
+                    return plan, resp.get("proposal") or {}, spot
+                except RuntimeError as e:
+                    last = str(e).replace("Deriv API error: ", "")
+                    lo = re.search(r"minimum stake of\s*\$?\s*([\d.]+)", last, re.I)
+                    if stake is None and lo and float(lo.group(1)) > use:
+                        use = float(lo.group(1))
+                        continue
+                    if stake is None and not lo and re.search("stake", last, re.I) and attempt < 2:
+                        use = (2.0, 5.0)[attempt]
+                        continue
+                    break
     raise PlanError(last)
 
 
@@ -431,7 +441,7 @@ async def callback(request):
 async def status(request):
     user = auth.require_user(request)
     on, _ = _enabled()
-    out = {"enabled": on, "connected": False, "markup": MARKUP, "max_risk": MAX_RISK, "min_risk": MIN_RISK}
+    out = {"enabled": on, "connected": False, "markup": MARKUP, "max_stake": MAX_STAKE, "min_stake": MIN_STAKE}
     if on:
         with closing(db()) as con:
             r = con.execute("SELECT expires_at FROM deriv_tokens WHERE user_id=?", (user["id"],)).fetchone()
@@ -458,26 +468,28 @@ async def quote(request):
     user = auth.require_user(request)
     d = await _json(request)
     try:
-        sid, risk = int(d.get("signal_id")), float(d.get("risk"))
+        sid = int(d.get("signal_id"))
+        raw = d.get("stake")
+        stake = None if raw in (None, "") else float(raw)      # empty = the smallest stake Deriv allows for this index
     except (TypeError, ValueError):
-        raise HTTPException(422, "Enter the amount you are willing to lose as a number.")
+        raise HTTPException(422, "Enter the stake as a number, or leave it empty for the minimum.")
     account_id = str(d.get("account_id", ""))
-    if not (risk == risk and MIN_RISK <= risk <= MAX_RISK):
-        raise HTTPException(422, f"Enter an amount between {MIN_RISK:g} and {MAX_RISK:g} USD.")
+    if stake is not None and not (stake == stake and MIN_STAKE <= stake <= MAX_STAKE):
+        raise HTTPException(422, f"Enter a stake between {MIN_STAKE:g} and {MAX_STAKE:g} USD, or leave it empty for the minimum.")
     if not ID_RE.match(account_id):
         raise HTTPException(422, "Choose a Deriv account.")
     app_id, token = _session(user)
     sig = _fresh_signal(user, sid)
     acct = _pick_account(await _accounts(user["id"], app_id, token), account_id)
     try:
-        plan, prop, spot = await asyncio.wait_for(_quote_public(sig, risk), timeout=30)
+        plan, prop, spot = await asyncio.wait_for(_quote_public(sig, stake), timeout=30)
     except PlanError as e:
         raise HTTPException(422, str(e))
     except (asyncio.TimeoutError, OSError, websockets.WebSocketException):
         raise HTTPException(502, "Deriv did not answer just now. Please try again in a moment.")
     if acct["balance"] is not None and plan["stake"] > acct["balance"]:
         raise HTTPException(422, f"This needs a stake of {plan['stake']:g} USD but that account has {acct['balance']:g} USD. "
-                                 "Risk a smaller amount.")
+                                 "Choose a smaller stake.")
     from . import signal_feed as SF
     sd = abs(sig["entry"] - sig["stop"])
     if spot is not None and abs(spot - sig["entry"]) > SF.CFG["exec_max_dev_r"] * sd:
@@ -492,7 +504,7 @@ async def quote(request):
         "plan": plan, "account_id": acct["id"], "account_type": acct["type"], "max_price": max_price, "exp": exp,
         "sig": sign_plan(user["id"], sid, acct["id"], code, plan, max_price, exp),
         "name": INSTRUMENTS[sig["instrument"]][1], "direction": "BUY" if sig["direction"] > 0 else "SELL",
-        "ask_price": ask, "longcode": prop.get("longcode"), "markup": MARKUP})
+        "ask_price": ask, "longcode": prop.get("longcode"), "markup": MARKUP, "used_minimum": stake is None})
 
 
 def _err_text(resp: dict):

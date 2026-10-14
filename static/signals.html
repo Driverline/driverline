@@ -146,9 +146,9 @@ async function dvAccounts(force){
 const usd=x=>Number(x).toFixed(2);
 function derivBlock(s){
   const b=el('div');b.style.cssText='margin-top:12px;border-top:1px solid var(--line);padding-top:10px';
-  b.append(el('h2','','Take this trade on Deriv'));
+  b.append(el('h2','','Trade on Deriv (Multiplier)'));
   if(!dv.connected){
-    b.append(el('div','mut','Connect your Deriv account to place this trade yourself. You choose how much you are willing to lose, review the trade, then confirm. TradeLens never trades without your tap.'));
+    b.append(el('div','mut','Connect your Deriv account to place this setup yourself as a Deriv Multiplier trade. You review it, then confirm. TradeLens never trades without your tap.'));
     const c=el('button','','Connect Deriv to trade');c.style.marginTop='8px';c.onclick=()=>{location.href='/auth/deriv/trade/start'};b.append(c);
     return b}
   const body=el('div');b.append(body);
@@ -158,21 +158,21 @@ function derivBlock(s){
     const acc=document.createElement('select');
     list.forEach(a=>{const o=document.createElement('option');o.value=a.id;o.textContent=(a.type==='real'?'REAL':'DEMO')+' \u00b7 '+a.id+(a.balance!==null?' \u00b7 '+usd(a.balance)+' '+a.currency:'');acc.append(o)});
     try{const last=localStorage.getItem('dl_dv_acc');if(last&&list.some(a=>a.id===last))acc.value=last}catch(e){}
-    const risk=document.createElement('input');risk.type='number';risk.step='any';risk.min=dv.min_risk;risk.max=dv.max_risk;risk.inputMode='decimal';
-    risk.placeholder='Amount you will lose if the stop is hit (USD)';
-    try{risk.value=localStorage.getItem('dl_dv_risk')||'1'}catch(e){risk.value='1'}
+    const risk=document.createElement('input');risk.type='number';risk.step='any';risk.min=dv.min_stake;risk.max=dv.max_stake;risk.inputMode='decimal';
+    risk.placeholder='Stake in USD (empty = smallest Deriv allows)';
+    try{risk.value=localStorage.getItem('dl_dv_stake')||''}catch(e){}
     const prev=el('button','','Preview trade');prev.style.marginTop='8px';
     const out=el('div'),res=el('div',dvMsg[s.id]&&dvMsg[s.id].ok?'win':'err',dvMsg[s.id]?dvMsg[s.id].text:'');
-    body.append(el('div','mut','Choose a demo account to practise first. Real accounts use real money.'),acc,risk,prev,out,res);
+    body.append(el('div','mut','Leave the stake empty to trade the smallest stake Deriv allows for this index. Experienced traders can type their own. Use a demo account to practise first; real accounts use real money.'),acc,risk,prev,out,res);
     const dis=el('button','ghost','Disconnect Deriv');dis.style.cssText='width:auto;padding:8px 12px;margin-top:8px';
     dis.onclick=async()=>{try{await api('/api/deriv/disconnect','POST');dvAcc=null;load()}catch(e){res.textContent=e.message}};body.append(dis);
     prev.onclick=async()=>{
       out.textContent='';res.textContent='';prev.disabled=true;hold=1;
-      try{localStorage.setItem('dl_dv_acc',acc.value);localStorage.setItem('dl_dv_risk',risk.value)}catch(e){}
+      try{localStorage.setItem('dl_dv_acc',acc.value);localStorage.setItem('dl_dv_stake',risk.value)}catch(e){}
       try{
-        const q=await api('/api/deriv/quote','POST',{signal_id:s.id,account_id:acc.value,risk:Number(risk.value)}),p=q.plan,real=q.account_type==='real';
+        const q=await api('/api/deriv/quote','POST',{signal_id:s.id,account_id:acc.value,stake:risk.value.trim()===''?null:Number(risk.value)}),p=q.plan,real=q.account_type==='real';
         out.append(el('h2','',q.direction+' '+q.name+' \u00b7 Multiplier x'+p.multiplier));
-        [['Account',(real?'REAL ':'DEMO ')+q.account_id],['Stake (the most you can lose)',usd(p.stake)+' USD'],['Stop loss',usd(p.stop_loss)+' USD (at the setup\u2019s stop)'],['Take profit',usd(p.take_profit)+' USD (at the setup\u2019s target)'],['Highest price we will accept',usd(q.max_price)+' USD']].forEach(([k,v])=>out.append(kv(k,v)));
+        [['Account',(real?'REAL ':'DEMO ')+q.account_id],['Stake (the most you can lose)',usd(p.stake)+' USD'+(q.used_minimum?' (minimum for this index)':'')],['Stop loss',usd(p.stop_loss)+' USD (at the setup\u2019s stop)'],['Take profit',usd(p.take_profit)+' USD (at the setup\u2019s target)'],['Highest price we will accept',usd(q.max_price)+' USD']].forEach(([k,v])=>out.append(kv(k,v)));
         out.append(el('div','mut','Deriv sets the final price when the trade is placed. A TradeLens markup of up to '+q.markup+'% is built into the price Deriv charges. In fast markets the stop can fill beyond its level, so the stake is your true maximum loss.'));
         let ok=null;
         if(real){const l=el('label','sw');ok=document.createElement('input');ok.type='checkbox';l.append(ok,document.createTextNode('This uses real money and I am placing this trade myself.'));out.append(l)}
