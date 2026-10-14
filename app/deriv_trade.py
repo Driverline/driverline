@@ -15,7 +15,8 @@ The member always places the trade themselves. Nothing here ever trades without 
 
 Environment variables (all optional):
   DERIV_TRADING=0       switches trading off everywhere without a redeploy of code
-  DERIV_MARKUP_PCT=2    markup percentage sent with every purchase (0 to 3)
+  DERIV_MARKUP_PCT=2    the markup you set on the app at developers.deriv.com (shown to members and recorded; 0 to 3)
+  DERIV_SEND_MARKUP=1   also send it inside each purchase (off by default: Deriv applies the app's own markup)
   DERIV_MAX_RISK=50     most a member may risk on one trade, in USD
   DERIV_MAX_STAKE=100   largest stake allowed on one trade, in USD
 """
@@ -541,8 +542,10 @@ async def _buy_once(app_id: str, token: str, account_id: str, code: str, plan: d
     raise RuntimeError("Deriv sent no confirmation of the purchase")
 
 
-# If Deriv refuses the markup field itself, trades still go through without it and we stop sending it until a restart.
-_markup_in_request = {"on": True}
+# The markup is set on the app itself at developers.deriv.com (Deriv applies it to every trade made through the app, and
+# refuses it inside a purchase request). Sending it per request is therefore OFF by default; DERIV_SEND_MARKUP=1 turns it on,
+# and if Deriv then refuses the field we fall back to buying without it and stop sending it until a restart.
+_markup_in_request = {"on": os.environ.get("DERIV_SEND_MARKUP", "0") == "1"}
 
 
 async def _buy(app_id: str, token: str, account_id: str, code: str, plan: dict, max_price: float):
@@ -554,7 +557,7 @@ async def _buy(app_id: str, token: str, account_id: str, code: str, plan: dict, 
             if "validation" not in str(e).lower():
                 raise
             print(f"[deriv-trade] Deriv refused the request with app_markup_percentage in it ({str(e)[:200]}); retrying "
-                  "without it. Set the markup on your app in developers.deriv.com instead.", flush=True)
+                  "without it.", flush=True)
             _markup_in_request["on"] = False
     return await _buy_once(app_id, token, account_id, code, plan, max_price, False), False
 
@@ -627,7 +630,7 @@ async def trade(request):
                                  "you do not end up with two trades.")
     bp = got.get("buy_price")
     finish("placed", contract_id=str(got.get("contract_id") or ""), buy_price=float(bp) if isinstance(bp, (int, float)) else None,
-           markup_pct=MARKUP if sent_markup else 0.0)
+           markup_pct=MARKUP)     # the app-level markup configured on developers.deriv.com (mirrors DERIV_MARKUP_PCT)
     return JSONResponse({"ok": True, "markup_sent": sent_markup, "contract_id": got.get("contract_id"), "buy_price": bp, "longcode": got.get("longcode"),
                          "account_type": acct["type"]})
 
