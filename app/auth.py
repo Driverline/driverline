@@ -140,6 +140,25 @@ def has_quota(user: dict) -> bool:
     return used < limit
 
 
+def reserve_quota(user: dict) -> bool:
+    """Takes one daily analysis in ONE atomic step, so parallel requests can never go past the limit.
+    False if none is left. Give it back with release_quota() if the work then fails."""
+    limit = LIMITS.get(user["tier"], 0)
+    with closing(db()) as con:
+        con.execute("INSERT INTO usage(user_id,day,n) VALUES(?,?,0) ON CONFLICT(user_id,day) DO NOTHING",
+                    (user["id"], _today()))
+        cur = con.execute("UPDATE usage SET n=n+1 WHERE user_id=? AND day=? AND n<?", (user["id"], _today(), limit))
+        con.commit()
+        return cur.rowcount == 1
+
+
+def release_quota(user: dict):
+    """Returns an analysis taken with reserve_quota() when the work could not be done."""
+    with closing(db()) as con:
+        con.execute("UPDATE usage SET n=n-1 WHERE user_id=? AND day=? AND n>0", (user["id"], _today()))
+        con.commit()
+
+
 def consume_quota(user: dict):
     with closing(db()) as con:
         con.execute("INSERT INTO usage(user_id,day,n) VALUES(?,?,1) "
@@ -204,11 +223,6 @@ async def signup(request):
         deriv_login.on_signup(uid, code)
     except Exception as e:
         print(f"[deriv] could not link account after signup: {type(e).__name__}", flush=True)
-    try:                                       # remember which ad or link brought this member (see track.py)
-        from . import track
-        track.record_signup(uid, request)
-    except Exception as e:
-        print(f"[track] could not record attribution: {type(e).__name__}", flush=True)
     return _session(JSONResponse({"ok": True}), uid, ph)
 
 
