@@ -11,7 +11,7 @@ from starlette.routing import Route
 
 from .config import INSTRUMENTS, match_key
 from . import dbx
-from .auth import require_user, has_quota, consume_quota
+from .auth import require_user, has_quota, reserve_quota, release_quota
 from .trade_card import claude_json, redact
 
 EMOTIONS = ["calm", "confident", "fomo", "revenge", "fearful", "bored", "tired"]
@@ -287,13 +287,13 @@ async def review(request):
     user = require_user(request)
     if user["tier"] not in ("member", "admin"):
         raise HTTPException(403, "The AI review is for members. Ask your admin to upgrade you.")
-    if not has_quota(user):
-        raise HTTPException(429, "Daily AI limit reached. Try again tomorrow.")
     with closing(db()) as con:
         rows = con.execute("SELECT * FROM trades WHERE user_id=? ORDER BY id", (user["id"],)).fetchall()
     closed = [r for r in rows if r["status"] == "closed"]
     if len(closed) < 5:
         raise HTTPException(400, f"Log at least 5 closed trades first (you have {len(closed)}).")
+    if not reserve_quota(user):                # atomic: parallel requests cannot pass the daily limit
+        raise HTTPException(429, "Daily AI limit reached. Try again tomorrow.")
     recent = [{k: r[k] for k in ("instrument", "direction", "pnl", "r_multiple", "followed_plan",
                                  "emotion", "opened_at")} | {"notes": (r["notes"] or "")[:200]}
               for r in closed[-60:]]
@@ -301,10 +301,10 @@ async def review(request):
     try:
         out = await claude_json(REVIEW_SYSTEM, json.dumps(payload), REVIEW_SCHEMA)
     except Exception as e:
+        release_quota(user)
         raise HTTPException(502, "The AI review is temporarily unavailable. Please try again later.")
     for k, default in (("summary", ""), ("patterns", []), ("suggestions", []), ("caution", "")):
         out.setdefault(k, default)
-    consume_quota(user)
     return JSONResponse(out)
 
 

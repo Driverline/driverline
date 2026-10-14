@@ -28,7 +28,10 @@ CFG = {"exec_max_dev_r": 0.5, "min_publish_t": -1.0, "fallback_rr": 1.5, "limit_
        "real_markets_enabled": False, "min_publish_t_real": 0.0,
        # Strategies in VALIDATED below passed the forex/gold research on 6 years of broker history. They stay OFF until
        # validated_enabled is switched on (DRIVERLINE_FEED_CONFIG='{"validated_enabled": true}').
-       "validated_enabled": False}
+       "validated_enabled": False,
+       # Instruments with no NEW setups for now (open ones are still tracked). Step Index: its live results on the
+       # generic setups are negative. Set to [] in DRIVERLINE_FEED_CONFIG to resume.
+       "paused_instruments": ["step"]}
 try:
     radar._merge(CFG, json.loads(__import__("os").environ.get("DRIVERLINE_FEED_CONFIG", "{}")))
 except ValueError:
@@ -248,6 +251,8 @@ async def scan_signals(data: dict = None) -> list:
                     if res:
                         con.execute("UPDATE signals SET status=?, result_r=?, closed_at=? WHERE id=?",
                                     (res[0], res[1], now, row["id"]))
+                if key in CFG["paused_instruments"]:      # no new setups here; open ones above are still tracked
+                    continue
                 F, X = S.build(d[sp["tf"]], spiky), S.build(d[sp["ctx"]], spiky)
                 ctx = S.ctx_direction(F, X, per, S.PERIOD[sp["ctx"]])
                 i = F["n"] - 1
@@ -378,6 +383,8 @@ async def open_signal(request):
         row = con.execute("SELECT * FROM signals WHERE id=?", (sid,)).fetchone()
         if not row:
             raise HTTPException(404, "Signal not found")
+        if con.pg:        # one request per member at a time through the check-and-open steps (released at commit/close)
+            con.execute("SELECT pg_advisory_xact_lock(?)", (user["id"],))
         already = con.execute("SELECT 1 FROM signal_opens WHERE user_id=? AND signal_id=?", (user["id"], sid)).fetchone()
         actionable = row["status"] == "open" and now <= row["expires_at"]
         if not already:
@@ -391,7 +398,8 @@ async def open_signal(request):
                                               "New signals resume tomorrow (00:00 UTC).") if b["kind"] in ("limit", "credits") else
                                         "You have used your daily analyses. Signals open again tomorrow (00:00 UTC).")
                 if b["kind"] == "analyses":
-                    auth.consume_quota(user)
+                    if not auth.reserve_quota(user):
+                        raise HTTPException(429, "You have used your daily analyses. Signals open again tomorrow (00:00 UTC).")
                 elif b["kind"] == "credits" and not credits.spend(user["id"], f"signal:{sid}"):
                     raise HTTPException(429, "You have no signals left. Buy more in the Billing tab.")
             con.execute("INSERT INTO signal_opens(user_id,signal_id,day,created_at,counted) VALUES(?,?,?,?,?)",

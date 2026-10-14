@@ -73,6 +73,7 @@ function render(d){
   const bt=el('div','card');bt.append(el('h2','','Signal backtest'));const bb=el('div');bt.append(bb);root.append(bt);loadBacktest(bb);
   const bl=el('div','card');bl.append(el('h2','','Billing and signal credits'));const blb=el('div');bl.append(blb);root.append(bl);loadBilling(blb);
   const rs=el('div','card');rs.append(el('h2','','Forex and gold research'));const rsb=el('div');rs.append(rsb);root.append(rs);loadResearch(rsb);
+  const en=el('div','card');en.append(el('h2','','AI signal engine research (Step and Range Break)'));const enb=el('div');en.append(enb);root.append(en);loadEngine(enb);
   const ri=el('div','card');ri.append(el('h2','','Smart Analysis Timing insights'));const rb=el('div');rb.append(el('span','mut','Loading...'));ri.append(rb);root.append(ri);loadRadarInfo(rb);
   if(pending){note(pending[0],pending[1]);pending=null}
 }
@@ -127,6 +128,48 @@ async function loadBilling(box){
     ab.onclick=async()=>{try{const x=await api('/billing/adjust','POST',{email:em.value,delta:Number(n.value),note:nt.value});am.className='win';am.textContent='Done. New balance: '+x.balance;em.value=n.value=nt.value=''}catch(e){am.className='err';am.textContent=e.message}};
     box.append(em,n,nt,ab,am);
     if(r.recent.length){box.append(el('h2','','Recently decided'));r.recent.forEach(o=>box.append(el('div','mut',o.status+' \u00b7 '+o.label+' \u00b7 '+o.email+' \u00b7 '+o.ref)))}
+  }catch(e){box.textContent=e.message}
+}
+let enTimer=null;
+async function loadEngine(box){
+  try{
+    const r=await api('/engine');box.textContent='';const st=r.state;
+    box.append(el('div','mut','Research only: stores and checks Deriv history, then measures simple baselines on development and validation data. The untouched test period is never used here. Nothing on this card is shown to members and no signal is published from it.'));
+    const run=(label,path,body,confirmText)=>{const b=el('button',st.running?'ghost':'',label);b.disabled=st.running;b.style.marginTop='8px';
+      b.onclick=async()=>{if(confirmText&&!confirm(confirmText))return;try{const x=await api('/engine'+path,'POST',body);if(!x.started)alert('Another job is already running.');loadEngine(box)}catch(e){alert(e.message)}};return b};
+    box.append(run('Probe Deriv symbols and data depth','/probe',{}));
+    if(st.running)box.append(el('div','mut','Running: '+st.job+(st.detail?' ('+st.detail+')':'')+'...'));
+    if(st.error)box.append(el('div','err',st.error));
+    clearTimeout(enTimer);if(st.running)enTimer=setTimeout(()=>loadEngine(box),4000);
+    const dt=t=>t?new Date(t*1000).toISOString().slice(0,10):'-';
+    if(r.probe){
+      box.append(el('h2','','What Deriv offers ('+dt(r.probe.checked_at)+')'));
+      Object.entries(r.probe.symbols).forEach(([code,s])=>{
+        const d=s.depth||{};const dep=['D1','H1','M5'].map(k=>d[k]?(d[k].error?k+' error':k+' '+d[k].days+'d'+(d[k].capped_by_request?'+':'')):'').filter(Boolean).join(', ');
+        const tk=s.ticks&&s.ticks.n?', ticks every '+s.ticks.median_gap_seconds+'s, steps '+(s.ticks.top_step_sizes||[]).map(x=>x.size+' ('+Math.round(x.share*100)+'%)').join('/'):'';
+        box.append(el('div',s.listed?'mut':'warn',code+' \u00b7 '+(s.display||s.label)+' \u00b7 '+(s.listed?'listed. History: '+dep+tk:'NOT on Deriv\'s list (the expected code is wrong or unavailable)')))});
+    }
+    box.append(el('h2','','Download and check history'));
+    const sy=document.createElement('input');sy.placeholder='Deriv symbol code, for example stpRNG';
+    const dy=document.createElement('input');dy.type='number';dy.value=180;dy.placeholder='Days of candles (7 to 365)';dy.inputMode='numeric';
+    const td=document.createElement('input');td.type='number';td.value=3;td.placeholder='Days of tick statistics (0 to 30)';td.inputMode='numeric';
+    box.append(sy,dy,td,run('Download and validate','/ingest',null,null));
+    box.lastChild.onclick=async()=>{try{const x=await api('/engine/ingest','POST',{symbol:sy.value.trim(),days:Number(dy.value),tick_days:Number(td.value)});if(!x.started)alert('Another job is already running.');loadEngine(box)}catch(e){alert(e.message)}};
+    box.append(el('h2','','Stored datasets'));
+    if(!r.datasets.length)box.append(el('div','mut','None yet.'));
+    r.datasets.forEach(d=>{
+      const c=el('div');c.style.cssText='border-top:1px solid var(--line);padding:8px 0';
+      c.append(el('div',d.status==='valid'?'win':d.status==='warn'?'warn':'loss',d.symbol+' \u00b7 '+d.status.toUpperCase()+' \u00b7 '+d.rows.toLocaleString()+' M5 bars \u00b7 '+dt(d.first)+' to '+dt(d.last)+' \u00b7 checksum '+d.sha),
+        el('div','mut','Tick statistics on '+Math.round((d.tick_stats_share||0)*100)+'% of bars'+(d.reasons.length?'. '+d.reasons.join('; '):'')));
+      const row=el('div','btns');row.append(run('Validate again','/validate',{symbol:d.symbol}));
+      if(d.status!=='invalid')row.append(run('Run baselines','/baselines',{symbol:d.symbol},'Run the baseline study on '+d.symbol+'? It uses development and validation data only.'));
+      c.append(row);box.append(c)});
+    box.append(el('h2','','Baseline results (1.5R target, average result after costs with 95% interval)'));
+    if(!r.runs.length)box.append(el('div','mut','No baseline runs yet.'));
+    r.runs.forEach(u=>{
+      box.append(el('div','mut',u.symbol+' \u00b7 run '+u.id+' \u00b7 '+dt(u.finished_at)));
+      u.lines.forEach(l=>{const d=el('div','mut',l.baseline+': development '+l.dev+' | validation '+l.val);d.style.fontSize='13px';box.append(d)});
+      box.append(el('div',u.notable.length?'warn':'mut',u.notable.length?'Stands out: '+u.notable.join('; '):'Nothing stands out: no baseline beat zero in both periods.'))});
   }catch(e){box.textContent=e.message}
 }
 let rsTimer=null;
