@@ -23,6 +23,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -254,9 +255,19 @@ def plan_for(sig, risk: float, m: float) -> dict:
             "stop_loss": sl, "take_profit": tp, "risk": sl}
 
 
+def _n(v) -> str:
+    return f"{float(v):.4f}"
+
+
+def _mult(m):
+    """200.0 is sent as 200: Deriv validates multipliers strictly."""
+    m = float(m)
+    return int(m) if m.is_integer() else m
+
+
 def _payload(uid, sid, account_id, code, plan, max_price, exp) -> str:
-    return "|".join(str(x) for x in ("dt", uid, sid, account_id, code, plan["contract_type"], plan["multiplier"],
-                                     plan["stake"], plan["stop_loss"], plan["take_profit"], max_price, exp))
+    return "|".join(str(x) for x in ("dt", uid, sid, account_id, code, plan["contract_type"], _n(plan["multiplier"]),
+                                     _n(plan["stake"]), _n(plan["stop_loss"]), _n(plan["take_profit"]), _n(max_price), exp))
 
 
 def sign_plan(*a) -> str:
@@ -278,7 +289,7 @@ async def _spot(ws, code: str):
 
 def _proposal_req(code: str, plan: dict) -> dict:
     return {"proposal": 1, "contract_type": plan["contract_type"], "underlying_symbol": code, "currency": "USD",
-            "amount": plan["stake"], "basis": "stake", "multiplier": plan["multiplier"],
+            "amount": plan["stake"], "basis": "stake", "multiplier": _mult(plan["multiplier"]),
             "limit_order": {"stop_loss": plan["stop_loss"], "take_profit": plan["take_profit"]}}
 
 
@@ -477,7 +488,22 @@ async def quote(request):
         "ask_price": ask, "longcode": prop.get("longcode"), "markup": MARKUP})
 
 
-async def _buy(app_id: str, token: str, account_id: str, code: str, plan: dict, max_price: float) -> dict:
+def _err_text(resp: dict):
+    """Everything Deriv says about a refusal (message, code, details), or None when the answer is not an error."""
+    e = resp.get("error")
+    if not isinstance(e, dict):
+        errs = resp.get("errors")
+        e = errs[0] if isinstance(errs, list) and errs and isinstance(errs[0], dict) else None
+    if e is None:
+        return None
+    parts = [str(e.get("message") or e.get("code") or "refused")]
+    for k in ("details", "field", "fields"):
+        if e.get(k):
+            parts.append(f"{k}={json.dumps(e[k])[:200]}")
+    return " | ".join(parts)
+
+
+async def _buy_once(app_id: str, token: str, account_id: str, code: str, plan: dict, max_price: float, with_markup: bool):
     async with httpx.AsyncClient(timeout=20) as cl:
         r = await cl.post(f"{ACCOUNTS_URL}/{account_id}/otp", headers=_headers(app_id, token))
     if r.status_code in (401, 403):
@@ -487,13 +513,38 @@ async def _buy(app_id: str, token: str, account_id: str, code: str, plan: dict, 
     if not (isinstance(url, str) and url.startswith(WS_PREFIX)):
         raise RuntimeError("Deriv returned an unexpected connection address")
     params = {"contract_type": plan["contract_type"], "currency": "USD", "underlying_symbol": code, "amount": plan["stake"],
-              "basis": "stake", "multiplier": plan["multiplier"],
+              "basis": "stake", "multiplier": _mult(plan["multiplier"]),
               "limit_order": {"stop_loss": plan["stop_loss"], "take_profit": plan["take_profit"]}}
-    if MARKUP > 0:
+    if with_markup:
         params["app_markup_percentage"] = MARKUP
     async with websockets.connect(url, open_timeout=15) as ws:      # the address holds a one-time code: never logged
-        resp = await deriv._request(ws, {"buy": "1", "price": max_price, "parameters": params}, expect="buy")
-    return resp["buy"]
+        await ws.send(json.dumps({"buy": "1", "price": max_price, "parameters": params}))
+        for _ in range(5):
+            resp = json.loads(await ws.recv())
+            err = _err_text(resp)
+            if err:
+                raise RuntimeError("Deriv API error: " + err)
+            if isinstance(resp.get("buy"), dict):
+                return resp["buy"]
+    raise RuntimeError("Deriv sent no confirmation of the purchase")
+
+
+# If Deriv refuses the markup field itself, trades still go through without it and we stop sending it until a restart.
+_markup_in_request = {"on": True}
+
+
+async def _buy(app_id: str, token: str, account_id: str, code: str, plan: dict, max_price: float):
+    """Buys the contract. Returns (Deriv's buy answer, whether the markup was sent with it)."""
+    if MARKUP > 0 and _markup_in_request["on"]:
+        try:
+            return await _buy_once(app_id, token, account_id, code, plan, max_price, True), True
+        except RuntimeError as e:
+            if "validation" not in str(e).lower():
+                raise
+            print(f"[deriv-trade] Deriv refused the request with app_markup_percentage in it ({str(e)[:200]}); retrying "
+                  "without it. Set the markup on your app in developers.deriv.com instead.", flush=True)
+            _markup_in_request["on"] = False
+    return await _buy_once(app_id, token, account_id, code, plan, max_price, False), False
 
 
 async def trade(request):
@@ -546,13 +597,14 @@ async def trade(request):
             c2.commit()
 
     try:
-        got = await asyncio.wait_for(_buy(app_id, token, account_id, code, plan, max_price), timeout=30)
+        got, sent_markup = await asyncio.wait_for(_buy(app_id, token, account_id, code, plan, max_price), timeout=45)
     except PermissionError:
         _drop_token(user["id"])
         finish("failed", error="connection expired")
         raise HTTPException(409, "Your Deriv connection has expired. Tap Connect Deriv to trade again.")
     except RuntimeError as e:         # Deriv refused the order: its own message is safe and useful to show
-        msg = str(e).replace("Deriv API error: ", "")[:300]
+        msg = str(e).replace("Deriv API error: ", "")[:400]
+        print(f"[deriv-trade] order refused: {msg}", flush=True)
         finish("failed", error=msg)
         raise HTTPException(422, f"Deriv did not place the trade: {msg}")
     except Exception as e:
@@ -562,8 +614,9 @@ async def trade(request):
         raise HTTPException(502, "We could not reach Deriv to place the trade. Check your Deriv app before trying again, so "
                                  "you do not end up with two trades.")
     bp = got.get("buy_price")
-    finish("placed", contract_id=str(got.get("contract_id") or ""), buy_price=float(bp) if isinstance(bp, (int, float)) else None)
-    return JSONResponse({"ok": True, "contract_id": got.get("contract_id"), "buy_price": bp, "longcode": got.get("longcode"),
+    finish("placed", contract_id=str(got.get("contract_id") or ""), buy_price=float(bp) if isinstance(bp, (int, float)) else None,
+           markup_pct=MARKUP if sent_markup else 0.0)
+    return JSONResponse({"ok": True, "markup_sent": sent_markup, "contract_id": got.get("contract_id"), "buy_price": bp, "longcode": got.get("longcode"),
                          "account_type": acct["type"]})
 
 
