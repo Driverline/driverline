@@ -38,6 +38,7 @@ function render(d){
   const s=el('div','card');s.append(el('h2','','Overview'),kv('Members',d.totals.users),kv('Paid (member)',d.totals.member),kv('Free',d.totals.free),kv('AI analyses used today',d.totals.ai_today),
     kv('Reset emails',d.mail_configured?'sending by email':'not set up: use "Reset link" below','mut'));root.append(s);
   const lb=el('div','card');lb.id='linkbox';lb.hidden=true;root.append(lb);
+  const gr=el('div','card');gr.append(el('h2','','Growth: which ads bring members'));const grb=el('div');gr.append(grb);root.append(gr);loadGrowth(grb);
 
   const inv=el('div','card');inv.append(el('h2','','Invite codes'));
   const t=document.createElement('select');opt(t,'free','free');opt(t,'member','member');
@@ -73,12 +74,42 @@ function render(d){
   const bt=el('div','card');bt.append(el('h2','','Signal backtest'));const bb=el('div');bt.append(bb);root.append(bt);loadBacktest(bb);
   const bl=el('div','card');bl.append(el('h2','','Billing and signal credits'));const blb=el('div');bl.append(blb);root.append(bl);loadBilling(blb);
   const rs=el('div','card');rs.append(el('h2','','Forex and gold research'));const rsb=el('div');rs.append(rsb);root.append(rs);loadResearch(rsb);
-  const en=el('div','card');en.append(el('h2','','AI signal engine research (Step and Range Break)'));const enb=el('div');en.append(enb);root.append(en);loadEngine(enb);
   const ri=el('div','card');ri.append(el('h2','','Smart Analysis Timing insights'));const rb=el('div');rb.append(el('span','mut','Loading...'));ri.append(rb);root.append(ri);loadRadarInfo(rb);
   if(pending){note(pending[0],pending[1]);pending=null}
 }
 const STY={scalp:'Scalp (M5)',day:'Day (M15)',swing:'Swing (H1)'},SET={ema_pullback:'EMA pullback',squeeze_breakout:'Squeeze breakout',range_breakout:'20-bar breakout',range_reversal:'Range reversal'};
 const pct=x=>Math.round(x*100)+'%',sg=x=>(x>=0?'+':'')+x.toFixed(2);
+async function loadGrowth(box){
+  box.textContent='';
+  // 1. tracked-link builder
+  box.append(el('div','mut','Make a tracked link for each ad, creator or post. Use a different content tag for each video, so you can see which one wins.'));
+  const f={};[['source','Source (tiktok, instagram, youtube, creator name)','tiktok'],['campaign','Campaign (e.g. rules-before-clicks)','launch'],['content','Content / video (e.g. hook-a-20s)','hook-a']].forEach(([k,ph,v])=>{
+    const i=document.createElement('input');i.placeholder=ph;i.value=v;f[k]=i;box.append(i)});
+  const out=document.createElement('input');out.readOnly=true;out.onfocus=()=>out.select();
+  const mk=()=>{const q=new URLSearchParams();q.set('utm_source',f.source.value.trim()||'direct');q.set('utm_medium','paid');
+    q.set('utm_campaign',f.campaign.value.trim()||'none');q.set('utm_content',f.content.value.trim()||'none');
+    out.value=location.origin+'/login.html?'+q.toString()};
+  Object.values(f).forEach(i=>i.oninput=mk);mk();
+  const cp=el('button','','Copy link');cp.style.marginTop='8px';cp.onclick=async()=>{try{await navigator.clipboard.writeText(out.value);cp.textContent='Copied'}catch(e){out.select()}};
+  box.append(el('label','','Tracked link'),out,cp);
+  // 2. funnel
+  const days=document.createElement('select');[7,30,90].forEach(n=>opt(days,n,'Last '+n+' days'));days.value=30;days.style.marginTop='12px';
+  const res=el('div');box.append(days,res);
+  const pct=(a,b)=>b?Math.round(100*a/b)+'%':'-';
+  const show=async()=>{res.textContent='Loading...';
+    try{const d=await api('/funnel?days='+days.value);res.textContent='';
+      const t=d.totals;
+      res.append(el('h2','','All campaigns'),kv('Visits',t.visits),kv('Signups',t.signups+' ('+pct(t.signups,t.visits)+' of visits)'),
+        kv('Verified with Deriv',t.verified),kv('Opened a setup',t.opened+' ('+pct(t.opened,t.signups)+' of signups)'),
+        kv('Connected Deriv to trade',t.connected),kv('Placed a trade',t.traded+' ('+pct(t.traded,t.signups)+' of signups)'));
+      if(d.untracked_users)res.append(el('div','mut',d.untracked_users+' members joined before tracking started or without a campaign link, so they are not in the table below.'));
+      d.rows.forEach(r=>{const c=el('div','card');
+        c.append(el('h2','',r.source+' / '+r.campaign+' / '+r.content),kv('Visits',r.visits),kv('Signups',r.signups+' ('+pct(r.signups,r.visits)+')'),
+          kv('Verified with Deriv',r.verified),kv('Opened a setup',r.opened),kv('Connected Deriv',r.connected),kv('Placed a trade',r.traded));res.append(c)});
+      if(!d.rows.length)res.append(el('div','mut','No tracked visits yet. Share a tracked link and check back.'));
+    }catch(e){res.textContent=e.message}};
+  days.onchange=show;show();
+}
 async function loadBilling(box){
   try{
     const r=await api('/billing');box.textContent='';
@@ -128,48 +159,6 @@ async function loadBilling(box){
     ab.onclick=async()=>{try{const x=await api('/billing/adjust','POST',{email:em.value,delta:Number(n.value),note:nt.value});am.className='win';am.textContent='Done. New balance: '+x.balance;em.value=n.value=nt.value=''}catch(e){am.className='err';am.textContent=e.message}};
     box.append(em,n,nt,ab,am);
     if(r.recent.length){box.append(el('h2','','Recently decided'));r.recent.forEach(o=>box.append(el('div','mut',o.status+' \u00b7 '+o.label+' \u00b7 '+o.email+' \u00b7 '+o.ref)))}
-  }catch(e){box.textContent=e.message}
-}
-let enTimer=null;
-async function loadEngine(box){
-  try{
-    const r=await api('/engine');box.textContent='';const st=r.state;
-    box.append(el('div','mut','Research only: stores and checks Deriv history, then measures simple baselines on development and validation data. The untouched test period is never used here. Nothing on this card is shown to members and no signal is published from it.'));
-    const run=(label,path,body,confirmText)=>{const b=el('button',st.running?'ghost':'',label);b.disabled=st.running;b.style.marginTop='8px';
-      b.onclick=async()=>{if(confirmText&&!confirm(confirmText))return;try{const x=await api('/engine'+path,'POST',body);if(!x.started)alert('Another job is already running.');loadEngine(box)}catch(e){alert(e.message)}};return b};
-    box.append(run('Probe Deriv symbols and data depth','/probe',{}));
-    if(st.running)box.append(el('div','mut','Running: '+st.job+(st.detail?' ('+st.detail+')':'')+'...'));
-    if(st.error)box.append(el('div','err',st.error));
-    clearTimeout(enTimer);if(st.running)enTimer=setTimeout(()=>loadEngine(box),4000);
-    const dt=t=>t?new Date(t*1000).toISOString().slice(0,10):'-';
-    if(r.probe){
-      box.append(el('h2','','What Deriv offers ('+dt(r.probe.checked_at)+')'));
-      Object.entries(r.probe.symbols).forEach(([code,s])=>{
-        const d=s.depth||{};const dep=['D1','H1','M5'].map(k=>d[k]?(d[k].error?k+' error':k+' '+d[k].days+'d'+(d[k].capped_by_request?'+':'')):'').filter(Boolean).join(', ');
-        const tk=s.ticks&&s.ticks.n?', ticks every '+s.ticks.median_gap_seconds+'s, steps '+(s.ticks.top_step_sizes||[]).map(x=>x.size+' ('+Math.round(x.share*100)+'%)').join('/'):'';
-        box.append(el('div',s.listed?'mut':'warn',code+' \u00b7 '+(s.display||s.label)+' \u00b7 '+(s.listed?'listed. History: '+dep+tk:'NOT on Deriv\'s list (the expected code is wrong or unavailable)')))});
-    }
-    box.append(el('h2','','Download and check history'));
-    const sy=document.createElement('input');sy.placeholder='Deriv symbol code, for example stpRNG';
-    const dy=document.createElement('input');dy.type='number';dy.value=180;dy.placeholder='Days of candles (7 to 365)';dy.inputMode='numeric';
-    const td=document.createElement('input');td.type='number';td.value=3;td.placeholder='Days of tick statistics (0 to 30)';td.inputMode='numeric';
-    box.append(sy,dy,td,run('Download and validate','/ingest',null,null));
-    box.lastChild.onclick=async()=>{try{const x=await api('/engine/ingest','POST',{symbol:sy.value.trim(),days:Number(dy.value),tick_days:Number(td.value)});if(!x.started)alert('Another job is already running.');loadEngine(box)}catch(e){alert(e.message)}};
-    box.append(el('h2','','Stored datasets'));
-    if(!r.datasets.length)box.append(el('div','mut','None yet.'));
-    r.datasets.forEach(d=>{
-      const c=el('div');c.style.cssText='border-top:1px solid var(--line);padding:8px 0';
-      c.append(el('div',d.status==='valid'?'win':d.status==='warn'?'warn':'loss',d.symbol+' \u00b7 '+d.status.toUpperCase()+' \u00b7 '+d.rows.toLocaleString()+' M5 bars \u00b7 '+dt(d.first)+' to '+dt(d.last)+' \u00b7 checksum '+d.sha),
-        el('div','mut','Tick statistics on '+Math.round((d.tick_stats_share||0)*100)+'% of bars'+(d.reasons.length?'. '+d.reasons.join('; '):'')));
-      const row=el('div','btns');row.append(run('Validate again','/validate',{symbol:d.symbol}));
-      if(d.status!=='invalid')row.append(run('Run baselines','/baselines',{symbol:d.symbol},'Run the baseline study on '+d.symbol+'? It uses development and validation data only.'));
-      c.append(row);box.append(c)});
-    box.append(el('h2','','Baseline results (1.5R target, average result after costs with 95% interval)'));
-    if(!r.runs.length)box.append(el('div','mut','No baseline runs yet.'));
-    r.runs.forEach(u=>{
-      box.append(el('div','mut',u.symbol+' \u00b7 run '+u.id+' \u00b7 '+dt(u.finished_at)));
-      u.lines.forEach(l=>{const d=el('div','mut',l.baseline+': development '+l.dev+' | validation '+l.val);d.style.fontSize='13px';box.append(d)});
-      box.append(el('div',u.notable.length?'warn':'mut',u.notable.length?'Stands out: '+u.notable.join('; '):'Nothing stands out: no baseline beat zero in both periods.'))});
   }catch(e){box.textContent=e.message}
 }
 let rsTimer=null;

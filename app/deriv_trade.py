@@ -432,6 +432,11 @@ async def callback(request):
     except Exception as e:
         print(f"[deriv-trade] connect failed: {type(e).__name__}", flush=True)
         return deriv_login._again("We could not connect your Deriv account just now. Please try again in a moment.", 502)
+    try:
+        from . import track
+        track.record_event(user["id"], "deriv_connected")
+    except Exception as e:
+        print(f"[track] could not record event: {type(e).__name__}", flush=True)
     resp = RedirectResponse("/signals.html?deriv=connected", status_code=303)
     resp.delete_cookie("dl_oauth", path="/auth/deriv")
     return resp
