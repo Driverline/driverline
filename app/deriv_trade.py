@@ -437,6 +437,11 @@ async def callback(request):
         track.record_event(user["id"], "deriv_connected")
     except Exception as e:
         print(f"[track] could not record event: {type(e).__name__}", flush=True)
+    try:
+        from . import partner
+        partner.record_accounts([a["id"] for a in accts], user["id"], "trade_connect", request)
+    except Exception as e:
+        print(f"[partner] could not record accounts: {type(e).__name__}", flush=True)
     resp = RedirectResponse("/signals.html?deriv=connected", status_code=303)
     resp.delete_cookie("dl_oauth", path="/auth/deriv")
     return resp
@@ -471,6 +476,8 @@ async def disconnect(request):
 async def quote(request):
     """Preview only: prices the trade with Deriv and returns a signed, short-lived plan. Nothing is bought."""
     user = auth.require_user(request)
+    from . import partner
+    partner.require_tagged(user)  # quote: only enforced when PARTNER_GATE=1
     d = await _json(request)
     try:
         sid = int(d.get("signal_id"))
@@ -582,6 +589,8 @@ async def _buy(app_id: str, token: str, account_id: str, code: str, plan: dict, 
 async def trade(request):
     """The member confirmed. Re-checks everything, then buys the contract on their Deriv account."""
     user = auth.require_user(request)
+    from . import partner
+    partner.require_tagged(user)  # trade: only enforced when PARTNER_GATE=1
     d = await _json(request)
     plan = d.get("plan") if isinstance(d.get("plan"), dict) else {}
     try:

@@ -109,9 +109,11 @@ async def start(request):
         con.execute("DELETE FROM deriv_states WHERE created_at<?", (now - STATE_TTL,))
         con.execute("INSERT INTO deriv_states(state,verifier,created_at) VALUES(?,?,?)", (state, verifier, now))
         con.commit()
+    from . import partner
     url = AUTH_URL + "?" + urlencode({"response_type": "code", "client_id": c["app_id"],
                                       "redirect_uri": _base(request) + "/auth/deriv/callback", "scope": SCOPE,
-                                      "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
+                                      "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
+                                      **partner.oauth_extra(request.query_params.get("mode") == "signup")})
     resp = RedirectResponse(url, status_code=302)
     resp.set_cookie("dl_oauth", state, max_age=STATE_TTL, httponly=True, samesite="lax", secure=auth.SECURE,
                     path="/auth/deriv")
@@ -186,6 +188,9 @@ async def callback(request):
     state = request.query_params.get("state", "")
     if deriv_trade.owns_state(state):          # started from "Connect Deriv to trade" on a signal, not from sign-up
         return await deriv_trade.callback(request)
+    from . import partner
+    if partner.owns_state(state):              # the owner's partner-tag check (see partner.py)
+        return await partner.partner_callback(request)
     c = _cfg()
     q = request.query_params
     verifier = _take_state(state)
@@ -223,6 +228,11 @@ async def callback(request):
             con.execute("INSERT INTO deriv_accounts(account_id,invite_code,created_at) VALUES(?,?,?) "
                         "ON CONFLICT(account_id) DO UPDATE SET invite_code=excluded.invite_code", (i, code, now))
         con.commit()
+    try:                                       # stage 2: provisional until Deriv's partner records agree
+        from . import partner
+        partner.record_accounts(ids, None, "signin", request)
+    except Exception as e:
+        print(f"[partner] could not record accounts: {type(e).__name__}", flush=True)
     safe = html.escape(code)
     return _page("Your Deriv account is verified",
                  "<p>Here is your one-time invite code:</p>"
@@ -247,12 +257,18 @@ def on_signup(uid: int, code: str):
         con.commit()
     if linked:
         credits.ensure_welcome(uid)
+        try:
+            from . import partner
+            partner.link_user(uid)
+        except Exception as e:
+            print(f"[partner] could not link member: {type(e).__name__}", flush=True)
 
 
 # ---------------------------------------------------------------- what the sign-in page needs to know
 async def public_config(request):
+    from . import partner
     c = _cfg()
-    return JSONResponse({"enabled": c["on"], "ib_link": c["ib"] if c["on"] else "",
+    return JSONResponse({"enabled": c["on"], "ib_link": partner.signup_link(c["ib"]) if c["on"] else "",
                          "cashier_url": c["cashier"] if c["on"] else ""})
 
 
