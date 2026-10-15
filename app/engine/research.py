@@ -58,31 +58,34 @@ def baseline_signals(name: str, bars: list, lo: int, hi: int, seed: int) -> list
 
 
 def simulate(bars: list, atr: list, signals: list, stop_atr: float, rr: float, horizon: int, cost_atr: float,
-             lo: int, hi: int) -> list:
+             lo: int, hi: int, delay: int = 0) -> list:
+    """delay = how many bars late the trade is entered after the signal bar (0 = the next bar's open, as always).
+    The stop and target distances still come from the ATR at the signal bar, but are measured from the actual entry."""
     cost = cost_atr / stop_atr
     out, free_from = [], lo
     for i, d in signals:
-        if i + 1 < free_from or i + 1 >= hi or i < lo:
+        e = i + 1 + delay
+        if i + 1 < free_from or e >= hi or i < lo:
             continue
         a = atr[i]
         if a is None or a <= 0:
             continue
-        entry, sd = bars[i + 1]["open"], stop_atr * a
+        entry, sd = bars[e]["open"], stop_atr * a
         stop, target = entry - d * sd, entry + d * rr * sd
-        end, res = min(hi - 1, i + horizon), None
-        for j in range(i + 1, end + 1):
+        end, res = min(hi - 1, e - 1 + horizon), None
+        for j in range(e, end + 1):
             b = bars[j]
             hit_stop = (b["low"] <= stop) if d > 0 else (b["high"] >= stop)
             hit_tgt = (b["high"] >= target) if d > 0 else (b["low"] <= target)
             if hit_stop:
-                res = (-1.0 - cost, False, j)
+                res = (-1.0 - cost, False, j, "stop")
                 break
             if hit_tgt:
-                res = (rr - cost, True, j)
+                res = (rr - cost, True, j, "target")
                 break
         if res is None:
-            res = (d * (bars[end]["close"] - entry) / sd - cost, False, end)
-        out.append({"i": i, "d": d, "r": res[0], "hit": res[1], "exit": res[2]})
+            res = (d * (bars[end]["close"] - entry) / sd - cost, False, end, "timeout")
+        out.append({"i": i, "d": d, "r": res[0], "hit": res[1], "exit": res[2], "kind": res[3], "bars": res[2] - e + 1})
         free_from = res[2] + 1
     return out
 

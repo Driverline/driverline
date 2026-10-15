@@ -455,6 +455,117 @@ def test_tick_download_reports_how_far_back_deriv_served():
     assert depth["pages"] == 3 and depth["stopped"] == "page_limit" and depth["hours"] > 3
 
 
+
+# ---------------------------------------------------------------- phase 3b: diagnostics
+from app.engine import diagnostics as DG  # noqa: E402
+
+
+def test_delay_moves_the_entry_and_zero_delay_is_unchanged():
+    bars = ar_bars(4000, 51)
+    atr, _ = FT.atr_series(bars)
+    sigs = [(i, 1 if i % 3 else -1) for i in range(150, 3900)]
+    base = RS.simulate(bars, atr, sigs, 1.5, 1.5, 24, 0.05, 0, 4000)
+    same = RS.simulate(bars, atr, sigs, 1.5, 1.5, 24, 0.05, 0, 4000, 0)
+    assert base == same
+    late = RS.simulate(bars, atr, sigs, 1.5, 1.5, 24, 0.05, 0, 4000, 2)
+    assert late and all(t["bars"] >= 1 for t in late)
+    assert all(a["i"] + 1 >= p["exit"] + 1 for p, a in zip(late, late[1:])), "delayed trades must not overlap"
+    assert {t["kind"] for t in base} <= {"target", "stop", "timeout"}
+    assert abs(sum(t["r"] for t in base) / len(base) - sum(t["r"] for t in same) / len(same)) < 1e-12
+
+
+def test_a_one_bar_effect_fades_with_entry_delay_and_a_slow_one_does_not():
+    fast = ar_bars(30000, 52, rho=-0.4)
+    atr, _ = FT.atr_series(fast)
+    b = RS.split_bounds(len(fast))
+    d0 = [t["r"] for t in DG._run(fast, atr, b, "reversal_1", "dev", 1.5, 0)]
+    d2 = [t["r"] for t in DG._run(fast, atr, b, "reversal_1", "dev", 1.5, 2)]
+    assert sum(d0) / len(d0) > sum(d2) / len(d2) + 0.03, "a one-bar reversal should lose strength when the entry is late"
+    # a slow drift stays profitable when the entry is a few bars late
+    drift = ar_bars(30000, 53, rho=0.0)
+    drift = [dict(x) for x in drift]
+    p = 0.0
+    for x in drift:
+        p += 0.6
+        for k in ("open", "high", "low", "close"):
+            x[k] += p
+    atr2, _ = FT.atr_series(drift)
+    b2 = RS.split_bounds(len(drift))
+    l0 = [t["r"] for t in DG._run(drift, atr2, b2, "always_long", "dev", 1.5, 0)]
+    l3 = [t["r"] for t in DG._run(drift, atr2, b2, "always_long", "dev", 1.5, 3)]
+    assert sum(l0) / len(l0) > 0.05 and sum(l3) / len(l3) > 0.05
+
+
+def test_block_size_reveals_the_time_scale_of_the_memory():
+    bars = ar_bars(12000, 54, rho=-0.4)
+    bounds = RS.split_bounds(len(bars))
+    rows = DG.block_surrogates(bars, bounds, "unit", 20)
+    z = lambda B, base="momentum_1": next(r["z"] for r in rows if r["block"] == B and r["baseline"] == base and r["segment"] == "dev")
+    assert abs(z(1)) > 5, "iid shuffling destroys a one-bar memory, so the real result must stand far out"
+    for B in (6, 12, 48):
+        assert abs(z(B)) < abs(z(1)) / 3, "blocks keep a one-bar memory, so the real result should no longer stand out"
+    assert z(1, "reversal_1") > 2, "the opposite baseline must stand out the other way"
+
+
+def test_scales_show_where_direction_reverses():
+    bars = ar_bars(30000, 55, rho=-0.4)
+    sc = {r["bars"]: r for r in DG.scales(bars, RS.split_bounds(len(bars)))}
+    assert sc[1]["dev"]["p_reverse"] > 0.6 and abs(sc[24]["dev"]["p_reverse"] - 0.5) < 0.05
+
+
+def test_the_survival_rule():
+    ok = {"n": 500, "avg_r": 0.1, "ci95": [0.05, 0.15], "hit": 0.4, "breakeven_hit": 0.41}
+    bad = {"n": 500, "avg_r": 0.01, "ci95": [-0.05, 0.07], "hit": 0.4, "breakeven_hit": 0.41}
+    rows = [{"baseline": b, "delay": d, "cost_mult": c, "dev": ok, "val": ok} for b in RS.BASELINES for d, c in ((0, 1), (1, 1), (1, 2))]
+    assert all(v["executable_candidate"] for v in DG.verdicts(rows))
+    rows[1]["dev"] = bad                                               # always_long, one bar late: fails
+    v = {x["baseline"]: x for x in DG.verdicts(rows)}
+    assert not v[RS.BASELINES[0]]["executable_candidate"] and v[RS.BASELINES[1]]["executable_candidate"]
+
+
+def test_noise_has_no_executable_candidate():
+    res = DG.run_diagnostics(ar_bars(12000, 56), "RB200", n_surrogates=20)
+    assert res["test_untouched"] and not any(v["executable_candidate"] for v in res["verdicts"]), res["verdict"]
+    assert res["decomposition"] and res["scales"] and res["block_surrogates"]
+
+
+def test_tick_analysis_finds_bounce_and_ignores_fair_ticks():
+    rnd = random.Random(8)
+    t0 = 1_700_000_000
+    times = list(range(t0, t0 + 20000))
+    fair, p = [], 100.0
+    for _ in times:
+        p += rnd.choice((-0.1, 0.1)); fair.append(round(p, 1))
+    bounce, p, last = [], 100.0, 1
+    for _ in times:
+        step = -last if rnd.random() < 0.7 else last
+        last, p = step, p + 0.1 * step
+        bounce.append(round(p, 1))
+    f, b = DG.ticks_analysis(times, fair), DG.ticks_analysis(times, bounce)
+    assert abs(f["runs"]["z"]) < 3.5 and abs(f["acf"]["lag1"]) < 0.03
+    assert b["runs"]["z"] > 20 and b["acf"]["lag1"] < -0.3
+    assert DG.ticks_analysis(times[:100], fair[:100])["note"] == "too few ticks"
+
+
+def test_diagnostics_and_tick_jobs_end_to_end():
+    sym = "RBDIAG"
+    store.upsert_candles(sym, 300, [dict(b) for b in ar_bars(7000, 57, rho=-0.3)])
+    jobs._validate_and_register(sym)
+    jobs._diagnostics_sync(sym, 20)
+    with __import__("contextlib").closing(store.db()) as con:
+        run = con.execute("SELECT * FROM research_runs WHERE kind='diagnostics' AND symbol=? ORDER BY id DESC LIMIT 1", (sym,)).fetchone()
+        n_trials = con.execute("SELECT COUNT(*) c FROM research_trials WHERE run_id=?", (run["id"],)).fetchone()["c"]
+    res = json.loads(run["result"])
+    assert res["test_untouched"] and n_trials == len(res["delay_costs"]) and "rule" in json.loads(run["params"])
+    c = jobs.condense_diag(res)
+    assert c["verdict"] and c["delay"] and c["decomposition"] and c["blocks"] and c["scales"]
+    _patch({"stpRNG": "Step Index"})
+    _run(jobs.tick_structure_job("stpRNG"))
+    with __import__("contextlib").closing(store.db()) as con:
+        tr = json.loads(con.execute("SELECT result FROM research_runs WHERE kind='ticks' ORDER BY id DESC LIMIT 1").fetchone()["result"])
+    assert tr["symbol"] == "stpRNG" and tr["ticks"] > 80000 and tr["download"]["stopped"] == "reached_start" and tr["runs"]["z"] is not None
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

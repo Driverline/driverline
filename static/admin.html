@@ -247,6 +247,8 @@ async function loadEngine(box){
         el('div','mut','Tick statistics on '+Math.round((d.tick_stats_share||0)*100)+'% of bars'+(d.reasons.length?'. '+d.reasons.join('; '):'')));
       const row=el('div','btns');row.append(run('Validate again','/validate',{symbol:d.symbol}));
       if(d.status!=='invalid')row.append(run('Run baselines','/baselines',{symbol:d.symbol},'Run the baseline study on '+d.symbol+'? It uses development and validation data only.'));
+      if(d.status!=='invalid')row.append(run('Run diagnostics','/diagnostics',{symbol:d.symbol,n_surrogates:40},'Run the Phase 3b diagnostics on '+d.symbol+'? Outcome breakdown, entry-delay and cost tests, block-shuffled copies and time scales. Development and validation data only; it takes a few minutes.'));
+      row.append(run('Tick structure (last 24 h)','/ticks',{symbol:d.symbol},'Download the last 24 hours of ticks for '+d.symbol+' and analyse them?'));
       if(d.status!=='invalid')row.append(run('Run structure tests','/structure',{symbol:d.symbol,n_surrogates:80},'Run the pre-registered structure tests on '+d.symbol+'? It registers the hypotheses first, uses development and validation data only, and takes a few minutes.'));
       c.append(row);box.append(c)});
     box.append(el('h2','','Structure tests (pre-registered, Holm-adjusted, must replicate in both periods)'));
@@ -255,6 +257,28 @@ async function loadEngine(box){
       box.append(el('div','mut',u.symbol+' \u00b7 '+(u.family==='range_break'?'Range Break':'Step Index')+' \u00b7 run '+u.id+' \u00b7 '+dt(u.finished_at)+' \u00b7 '+u.tests_per_segment+' tests per period, '+u.n_surrogates+' shuffled copies'));
       box.append(el('div',u.replicated.length?'warn':'mut',u.verdict));
       u.replicated.forEach(x=>{const d=el('div','mut',x.hypothesis+' ('+x.name+'): development '+(x.dev===null?'-':Number(x.dev).toFixed(3))+', validation '+(x.val===null?'-':Number(x.val).toFixed(3))+', adjusted p '+Number(x.dev_p_adj).toExponential(1)+' / '+Number(x.val_p_adj).toExponential(1));d.style.fontSize='13px';box.append(d)})});
+    box.append(el('h2','','Diagnostics (would the pattern survive real conditions?)'));
+    if(!(r.diagnostics||[]).length)box.append(el('div','mut','No diagnostics runs yet.'));
+    (r.diagnostics||[]).forEach(u=>{
+      box.append(el('div','mut',u.symbol+' \u00b7 run '+u.id+' \u00b7 '+dt(u.finished_at)+' \u00b7 '+u.n_surrogates+' block-shuffled copies per size'));
+      box.append(el('div',u.executable.length?'warn':'mut',u.verdict));
+      box.append(el('div','mut','Average result at the 1.5R target after costs, * = 95% interval above zero. Entry delay in 5-minute bars:'));
+      u.delay.forEach(x=>{const d=el('div','mut',x.baseline+', entry '+x.delay+' bar'+(x.delay===1?'':'s')+' late: development '+x.dev+' | validation '+x.val);d.style.fontSize='13px';box.append(d)});
+      box.append(el('div','mut','Where the 1.5R result comes from (share of trades, average result): target / stop / timeout, and average bars held'));
+      u.decomposition.forEach(x=>{const d=el('div','mut',x.baseline+': development '+x.dev.target+' / '+x.dev.stop+' / '+x.dev.timeout+', '+(x.dev.avg_bars||0).toFixed(1)+' bars | validation '+x.val.target+' / '+x.val.stop+' / '+x.val.timeout+', '+(x.val.avg_bars||0).toFixed(1)+' bars');d.style.fontSize='13px';box.append(d)});
+      box.append(el('div','mut','Real result against block-shuffled copies (z score; large only if the memory is shorter than the block):'));
+      [1,6,12,48].forEach(B=>{const row=u.blocks.filter(x=>x.block===B).map(x=>x.baseline+' '+x.segment+' '+Number(x.z).toFixed(1)).join(', ');if(row){const d=el('div','mut','Blocks of '+B+' bar'+(B===1?'':'s')+': '+row);d.style.fontSize='13px';box.append(d)}});
+      box.append(el('div','mut','How often direction reverses when price is sampled every N minutes (development / validation):'));
+      const sc=u.scales.map(x=>x.minutes+' min: '+(x.dev===null?'-':Math.round(x.dev*1000)/10)+'% / '+(x.val===null?'-':Math.round(x.val*1000)/10)+'%').join(' | ');
+      const dd=el('div','mut',sc);dd.style.fontSize='13px';box.append(dd)});
+    box.append(el('h2','','Tick-level structure (Deriv serves the last 24 hours only)'));
+    if(!(r.tick_runs||[]).length)box.append(el('div','mut','No tick runs yet.'));
+    (r.tick_runs||[]).forEach(u=>{
+      if(u.note){box.append(el('div','mut',u.symbol+': '+u.note));return}
+      box.append(el('div','mut',u.symbol+' \u00b7 '+(u.ticks||0).toLocaleString()+' ticks over '+u.hours+' h \u00b7 runs z '+(u.runs_z===null?'-':Number(u.runs_z).toFixed(1))+' \u00b7 autocorrelation lag 1 '+(u.acf?Number(u.acf.lag1).toFixed(3):'-')));
+      const vr=Object.entries(u.variance_ratio||{}).map(([q,v])=>q+' ticks: '+(v===null?'-':Number(v).toFixed(2))).join(', ');
+      const sc=(u.scales||[]).map(x=>x.seconds+' s: '+Math.round(x.p_reverse*1000)/10+'% (z '+Number(x.z).toFixed(1)+')').join(' | ');
+      const a=el('div','mut','Variance ratio: '+vr+'. Reversal rate by bar size: '+sc);a.style.fontSize='13px';box.append(a)});
     box.append(el('h2','','Baseline results (1.5R target, average result after costs with 95% interval)'));
     if(!r.runs.length)box.append(el('div','mut','No baseline runs yet.'));
     r.runs.forEach(u=>{

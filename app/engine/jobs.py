@@ -15,7 +15,7 @@ from .. import auth, deriv
 from ..config import DERIV_WS_URL
 from . import features as FT
 from . import research as RS
-from . import store, structure as ST, validate as VAL
+from . import diagnostics as DG, store, structure as ST, validate as VAL
 
 TF = 300      # the stored timeframe: M5
 # Symbols we expect to exist. The codes are NOT confirmed: the probe checks them against Deriv's live symbol list, and
@@ -284,6 +284,75 @@ async def structure_job(symbol: str, n_surrogates: int):
     await asyncio.to_thread(_structure_sync, symbol, n_surrogates)
 
 
+def _diagnostics_sync(symbol: str, n_surrogates: int):
+    ds = store.latest_dataset(symbol, TF)
+    if not ds:
+        raise RuntimeError("There is no validated dataset for this symbol. Ingest it first.")
+    if ds["status"] == "invalid":
+        raise RuntimeError("The latest dataset failed validation, so it cannot be used.")
+    bars = store.load_candles(symbol, TF)
+    if VAL.dataset_hash(bars) != ds["sha256"]:
+        raise RuntimeError("The stored candles changed since they were validated. Validate again first.")
+    bounds = RS.split_bounds(len(bars))
+    run_id = store.start_run("diagnostics", symbol, ds["id"], split={k: list(v) for k, v in bounds.items() if k != "test"},
+                             params={"n_surrogates": n_surrogates, "dataset_sha": ds["sha256"], "stop_atr": DG.STOP_ATR,
+                                     "delays": DG.DELAYS, "cost_multiples": DG.COST_MULTS, "blocks": DG.BLOCKS,
+                                     "rule": "executable candidate only if the 95% interval is above zero in development and "
+                                             "validation with a normal entry, one bar late, and one bar late with doubled costs"})
+    try:
+        res = DG.run_diagnostics(bars, symbol, n_surrogates, lambda i, n: _state.update(detail=f"block surrogate {i} of {n}"))
+        res["dataset"] = {"id": ds["id"], "sha256": ds["sha256"], "status": ds["status"]}
+        for r in res["delay_costs"]:
+            store.log_trial(run_id, f"{r['baseline']}|delay{r['delay']}|cost{r['cost_mult']}x", "dev+val",
+                            {k: r[k] for k in ("baseline", "delay", "cost_mult")}, {"dev": r["dev"], "val": r["val"]})
+        store.finish_run(run_id, res)
+    except Exception:
+        store.finish_run(run_id, {"error": "run failed"}, ok=False)
+        raise
+
+
+async def diagnostics_job(symbol: str, n_surrogates: int):
+    await asyncio.to_thread(_diagnostics_sync, symbol, n_surrogates)
+
+
+async def tick_structure_job(symbol: str):
+    async with websockets.connect(DERIV_WS_URL, open_timeout=15, ping_interval=20) as ws:
+        if symbol not in await _active(ws):
+            raise RuntimeError(f"{symbol} is not on Deriv's active symbol list.")
+        _state["detail"] = f"downloading {symbol} ticks (last 24 hours)"
+        end = int(time.time())
+        times, prices, info = await fetch_ticks(ws, symbol, end - 86400, end)
+    _state["detail"] = "analysing ticks"
+    res = await asyncio.to_thread(DG.ticks_analysis, times, prices)
+    res.update(symbol=symbol, download=info)
+    rid = store.start_run("ticks", symbol, params={"window_hours": 24})
+    store.finish_run(rid, res)
+
+
+def condense_diag(res: dict) -> dict:
+    """What the Admin page shows: the verdict, delay lines, outcome breakdown, block z-scores and scales."""
+    f = lambda m: "-" if not m or m.get("avg_r") is None else (
+        f"{m['avg_r']:+.3f}" + ("*" if m.get("ci95") and m["ci95"][0] > 0 else ""))
+    delay = []
+    for b in DG.FOCUS:
+        for r in res.get("delay_costs", []):
+            if r["baseline"] == b and r["cost_mult"] == 1:
+                delay.append({"baseline": b, "delay": r["delay"], "dev": f(r["dev"]), "val": f(r["val"])})
+    dec = []
+    for r in res.get("decomposition", []):
+        if r["rr"] == 1.5 and r["baseline"] in DG.FOCUS:
+            g = lambda m, k: "-" if m.get(f"{k}_share") is None else f"{m[f'{k}_share'] * 100:.0f}% ({'-' if m[f'{k}_avg'] is None else format(m[f'{k}_avg'], '+.2f')})"
+            dec.append({"baseline": r["baseline"], "dev": {k: g(r["dev"], k) for k in ("target", "stop", "timeout")} | {"avg_bars": r["dev"].get("avg_bars")},
+                        "val": {k: g(r["val"], k) for k in ("target", "stop", "timeout")} | {"avg_bars": r["val"].get("avg_bars")}})
+    blk = [{"block": r["block"], "baseline": r["baseline"], "segment": r["segment"], "z": r["z"]} for r in res.get("block_surrogates", [])]
+    sc = []
+    for r in res.get("scales", []):
+        sc.append({"minutes": r["minutes"], "dev": r["dev"].get("p_reverse"), "val": r["val"].get("p_reverse")})
+    return {"verdict": res.get("verdict"), "executable": [v["baseline"] for v in res.get("verdicts", []) if v["executable_candidate"]],
+            "checks": res.get("verdicts"), "delay": delay, "decomposition": dec, "blocks": blk, "scales": sc,
+            "n_surrogates": res.get("n_surrogates")}
+
+
 # ---------------------------------------------------------------- job runner and API
 def _start(coro, job: str, detail: str) -> bool:
     if _state["running"]:
@@ -349,6 +418,25 @@ async def api_structure(request):
     return JSONResponse({"started": _start(structure_job(sym, n), "structure", sym)})
 
 
+async def api_diagnostics(request):
+    auth.require_admin(request)
+    d = await auth._json(request)
+    sym = _symbol(d)
+    try:
+        n = int(d.get("n_surrogates", DG.SURROGATES_DEFAULT))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "n_surrogates must be a whole number")
+    if not 20 <= n <= 100:
+        raise HTTPException(422, "Use 20 to 100 surrogates per block size")
+    return JSONResponse({"started": _start(diagnostics_job(sym, n), "diagnostics", sym)})
+
+
+async def api_ticks(request):
+    auth.require_admin(request)
+    sym = _symbol(await auth._json(request))
+    return JSONResponse({"started": _start(tick_structure_job(sym), "ticks", sym)})
+
+
 async def api_baselines(request):
     auth.require_admin(request)
     sym = _symbol(await auth._json(request))
@@ -380,9 +468,13 @@ async def api_status(request):
                                "AND status='done' ORDER BY id DESC LIMIT 4").fetchall()
             structure = con.execute("SELECT id, symbol, result, finished_at FROM research_runs WHERE kind='structure' "
                                     "AND status='done' ORDER BY id DESC LIMIT 4").fetchall()
-        return probe, ds, runs, structure
+            diag = con.execute("SELECT id, symbol, result, finished_at FROM research_runs WHERE kind='diagnostics' "
+                               "AND status='done' ORDER BY id DESC LIMIT 3").fetchall()
+            tickruns = con.execute("SELECT id, symbol, result, finished_at FROM research_runs WHERE kind='ticks' "
+                                   "AND status='done' ORDER BY id DESC LIMIT 3").fetchall()
+        return probe, ds, runs, structure, diag, tickruns
 
-    probe, ds, runs, structure = await asyncio.to_thread(read)
+    probe, ds, runs, structure, diag, tickruns = await asyncio.to_thread(read)
     datasets = []
     for d in ds:
         rep = json.loads(d["report"])
@@ -402,8 +494,18 @@ async def api_status(request):
                            "n_surrogates": res.get("n_surrogates"),
                            "replicated": [{k: x[k] for k in ("hypothesis", "name", "dev", "val", "dev_p_adj", "val_p_adj")}
                                           for x in res.get("replicated", [])[:10]]})
+    out_diag = [{"id": r["id"], "symbol": r["symbol"], "finished_at": r["finished_at"], **condense_diag(json.loads(r["result"]))}
+                for r in diag]
+    out_ticks = []
+    for r in tickruns:
+        res = json.loads(r["result"])
+        out_ticks.append({"id": r["id"], "symbol": r["symbol"], "finished_at": r["finished_at"], "ticks": res.get("ticks"),
+                          "hours": res.get("hours"), "runs_z": (res.get("runs") or {}).get("z"), "acf": res.get("acf"),
+                          "variance_ratio": {k: v.get("vr") for k, v in (res.get("variance_ratio") or {}).items()},
+                          "scales": res.get("scales"), "note": res.get("note")})
     return JSONResponse({"state": dict(_state), "probe": json.loads(probe["result"]) if probe else None,
-                         "datasets": datasets, "runs": out_runs, "structure": out_struct})
+                         "datasets": datasets, "runs": out_runs, "structure": out_struct, "diagnostics": out_diag,
+                         "tick_runs": out_ticks})
 
 
 routes = [
@@ -413,4 +515,6 @@ routes = [
     Route("/api/admin/engine/validate", api_validate, methods=["POST"]),
     Route("/api/admin/engine/baselines", api_baselines, methods=["POST"]),
     Route("/api/admin/engine/structure", api_structure, methods=["POST"]),
+    Route("/api/admin/engine/diagnostics", api_diagnostics, methods=["POST"]),
+    Route("/api/admin/engine/ticks", api_ticks, methods=["POST"]),
 ]

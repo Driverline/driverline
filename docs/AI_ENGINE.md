@@ -69,3 +69,17 @@ Question answered first: is there ANY structure to exploit in a symbol, before a
 - Probe now reports how many hours of ticks Deriv serves; the tick download reports how far back it got and why it stopped.
 
 A replicated pattern is a candidate only. It stays Research Only until it passes the untouched test and forward demo.
+
+
+## Phase 3b: diagnostics (`app/engine/diagnostics.py`)
+A structure test says a pattern exists. The diagnostics ask whether a member could use it.
+- Outcome breakdown: shares of targets, stops and timeouts and the average result of each (a hit rate below break-even with a
+  positive average means the profit is not coming from the target).
+- Entry delay: the same trades entered 0, 1, 2, 3 and 6 bars late (5-minute bars). Costs 1x, 2x and 4x at 0 and 1 bars.
+- Block-shuffled surrogates (blocks of 1, 6, 12, 48 bars): shows over what time scale the structure lives.
+- Scales: how often direction reverses when price is sampled every 5 minutes to 1 day.
+- Tick structure (Deriv serves only the last 24 hours of ticks; a tick-level view needs continuous collection to go further).
+- Survival rule, fixed in advance: a baseline is an EXECUTABLE CANDIDATE only if its 95% interval is above zero in both the
+  development and validation segments with a normal entry, one bar late, and one bar late with doubled costs.
+- The untouched test segment is still never read. A candidate stays Research Only until the untouched test and a forward demo.
+- `research.simulate()` gained an optional `delay` and now reports each trade's outcome kind; delay 0 is identical to before.
