@@ -36,6 +36,8 @@ KEEP = ("sidc",) + TOKEN_ALIASES + ("utm_source", "utm_medium", "utm_campaign")
 VAL = re.compile(r"^[A-Za-z0-9_.\-]{1,80}$")
 STATUSES = ("provisional", "confirmed", "not_tagged")
 STATE_TTL = 600
+ID_TOKEN = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
+USERINFO_URL = "https://auth.deriv.com/userinfo"
 BATCH = 100                                                       # Deriv's limit per call
 
 SCHEMA = """
@@ -48,9 +50,13 @@ SCHEMA = """
     CREATE TABLE IF NOT EXISTS partner_meta(key TEXT PRIMARY KEY, value TEXT)"""
 
 
+def _migrate(con):
+    con.add_column("partner_states", "probe", "TEXT")
+
+
 def db():
     auth.db().close()
-    return dbx.connect("partner", SCHEMA)
+    return dbx.connect("partner", SCHEMA, _migrate)
 
 
 # ---------------------------------------------------------------- stage 1: the values we carry
@@ -238,13 +244,18 @@ async def partner_start(request):
     state, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     now = int(time.time())
+    # Optional probe: test specific client IDs against Deriv, and (openid=1) also ask which unique ID Deriv gives for a login.
+    ids = [i for i in re.split(r"[\s,;]+", request.query_params.get("probe", "")) if ID_TOKEN.match(i)][:20]
+    openid = request.query_params.get("openid") == "1"
+    probe = json.dumps({"ids": ids, "openid": openid}) if (ids or openid) else None
     with closing(db()) as con:
         con.execute("DELETE FROM partner_states WHERE created_at<?", (now - STATE_TTL,))
-        con.execute("INSERT INTO partner_states(state,verifier,user_id,created_at) VALUES(?,?,?,?)", (state, verifier, user["id"], now))
+        con.execute("INSERT INTO partner_states(state,verifier,user_id,created_at,probe) VALUES(?,?,?,?,?)",
+                    (state, verifier, user["id"], now, probe))
         con.commit()
     url = deriv_login.AUTH_URL + "?" + urlencode({
         "response_type": "code", "client_id": app_id, "redirect_uri": deriv_login._base(request) + "/auth/deriv/callback",
-        "scope": "application_read", "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
+        "scope": "application_read" + (" openid" if openid else ""), "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
     resp = RedirectResponse(url, status_code=302)
     resp.set_cookie("dl_oauth", state, max_age=STATE_TTL, httponly=True, samesite="lax", secure=auth.SECURE, path="/auth/deriv")
     return resp
@@ -265,13 +276,14 @@ async def partner_callback(request):
     q = request.query_params
     state = q.get("state", "")
     with closing(db()) as con:
-        r = con.execute("SELECT verifier, user_id, created_at FROM partner_states WHERE state=?", (state,)).fetchone()
+        r = con.execute("SELECT verifier, user_id, created_at, probe FROM partner_states WHERE state=?", (state,)).fetchone()
         con.execute("DELETE FROM partner_states WHERE state=?", (state,))
         con.commit()
     user = auth.current_user(request)
     if q.get("error"):
-        return _back(partner="error", msg="Deriv sign-in was cancelled, or the scope is not allowed for the app yet "
-                                          "(tick 'Application insights' at developers.deriv.com).")
+        return _back(partner="error", msg="Deriv sign-in was cancelled, or a requested scope is not allowed for the app "
+                                          f"({(q.get('error_description') or q.get('error'))[:120]}). Tick 'Application insights' "
+                                          "at developers.deriv.com, or run the test again without the unique-ID option.")
     if not (r and q.get("code") and time.time() - r["created_at"] <= STATE_TTL and request.cookies.get("dl_oauth") == state
             and user and user["id"] == r["user_id"]):
         return _back(partner="error", msg="That link expired. Start the check again.")
@@ -282,10 +294,17 @@ async def partner_callback(request):
                               data={"grant_type": "authorization_code", "client_id": app_id, "code": q["code"],
                                     "code_verifier": r["verifier"], "redirect_uri": deriv_login._base(request) + "/auth/deriv/callback"})
             t.raise_for_status()
-            token = t.json().get("access_token")
+            body = t.json()
+            token = body.get("access_token")
         if not token:
             raise ValueError("no token")
-        done = await check_all({"Authorization": f"Bearer {token}"})      # the token lives only inside this request
+        headers = {"Authorization": f"Bearer {token}"}                    # the token lives only inside this request
+        if r["probe"]:
+            await run_probe(headers, body, json.loads(r["probe"]))
+            resp = _back(partner="probe")
+            resp.delete_cookie("dl_oauth", path="/auth/deriv")
+            return resp
+        done = await check_all(headers)
     except PartnerAuthError as e:
         return _back(partner="error", msg=str(e))
     except Exception as e:
@@ -294,6 +313,43 @@ async def partner_callback(request):
     resp = _back(partner="done", **done)
     resp.delete_cookie("dl_oauth", path="/auth/deriv")
     return resp
+
+
+def _jwt_claims(tok: str):
+    parts = str(tok).split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        return json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except Exception:
+        return None
+
+
+async def run_probe(headers: dict, token_body: dict, opts: dict):
+    """Finds out, once, how Deriv identifies people: which unique ID a login carries, and whether the client IDs shown in Partners
+    Hub are recognised by the tag check. Stores only shapes plus the owner's own identifiers, never a token."""
+    out = {"at": int(time.time()), "scope_openid": bool(opts.get("openid")), "token_keys": sorted(token_body.keys())}
+    claims = _jwt_claims(token_body.get("access_token", "")) or _jwt_claims(token_body.get("id_token", ""))
+    if claims is not None:
+        out["jwt_claims"] = {k: (str(v)[:60] if k in ("sub", "iss", "aud") else type(v).__name__) for k, v in claims.items()}
+    async with httpx.AsyncClient(timeout=20) as cl:
+        try:
+            u = await cl.get(USERINFO_URL, headers={**headers, "accept": "application/json"})
+            ui = u.json() if u.status_code == 200 else {}
+            out["userinfo"] = {"status": u.status_code, "keys": sorted(ui.keys()) if isinstance(ui, dict) else [],
+                               "sub": str(ui.get("sub"))[:60] if isinstance(ui, dict) and ui.get("sub") else None}
+        except Exception as e:
+            out["userinfo"] = {"error": type(e).__name__}
+    if opts.get("ids"):
+        try:
+            tags, raw = await check_ids(headers, opts["ids"])
+            out["check"] = {"ids": opts["ids"], "tags": tags, "raw": json.dumps(raw)[:600]}
+        except PartnerAuthError as e:
+            out["check"] = {"ids": opts["ids"], "error": str(e)}
+    with closing(db()) as con:
+        con.execute("INSERT INTO partner_meta(key,value) VALUES('last_probe',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (json.dumps(out),))
+        con.commit()
 
 
 # ---------------------------------------------------------------- admin API
@@ -319,7 +375,9 @@ async def api_summary(request):
         counts = {r["status"]: r["n"] for r in con.execute("SELECT status, COUNT(*) AS n FROM partner_tags GROUP BY status").fetchall()}
         last = con.execute("SELECT value FROM partner_meta WHERE key='last_check'").fetchone()
     p = resolved_params()
-    return JSONResponse({"counts": {s: counts.get(s, 0) for s in STATUSES}, "gate": gate_on(),
+    with closing(db()) as con:
+        pr = con.execute("SELECT value FROM partner_meta WHERE key='last_probe'").fetchone()
+    return JSONResponse({"last_probe": json.loads(pr["value"]) if pr else None, "counts": {s: counts.get(s, 0) for s in STATUSES}, "gate": gate_on(),
                          "signup_via_oauth": os.environ.get("DERIV_SIGNUP_VIA_OAUTH") == "1",
                          "token_set": bool(_pat_headers()), "values_carried": sorted(p.keys()),
                          "last_check": json.loads(last["value"]) if last else None})
