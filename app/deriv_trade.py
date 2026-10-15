@@ -381,9 +381,10 @@ async def start(request):
         con.execute("INSERT INTO deriv_trade_states(state,verifier,user_id,created_at) VALUES(?,?,?,?)",
                     (state, verifier, user["id"], now))
         con.commit()
+    from . import partner
     url = deriv_login.AUTH_URL + "?" + urlencode({
         "response_type": "code", "client_id": app_id, "redirect_uri": deriv_login._base(request) + "/auth/deriv/callback",
-        "scope": "trade", "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
+        "scope": partner.trade_scope(), "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
     resp = RedirectResponse(url, status_code=302)
     resp.set_cookie("dl_oauth", state, max_age=STATE_TTL, httponly=True, samesite="lax", secure=auth.SECURE, path="/auth/deriv")
     return resp
@@ -424,6 +425,11 @@ async def callback(request):
         if not token:
             raise ValueError("no token")
         accts = await _accounts(user["id"], app_id, token)   # also proves the token works
+        try:
+            from . import partner
+            partner.note_identity([a["id"] for a in accts], await partner.fetch_identity(token), "trade_connect")
+        except Exception as e:
+            print(f"[partner] identity lookup failed: {type(e).__name__}", flush=True)
         if not accts:
             return deriv_login._again("We could not find a Deriv trading account for this login. Create one on Deriv first.")
         _save_token(user["id"], token, body.get("expires_in"))

@@ -52,6 +52,9 @@ SCHEMA = """
 
 def _migrate(con):
     con.add_column("partner_states", "probe", "TEXT")
+    con.add_column("partner_tags", "client_uuid", "TEXT")
+    con.add_column("partner_tags", "deriv_sub", "TEXT")
+    con.add_column("partner_tags", "display_id", "TEXT")
 
 
 def db():
@@ -85,7 +88,53 @@ def oauth_extra(signup: bool) -> dict:
     p = resolved_params() if (signup or os.environ.get("DERIV_PARTNER_ON_LOGIN", "1") != "0") else {}
     if signup:
         p["prompt"] = "registration"
+    if capture_on():
+        p["scope"] = "trade openid"             # later keys win in the address built by deriv_login.start
     return p
+
+
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def capture_on() -> bool:
+    """DERIV_CAPTURE_CLIENT_ID=1: also ask Deriv for the unique user ID (scope openid) when members sign in or connect, so each
+    member can be matched to the client ID Partners Hub shows. Off by default."""
+    return os.environ.get("DERIV_CAPTURE_CLIENT_ID", "0") == "1"
+
+
+def trade_scope() -> str:
+    return "trade openid" if capture_on() else "trade"
+
+
+async def fetch_identity(token: str):
+    """{'client_uuid', 'sub'} from Deriv's userinfo for this token, or None. Only when capture is on; failures never break login."""
+    if not capture_on():
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as cl:
+            u = await cl.get(USERINFO_URL, headers={"Authorization": f"Bearer {token}", "accept": "application/json"})
+        d = u.json() if u.status_code == 200 else {}
+    except Exception:
+        return None
+    cid, sub = d.get("cid"), d.get("sub")
+    return {"client_uuid": cid.lower() if isinstance(cid, str) and UUID_RE.match(cid) else None,
+            "sub": sub.lower() if isinstance(sub, str) and UUID_RE.match(sub) else None}
+
+
+def note_identity(ids, ident, source: str = "signin"):
+    """Remember which Deriv client UUID belongs to these account IDs (the accounts stay provisional)."""
+    ids = [i for i in (ids or []) if i]
+    if not ids or not ident or not (ident.get("client_uuid") or ident.get("sub")):
+        return
+    now = int(time.time())
+    with closing(db()) as con:
+        for i in ids:
+            con.execute("INSERT INTO partner_tags(account_id,user_id,status,source,attribution,first_seen,client_uuid,deriv_sub) "
+                        "VALUES(?,NULL,'provisional',?,NULL,?,?,?) ON CONFLICT(account_id) DO UPDATE SET "
+                        "client_uuid=COALESCE(excluded.client_uuid, partner_tags.client_uuid), "
+                        "deriv_sub=COALESCE(excluded.deriv_sub, partner_tags.deriv_sub)",
+                        (i, source, now, ident.get("client_uuid"), ident.get("sub")))
+        con.commit()
 
 
 def signup_link(plain_link: str) -> str:
@@ -113,7 +162,8 @@ def record_accounts(ids, user_id, source: str, request=None):
         for i in ids:
             con.execute("INSERT INTO partner_tags(account_id,user_id,status,source,attribution,first_seen) "
                         "VALUES(?,?,'provisional',?,?,?) ON CONFLICT(account_id) DO UPDATE SET "
-                        "user_id=COALESCE(excluded.user_id, partner_tags.user_id)", (i, user_id, source, attr, now))
+                        "user_id=COALESCE(excluded.user_id, partner_tags.user_id), "
+                        "attribution=COALESCE(partner_tags.attribution, excluded.attribution)", (i, user_id, source, attr, now))
         con.commit()
 
 
@@ -149,9 +199,13 @@ class PartnerAuthError(Exception):
     pass
 
 
-def parse_tags(data, ids) -> dict:
-    """{client id: True/False} read from Deriv's answer, whatever way it nests the results."""
-    idset, found = {str(i) for i in ids}, {}
+def parse_clients(data, ids) -> dict:
+    """{client id: {'is_tagged', 'resolved', 'display_id'}} read from Deriv's answer, however it nests the results."""
+    found = {}
+    idset = {str(i) for i in ids}
+
+    def info(x):
+        return {"is_tagged": x["is_tagged"], "resolved": x.get("resolved") is not False, "display_id": x.get("display_id")}
 
     def walk(x, depth=0):
         if depth > 6:
@@ -160,13 +214,13 @@ def parse_tags(data, ids) -> dict:
             if isinstance(x.get("is_tagged"), bool):
                 for k in ("client_id", "id", "loginid", "client", "external_id"):
                     if x.get(k) is not None:
-                        found[str(x[k])] = x["is_tagged"]
+                        found[str(x[k])] = info(x)
                         break
             for k, v in x.items():
                 if str(k) in idset and isinstance(v, bool):
-                    found.setdefault(str(k), v)
+                    found.setdefault(str(k), {"is_tagged": v, "resolved": True, "display_id": None})
                 elif str(k) in idset and isinstance(v, dict) and isinstance(v.get("is_tagged"), bool):
-                    found[str(k)] = v["is_tagged"]
+                    found[str(k)] = info(v)
                 if isinstance(v, (dict, list)):
                     walk(v, depth + 1)
         elif isinstance(x, list):
@@ -177,12 +231,23 @@ def parse_tags(data, ids) -> dict:
         lists = [v for v in (data.values() if isinstance(data, dict) else [data]) if isinstance(v, list)]
         for lst in lists:
             if len(lst) == len(ids) and all(isinstance(e, dict) and isinstance(e.get("is_tagged"), bool) for e in lst):
-                found = {str(i): e["is_tagged"] for i, e in zip(ids, lst)}
+                found = {str(i): info(e) for i, e in zip(ids, lst)}
     return {i: found[i] for i in (str(x) for x in ids) if i in found}
 
 
+def parse_tags(data, ids) -> dict:
+    """{client id: True/False} for the ids Deriv recognised."""
+    return {k: v["is_tagged"] for k, v in parse_clients(data, ids).items() if v["resolved"]}
+
+
 async def check_ids(headers: dict, ids: list):
-    """Calls Deriv for up to 100 ids. Returns (tags, raw json)."""
+    """Calls Deriv for up to 100 ids. Returns (tags for recognised ids, raw json)."""
+    clients, data = await check_clients(headers, ids)
+    return {k: v["is_tagged"] for k, v in clients.items() if v["resolved"]}, data
+
+
+async def check_clients(headers: dict, ids: list):
+    """Calls Deriv for up to 100 ids. Returns ({id: {is_tagged, resolved, display_id}}, raw json)."""
     async with httpx.AsyncClient(timeout=30) as cl:
         for attempt in (0, 1):
             r = await cl.post(CHECK_URL, headers={**headers, "Content-Type": "application/json", "accept": "application/json"},
@@ -198,31 +263,40 @@ async def check_ids(headers: dict, ids: list):
     if r.status_code >= 400:
         raise PartnerAuthError(f"Deriv could not check the tags just now (status {r.status_code}). Please try again.")
     data = r.json()
-    return parse_tags(data, ids), data
+    return parse_clients(data, ids), data
 
 
 async def check_all(headers: dict) -> dict:
-    """Checks every provisional or not-tagged account against Deriv and stores the result."""
+    """Checks every provisional or not-tagged account that has a client UUID against Deriv and stores the result."""
     with closing(db()) as con:
-        ids = [r["account_id"] for r in con.execute("SELECT account_id FROM partner_tags WHERE status IN ('provisional','not_tagged') "
-                                                    "ORDER BY first_seen LIMIT 1000").fetchall()]
-    done = {"checked": 0, "confirmed": 0, "not_tagged": 0, "unknown": 0}
+        rows = [(r["account_id"], r["client_uuid"]) for r in con.execute(
+            "SELECT account_id, client_uuid FROM partner_tags WHERE status IN ('provisional','not_tagged') "
+            "ORDER BY first_seen LIMIT 1000").fetchall()]
+    by_uuid: dict = {}
+    for acc, u in rows:
+        if u:
+            by_uuid.setdefault(u, []).append(acc)
+    done = {"checked": len(rows), "confirmed": 0, "not_tagged": 0, "unknown": 0,
+            "no_client_id": sum(1 for _, u in rows if not u)}
+    uuids = list(by_uuid)
     raw0 = None
     now = int(time.time())
-    for k in range(0, len(ids), BATCH):
-        chunk = ids[k:k + BATCH]
-        tags, raw = await check_ids(headers, chunk)
+    for k in range(0, len(uuids), BATCH):
+        chunk = uuids[k:k + BATCH]
+        clients, raw = await check_clients(headers, chunk)
         raw0 = raw0 or raw
         with closing(db()) as con:
-            for i in chunk:
-                done["checked"] += 1
-                if i not in tags:
-                    done["unknown"] += 1
+            for u in chunk:
+                c = clients.get(u)
+                if not c or not c["resolved"]:
+                    done["unknown"] += len(by_uuid[u])
                     continue
-                st = "confirmed" if tags[i] else "not_tagged"
-                done[st] += 1
-                con.execute("UPDATE partner_tags SET status=?, checked_at=?, note=? WHERE account_id=?",
-                            (st, now, "Deriv partner API" if tags[i] else "Deriv partner API says not tagged (or ID not recognised)", i))
+                st = "confirmed" if c["is_tagged"] else "not_tagged"
+                for acc in by_uuid[u]:
+                    done[st] += 1
+                    con.execute("UPDATE partner_tags SET status=?, checked_at=?, note=?, display_id=? WHERE account_id=?",
+                                (st, now, "Deriv partner API" if c["is_tagged"] else "Deriv partner API says not tagged to you",
+                                 c.get("display_id"), acc))
             con.commit()
     with closing(db()) as con:
         con.execute("INSERT INTO partner_meta(key,value) VALUES('last_check',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -326,26 +400,35 @@ def _jwt_claims(tok: str):
 
 
 async def run_probe(headers: dict, token_body: dict, opts: dict):
-    """Finds out, once, how Deriv identifies people: which unique ID a login carries, and whether the client IDs shown in Partners
-    Hub are recognised by the tag check. Stores only shapes plus the owner's own identifiers, never a token."""
-    out = {"at": int(time.time()), "scope_openid": bool(opts.get("openid")), "token_keys": sorted(token_body.keys())}
+    """Finds out, once, how Deriv identifies people: which unique IDs a login carries, and whether Partners Hub's client IDs (and the
+    login's own IDs) are recognised by the tag check. Stores shapes and the owner's own identifiers, never a token."""
+    out = {"at": int(time.time()), "scope_openid": bool(opts.get("openid")), "token_keys": sorted(token_body.keys()),
+           "token_scope": str(token_body.get("scope", ""))[:80]}
     claims = _jwt_claims(token_body.get("access_token", "")) or _jwt_claims(token_body.get("id_token", ""))
     if claims is not None:
-        out["jwt_claims"] = {k: (str(v)[:60] if k in ("sub", "iss", "aud") else type(v).__name__) for k, v in claims.items()}
+        out["jwt_claims"] = {k: str(v)[:60] for k, v in claims.items()}
+    own = {}
     async with httpx.AsyncClient(timeout=20) as cl:
         try:
             u = await cl.get(USERINFO_URL, headers={**headers, "accept": "application/json"})
             ui = u.json() if u.status_code == 200 else {}
-            out["userinfo"] = {"status": u.status_code, "keys": sorted(ui.keys()) if isinstance(ui, dict) else [],
-                               "sub": str(ui.get("sub"))[:60] if isinstance(ui, dict) and ui.get("sub") else None}
+            ui = ui if isinstance(ui, dict) else {}
+            out["userinfo"] = {"status": u.status_code, "keys": sorted(ui.keys()),
+                               "values": {k: (",".join(map(str, v)) if isinstance(v, list) else str(v))[:80] for k, v in ui.items()
+                                          if k in ("sub", "cid", "aud", "amr", "iss")}}
+            for k in ("cid", "sub"):
+                if isinstance(ui.get(k), str) and UUID_RE.match(ui[k]):
+                    own[ui[k].lower()] = k
         except Exception as e:
             out["userinfo"] = {"error": type(e).__name__}
-    if opts.get("ids"):
+    ids = list(dict.fromkeys([*(opts.get("ids") or []), *own]))
+    if ids:
         try:
-            tags, raw = await check_ids(headers, opts["ids"])
-            out["check"] = {"ids": opts["ids"], "tags": tags, "raw": json.dumps(raw)[:600]}
+            clients, raw = await check_clients(headers, ids)
+            out["check"] = {"clients": {i: {**clients.get(i, {"is_tagged": None, "resolved": False, "display_id": None}),
+                                           "own": own.get(i.lower())} for i in ids}, "raw": json.dumps(raw)[:700]}
         except PartnerAuthError as e:
-            out["check"] = {"ids": opts["ids"], "error": str(e)}
+            out["check"] = {"error": str(e)}
     with closing(db()) as con:
         con.execute("INSERT INTO partner_meta(key,value) VALUES('last_probe',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (json.dumps(out),))
@@ -377,7 +460,9 @@ async def api_summary(request):
     p = resolved_params()
     with closing(db()) as con:
         pr = con.execute("SELECT value FROM partner_meta WHERE key='last_probe'").fetchone()
-    return JSONResponse({"last_probe": json.loads(pr["value"]) if pr else None, "counts": {s: counts.get(s, 0) for s in STATUSES}, "gate": gate_on(),
+    with closing(db()) as con:
+        captured = con.execute("SELECT COUNT(*) AS c FROM partner_tags WHERE client_uuid IS NOT NULL").fetchone()["c"]
+    return JSONResponse({"capture_on": capture_on(), "captured": captured, "last_probe": json.loads(pr["value"]) if pr else None, "counts": {s: counts.get(s, 0) for s in STATUSES}, "gate": gate_on(),
                          "signup_via_oauth": os.environ.get("DERIV_SIGNUP_VIA_OAUTH") == "1",
                          "token_set": bool(_pat_headers()), "values_carried": sorted(p.keys()),
                          "last_check": json.loads(last["value"]) if last else None})
@@ -386,7 +471,7 @@ async def api_summary(request):
 async def api_list(request):
     auth.require_admin(request)
     st = request.query_params.get("status", "")
-    sql = "SELECT account_id,user_id,status,source,attribution,first_seen,checked_at,note FROM partner_tags"
+    sql = "SELECT account_id,user_id,status,source,attribution,first_seen,checked_at,note,client_uuid,display_id FROM partner_tags"
     args = ()
     if st in STATUSES:
         sql, args = sql + " WHERE status=?", (st,)

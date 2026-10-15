@@ -82,18 +82,20 @@ function render(d){
 const STY={scalp:'Scalp (M5)',day:'Day (M15)',swing:'Swing (H1)'},SET={ema_pullback:'EMA pullback',squeeze_breakout:'Squeeze breakout',range_breakout:'20-bar breakout',range_reversal:'Range reversal'};
 const pct=x=>Math.round(x*100)+'%',sg=x=>(x>=0?'+':'')+x.toFixed(2);
 /*partner-v2*/
+/*partner-v3*/
 async function loadPartner(box){
   box.textContent='';
   const qs=new URLSearchParams(location.search),pm=qs.get('partner');
   if(pm){const n=el('div',pm==='error'?'err':'win');
-    n.textContent=pm==='probe'?'Test finished. The result is shown under Test with real client IDs.':pm==='done'?('Check finished: '+qs.get('checked')+' checked, '+qs.get('confirmed')+' confirmed, '+qs.get('not_tagged')+' not tagged, '+qs.get('unknown')+' not recognised by Deriv.'):(qs.get('msg')||'The check did not complete.');
+    n.textContent=pm==='probe'?'Test finished. The result is shown under Test with real client IDs.':pm==='done'?('Check finished: '+qs.get('checked')+' checked, '+qs.get('confirmed')+' confirmed, '+qs.get('not_tagged')+' not tagged, '+qs.get('unknown')+' not recognised by Deriv, '+(qs.get('no_client_id')||0)+' without a Deriv client ID yet.'):(qs.get('msg')||'The check did not complete.');
     box.append(n);history.replaceState(null,'',location.pathname)}
   let s;try{s=await api('/partner/summary')}catch(e){box.append(el('div','err',e.message));return}
   box.append(el('div','mut','A Deriv login only proves a person signed in. An account counts as confirmed only after Deriv\u2019s partner records say it is tagged to you.'));
   box.append(kv('Confirmed',s.counts.confirmed),kv('Waiting to be checked (provisional)',s.counts.provisional),kv('Not tagged',s.counts.not_tagged));
   box.append(kv('Values sent to Deriv from your partner link',s.values_carried.length?s.values_carried.join(', '):'none found. Check the link in Deriv settings above'));
+  box.append(kv('Member client IDs captured',s.captured+(s.capture_on?' (capture is ON)':' (capture is off)')));
   box.append(kv('Create-account button',s.signup_via_oauth?'Deriv OAuth sign-up':'your plain partner link'),kv('Trading limited to confirmed accounts',s.gate?'yes':'no'));
-  if(s.last_check){const l=s.last_check;box.append(el('div','mut','Last check '+new Date(l.at*1000).toLocaleString()+': '+l.checked+' checked, '+l.confirmed+' confirmed, '+l.not_tagged+' not tagged, '+l.unknown+' not recognised.'))}
+  if(s.last_check){const l=s.last_check;box.append(el('div','mut','Last check '+new Date(l.at*1000).toLocaleString()+': '+l.checked+' checked, '+l.confirmed+' confirmed, '+l.not_tagged+' not tagged, '+l.unknown+' not recognised, '+(l.no_client_id||0)+' without a client ID.'))}
   const go=el('button','','Check with Deriv (sign in as the partner)');go.style.marginTop='10px';go.onclick=()=>{location.href='/auth/deriv/partner/start'};box.append(go);
   if(s.token_set){const k=el('button','ghost','Check now (saved partner token)');k.style.marginTop='8px';k.onclick=async()=>{k.disabled=true;try{const d=await api('/partner/check','POST');alert('Checked '+d.checked+': '+d.confirmed+' confirmed, '+d.not_tagged+' not tagged, '+d.unknown+' not recognised.');loadPartner(box)}catch(e){alert(e.message);k.disabled=false}};box.append(k)}
   box.append(el('h2','','Test with real client IDs'));
@@ -103,11 +105,15 @@ async function loadPartner(box){
   const pb=el('button','','Run test (sign in as the partner)');pb.style.marginTop='8px';
   pb.onclick=()=>{location.href='/auth/deriv/partner/start?probe='+encodeURIComponent(pi.value.trim().replace(/\s+/g,','))+(oc.checked?'&openid=1':'')};box.append(pb);
   if(s.last_probe){const p=s.last_probe,c=el('div','card');c.append(el('h2','','Last test '+new Date(p.at*1000).toLocaleString()));
-    c.append(kv('Token fields',p.token_keys.join(', ')));
+    c.append(kv('Token fields',p.token_keys.join(', ')+(p.token_scope?' (scope: '+p.token_scope+')':'')));
     if(p.jwt_claims)c.append(kv('Token claims',JSON.stringify(p.jwt_claims)));
-    if(p.userinfo)c.append(kv('User info',p.userinfo.error?p.userinfo.error:('status '+p.userinfo.status+(p.userinfo.keys.length?'; fields: '+p.userinfo.keys.join(', '):'')+(p.userinfo.sub?'; your unique ID: '+p.userinfo.sub:''))));
-    if(p.check){c.append(kv('Tag check',p.check.error?p.check.error:Object.entries(p.check.tags).map(([k,v])=>k+': '+(v?'TAGGED':'not tagged')).join(' | ')||'Deriv returned no result for those IDs'));
-      if(p.check.raw)c.append(el('div','mut','Deriv answered: '+p.check.raw))}
+    if(p.userinfo){if(p.userinfo.error)c.append(kv('User info',p.userinfo.error));else{
+      c.append(kv('User info','status '+p.userinfo.status+(p.userinfo.keys.length?'; fields: '+p.userinfo.keys.join(', '):'')));
+      Object.entries(p.userinfo.values||{}).forEach(([k,v])=>c.append(kv('  '+k,v)))}}
+    if(p.check){if(p.check.error)c.append(kv('Tag check',p.check.error));else{
+      Object.entries(p.check.clients).forEach(([id,v])=>c.append(kv((v.own?'Your login '+v.own+': ':'Client ')+id,
+        !v.resolved?'not recognised by Deriv':(v.is_tagged?'TAGGED to you':'not tagged to you')+(v.display_id?' ('+v.display_id+')':''))));
+      if(p.check.raw)c.append(el('div','mut','Deriv answered: '+p.check.raw))}}
     box.append(c)}
   box.append(el('h2','','Or paste from Partners Hub'));
   box.append(el('div','mut','In Partners Hub, open Active Trader Breakdown, copy the client IDs, and paste them here. Matching accounts become confirmed.'));
@@ -119,7 +125,7 @@ async function loadPartner(box){
   try{const r=await api('/partner/list');const rows=r.rows.filter(x=>x.status!=='confirmed');
     if(!rows.length)box.append(el('div','mut','Nothing waiting.'));
     rows.forEach(x=>{const c=el('div','card');
-      c.append(el('h2','',x.account_id+' \u00b7 '+x.status),kv('Member',x.email||'not signed up yet'),kv('Seen',new Date(x.first_seen*1000).toLocaleString()+' via '+(x.source||'')));
+      c.append(el('h2','',x.account_id+' \u00b7 '+x.status),kv('Member',x.email||'not signed up yet'),kv('Deriv client ID',x.client_uuid||'not captured yet'),kv('Seen',new Date(x.first_seen*1000).toLocaleString()+' via '+(x.source||'')));
       const sent=x.attribution&&x.attribution.sent?Object.keys(x.attribution.sent).join(', '):'';if(sent)c.append(kv('Partner values sent',sent));
       if(x.note)c.append(el('div','mut',x.note));
       [['confirmed','Mark confirmed'],['not_tagged','Mark not tagged']].forEach(([st,lb])=>{if(st===x.status)return;const b=el('button','ghost',lb);b.style.cssText='width:auto;padding:6px 10px;margin:6px 6px 0 0';

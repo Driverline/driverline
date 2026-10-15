@@ -165,9 +165,21 @@ async def _read_accounts(app_id: str, code: str, verifier: str, redirect: str) -
             raise ValueError("no token")
         a = await cl.get(ACCOUNTS_URL, headers={"Authorization": f"Bearer {token}", "Deriv-App-ID": app_id,
                                                 "accept": "application/json"})
+        ident = None
+        try:                                           # only does anything when DERIV_CAPTURE_CLIENT_ID=1
+            from . import partner
+            ident = await partner.fetch_identity(token)
+        except Exception as e:
+            print(f"[partner] identity lookup failed: {type(e).__name__}", flush=True)
         token = None                                   # never kept, never logged
         a.raise_for_status()
-        return account_ids(a.json())
+        ids = account_ids(a.json())
+        try:
+            from . import partner
+            partner.note_identity(ids, ident)
+        except Exception as e:
+            print(f"[partner] could not store identity: {type(e).__name__}", flush=True)
+        return ids
 
 
 def _new_invite(con) -> str:
