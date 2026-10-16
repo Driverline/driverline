@@ -92,7 +92,10 @@ btn.onclick=async()=>{
 };
 (async()=>{
   try{
-    const list=await (await fetch('/api/instruments')).json();
+    const ir=await fetch('/api/instruments');
+    if(ir.status===401){location.href='/login.html';return}      // not signed in: go to the sign-in page
+    const list=await ir.json();
+    if(!Array.isArray(list))throw new Error((list&&list.detail)||('HTTP '+ir.status));
     list.forEach(i=>{const o=document.createElement('option');o.value=i.key;o.textContent=i.name;sym.append(o)});
     try{const k=localStorage.getItem('dl_sym');if(k)sym.value=k}catch(e){}
     label();btn.disabled=false;
