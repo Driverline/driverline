@@ -83,6 +83,7 @@ const STY={scalp:'Scalp (M5)',day:'Day (M15)',swing:'Swing (H1)'},SET={ema_pullb
 const pct=x=>Math.round(x*100)+'%',sg=x=>(x>=0?'+':'')+x.toFixed(2);
 /*partner-v2*/
 /*partner-v3*/
+/*partner-v4*/
 async function loadPartner(box){
   box.textContent='';
   const qs=new URLSearchParams(location.search),pm=qs.get('partner');
@@ -93,17 +94,16 @@ async function loadPartner(box){
   box.append(el('div','mut','A Deriv login only proves a person signed in. An account counts as confirmed only after Deriv\u2019s partner records say it is tagged to you.'));
   box.append(kv('Confirmed',s.counts.confirmed),kv('Waiting to be checked (provisional)',s.counts.provisional),kv('Not tagged',s.counts.not_tagged));
   box.append(kv('Values sent to Deriv from your partner link',s.values_carried.length?s.values_carried.join(', '):'none found. Check the link in Deriv settings above'));
-  box.append(kv('Member client IDs captured',s.captured+(s.capture_on?' (capture is ON)':' (capture is off)')));
+  box.append(kv('Member client IDs captured',s.captured+(s.capture_on?' (capture on)':' (capture off)')));
   box.append(kv('Create-account button',s.signup_via_oauth?'Deriv OAuth sign-up':'your plain partner link'),kv('Trading limited to confirmed accounts',s.gate?'yes':'no'));
   if(s.last_check){const l=s.last_check;box.append(el('div','mut','Last check '+new Date(l.at*1000).toLocaleString()+': '+l.checked+' checked, '+l.confirmed+' confirmed, '+l.not_tagged+' not tagged, '+l.unknown+' not recognised, '+(l.no_client_id||0)+' without a client ID.'))}
   const go=el('button','','Check with Deriv (sign in as the partner)');go.style.marginTop='10px';go.onclick=()=>{location.href='/auth/deriv/partner/start'};box.append(go);
   if(s.token_set){const k=el('button','ghost','Check now (saved partner token)');k.style.marginTop='8px';k.onclick=async()=>{k.disabled=true;try{const d=await api('/partner/check','POST');alert('Checked '+d.checked+': '+d.confirmed+' confirmed, '+d.not_tagged+' not tagged, '+d.unknown+' not recognised.');loadPartner(box)}catch(e){alert(e.message);k.disabled=false}};box.append(k)}
   box.append(el('h2','','Test with real client IDs'));
-  box.append(el('div','mut','Paste one or more client IDs from Partners Hub (the long ones that look like 019e98b8-381f-...). Deriv will say whether they are tagged to you. Tick the box to also find out which unique ID Deriv gives for a login.'));
+  box.append(el('div','mut','Paste any IDs to test: Partners Hub client IDs (long, like 019e98b8-381f-...) or TradeLens account IDs (like ROT12345678). Deriv says whether each is recognised and tagged to you. The test also shows the IDs Deriv gives for your own login.'));
   const pi=document.createElement('textarea');pi.rows=3;pi.placeholder='One client ID per line';pi.style.width='100%';box.append(pi);
-  const ol=el('label','sw'),oc=document.createElement('input');oc.type='checkbox';oc.checked=true;ol.append(oc,document.createTextNode('Also look for the unique user ID (openid)'));box.append(ol);
   const pb=el('button','','Run test (sign in as the partner)');pb.style.marginTop='8px';
-  pb.onclick=()=>{location.href='/auth/deriv/partner/start?probe='+encodeURIComponent(pi.value.trim().replace(/\s+/g,','))+(oc.checked?'&openid=1':'')};box.append(pb);
+  pb.onclick=()=>{location.href='/auth/deriv/partner/start?test=1&probe='+encodeURIComponent(pi.value.trim().replace(/\s+/g,','))};box.append(pb);
   if(s.last_probe){const p=s.last_probe,c=el('div','card');c.append(el('h2','','Last test '+new Date(p.at*1000).toLocaleString()));
     c.append(kv('Token fields',p.token_keys.join(', ')+(p.token_scope?' (scope: '+p.token_scope+')':'')));
     if(p.jwt_claims)c.append(kv('Token claims',JSON.stringify(p.jwt_claims)));

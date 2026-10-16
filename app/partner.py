@@ -88,8 +88,6 @@ def oauth_extra(signup: bool) -> dict:
     p = resolved_params() if (signup or os.environ.get("DERIV_PARTNER_ON_LOGIN", "1") != "0") else {}
     if signup:
         p["prompt"] = "registration"
-    if capture_on():
-        p["scope"] = "trade openid"             # later keys win in the address built by deriv_login.start
     return p
 
 
@@ -97,13 +95,14 @@ UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 
 
 def capture_on() -> bool:
-    """DERIV_CAPTURE_CLIENT_ID=1: also ask Deriv for the unique user ID (scope openid) when members sign in or connect, so each
-    member can be matched to the client ID Partners Hub shows. Off by default."""
-    return os.environ.get("DERIV_CAPTURE_CLIENT_ID", "0") == "1"
+    """On by default (DERIV_CAPTURE_CLIENT_ID=0 turns it off): when a member signs in or connects, read their Deriv client ID from
+    Deriv's userinfo endpoint with the token we already have. No extra scope is requested: Deriv does not allow openid, and
+    userinfo answers for ordinary tokens. The ID lets each member be matched to the client ID Partners Hub shows."""
+    return os.environ.get("DERIV_CAPTURE_CLIENT_ID", "1") != "0"
 
 
 def trade_scope() -> str:
-    return "trade openid" if capture_on() else "trade"
+    return "trade"
 
 
 async def fetch_identity(token: str):
@@ -111,11 +110,12 @@ async def fetch_identity(token: str):
     if not capture_on():
         return None
     try:
-        async with httpx.AsyncClient(timeout=15) as cl:
+        async with httpx.AsyncClient(timeout=6) as cl:
             u = await cl.get(USERINFO_URL, headers={"Authorization": f"Bearer {token}", "accept": "application/json"})
         d = u.json() if u.status_code == 200 else {}
     except Exception:
         return None
+    d = d if isinstance(d, dict) else {}
     cid, sub = d.get("cid"), d.get("sub")
     return {"client_uuid": cid.lower() if isinstance(cid, str) and UUID_RE.match(cid) else None,
             "sub": sub.lower() if isinstance(sub, str) and UUID_RE.match(sub) else None}
@@ -185,7 +185,7 @@ def gate_on() -> bool:
 
 def require_tagged(user: dict):
     """Only enforced when PARTNER_GATE=1: the Deriv trade button needs a CONFIRMED partner tag."""
-    if not gate_on():
+    if not gate_on() or user.get("tier") == "admin":
         return
     with closing(db()) as con:
         ok = con.execute("SELECT 1 FROM partner_tags WHERE user_id=? AND status='confirmed'", (user["id"],)).fetchone()
@@ -267,32 +267,33 @@ async def check_clients(headers: dict, ids: list):
 
 
 async def check_all(headers: dict) -> dict:
-    """Checks every provisional or not-tagged account that has a client UUID against Deriv and stores the result."""
+    """Checks every provisional or not-tagged account against Deriv and stores the result. Each account is looked up by its Deriv
+    client UUID when we have one, otherwise by its account ID (Deriv's check accepts several kinds of external ID; whether it
+    recognises account IDs shows up as 'not recognised' below if it does not)."""
     with closing(db()) as con:
         rows = [(r["account_id"], r["client_uuid"]) for r in con.execute(
             "SELECT account_id, client_uuid FROM partner_tags WHERE status IN ('provisional','not_tagged') "
             "ORDER BY first_seen LIMIT 1000").fetchall()]
-    by_uuid: dict = {}
+    by_key: dict = {}
     for acc, u in rows:
-        if u:
-            by_uuid.setdefault(u, []).append(acc)
-    done = {"checked": len(rows), "confirmed": 0, "not_tagged": 0, "unknown": 0,
-            "no_client_id": sum(1 for _, u in rows if not u)}
-    uuids = list(by_uuid)
+        by_key.setdefault(u or acc, []).append((acc, bool(u)))
+    done = {"checked": len(rows), "confirmed": 0, "not_tagged": 0, "unknown": 0, "no_client_id": 0}
+    keys = list(by_key)
     raw0 = None
     now = int(time.time())
-    for k in range(0, len(uuids), BATCH):
-        chunk = uuids[k:k + BATCH]
+    for k in range(0, len(keys), BATCH):
+        chunk = keys[k:k + BATCH]
         clients, raw = await check_clients(headers, chunk)
         raw0 = raw0 or raw
         with closing(db()) as con:
-            for u in chunk:
-                c = clients.get(u)
+            for key in chunk:
+                c = clients.get(key)
                 if not c or not c["resolved"]:
-                    done["unknown"] += len(by_uuid[u])
+                    for _acc, has_uuid in by_key[key]:
+                        done["unknown" if has_uuid else "no_client_id"] += 1     # no_client_id: Deriv did not recognise the account ID
                     continue
                 st = "confirmed" if c["is_tagged"] else "not_tagged"
-                for acc in by_uuid[u]:
+                for acc, _ in by_key[key]:
                     done[st] += 1
                     con.execute("UPDATE partner_tags SET status=?, checked_at=?, note=?, display_id=? WHERE account_id=?",
                                 (st, now, "Deriv partner API" if c["is_tagged"] else "Deriv partner API says not tagged to you",
@@ -320,8 +321,8 @@ async def partner_start(request):
     now = int(time.time())
     # Optional probe: test specific client IDs against Deriv, and (openid=1) also ask which unique ID Deriv gives for a login.
     ids = [i for i in re.split(r"[\s,;]+", request.query_params.get("probe", "")) if ID_TOKEN.match(i)][:20]
-    openid = request.query_params.get("openid") == "1"
-    probe = json.dumps({"ids": ids, "openid": openid}) if (ids or openid) else None
+    openid = False                       # Deriv does not allow the openid scope for apps; userinfo works without it
+    probe = json.dumps({"ids": ids, "openid": openid}) if (ids or request.query_params.get("test") == "1") else None
     with closing(db()) as con:
         con.execute("DELETE FROM partner_states WHERE created_at<?", (now - STATE_TTL,))
         con.execute("INSERT INTO partner_states(state,verifier,user_id,created_at,probe) VALUES(?,?,?,?,?)",
@@ -329,7 +330,7 @@ async def partner_start(request):
         con.commit()
     url = deriv_login.AUTH_URL + "?" + urlencode({
         "response_type": "code", "client_id": app_id, "redirect_uri": deriv_login._base(request) + "/auth/deriv/callback",
-        "scope": "application_read" + (" openid" if openid else ""), "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
+        "scope": "application_read", "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
     resp = RedirectResponse(url, status_code=302)
     resp.set_cookie("dl_oauth", state, max_age=STATE_TTL, httponly=True, samesite="lax", secure=auth.SECURE, path="/auth/deriv")
     return resp
