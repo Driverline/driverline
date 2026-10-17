@@ -566,6 +566,223 @@ def test_diagnostics_and_tick_jobs_end_to_end():
     assert tr["symbol"] == "stpRNG" and tr["ticks"] > 80000 and tr["download"]["stopped"] == "reached_start" and tr["runs"]["z"] is not None
 
 
+
+# ---------------------------------------------------------------- phase 4: candidates, one-shot test, shadow service
+from app.engine import candidates as CA, signals_service as SS  # noqa: E402
+import contextlib  # noqa: E402
+
+
+def ou_bars(n, seed, theta_first, theta_last=None, split=0.8, vol=3.0):
+    """Slow mean reversion (price pulled back toward a level, so a fade pays for several bars). If theta_last is given the
+    pull-back stops after `split` of the series, so a pattern that was real earlier is gone in the untouched test."""
+    theta_last = theta_first if theta_last is None else theta_last
+    rnd, out, p, mu, cut = random.Random(seed), [], 10000.0, 10000.0, int(n * split)
+    for i in range(n):
+        th = theta_first if i < cut else theta_last
+        o = p
+        p = o - th * (o - mu) + rnd.gauss(0, vol)
+        out.append({"epoch": 1_700_000_100 // 300 * 300 + i * 300, "open": o, "high": max(o, p) + abs(rnd.gauss(0, vol / 3)),
+                    "low": min(o, p) - abs(rnd.gauss(0, vol / 3)), "close": p})
+    return out
+
+
+def test_candidate_signals_follow_the_same_grid_in_research_and_live():
+    bars = ar_bars(900, 61)
+    for k in (1, 3):
+        sig = CA.fade_signals(bars, 0, len(bars), k)
+        assert sig and all((bars[i]["epoch"] // 300 + 1) % k == 0 for i, _ in sig)
+        i, d = sig[5]
+        assert d == (-1 if bars[i]["close"] > bars[i - k]["close"] else 1)
+    assert len(CA.GRID) == 16 and CA.COST_MULT == 2
+
+
+def test_the_search_advances_real_memory_and_not_noise():
+    good = CA.search(ou_bars(24000, 71, 0.06), "RBX")
+    assert good["advance"] and good["selected"]["passes_gate"] and good["test_untouched"] and good["test_result"] is None
+    assert all(r["dev"]["n"] and r["val"]["n"] for r in good["candidates"]) and len(good["candidates"]) == 16
+    bad = CA.search(ar_bars(24000, 72), "RBX")
+    assert not bad["advance"] and bad["selected"] is None and "stays untouched" in bad["verdict"]
+
+
+def _db_search(symbol, bars):
+    store.upsert_candles(symbol, 300, [dict(b) for b in bars])
+    jobs._validate_and_register(symbol)
+    jobs._candidates_sync(symbol)
+    with contextlib.closing(store.db()) as con:
+        return con.execute("SELECT * FROM research_runs WHERE kind='candidates' AND symbol=? ORDER BY id DESC LIMIT 1", (symbol,)).fetchone()
+
+
+def test_one_shot_test_pass_and_the_status_it_earns():
+    run = _db_search("RBPASS", ou_bars(30000, 73, 0.06))
+    res = json.loads(run["result"])
+    assert res["advance"] and res["model_id"] and store.get_model(res["model_id"])["status"] == "research_only"
+    jobs._candidate_test_sync(run["id"])
+    done = json.loads(store.get_run(run["id"])["result"])
+    assert done["test_result"]["passed"] and store.get_model(res["model_id"])["status"] == "demo_validated"
+    assert store.get_run(run["id"])["test_unlocked_at"]
+    try:
+        jobs._candidate_test_sync(run["id"])
+        raise AssertionError("the untouched test must never be usable twice")
+    except RuntimeError as e:
+        assert "already been used" in str(e)
+
+
+def test_a_candidate_that_fails_the_untouched_test_stays_research_only():
+    run = _db_search("RBFAIL", ou_bars(30000, 74, 0.06, 0.0, 0.78))
+    res = json.loads(run["result"])
+    assert res["advance"], "the memory is real in development and validation, so it must advance"
+    jobs._candidate_test_sync(run["id"])
+    done = json.loads(store.get_run(run["id"])["result"])["test_result"]
+    assert not done["passed"] and store.get_model(res["model_id"])["status"] == "research_only"
+    assert "failed the untouched test" in store.get_model(res["model_id"])["status_reason"]
+
+
+def test_nothing_to_test_and_changed_data_do_not_burn_the_test():
+    run = _db_search("RBNOISE", ar_bars(24000, 75))
+    try:
+        jobs._candidate_test_sync(run["id"])
+        raise AssertionError("no candidate advanced, so there is nothing to test")
+    except RuntimeError as e:
+        assert "nothing to test" in str(e)
+    assert store.get_run(run["id"])["test_unlocked_at"] is None
+    run2 = _db_search("RBFROZEN", ou_bars(30000, 76, 0.06))
+    fs = json.loads(run2["result"])["frozen_split"]
+    extra = ar_bars(2000, 77, rho=-0.5)
+    last = store.load_candles("RBFROZEN", 300)[-1]
+    store.upsert_candles("RBFROZEN", 300, [dict(b, epoch=last["epoch"] + 300 * (j + 1), open=last["close"], close=last["close"] + 1,
+                                                 high=last["close"] + 2, low=last["close"] - 1) for j, b in enumerate(extra)])
+    jobs._candidate_test_sync(run2["id"])                 # newer candles are fine: the test window is frozen by epoch
+    r = json.loads(store.get_run(run2["id"])["result"])["test_result"]
+    assert r["window"] == [fs["val_end_epoch"], fs["test_end_epoch"]]
+    run3 = _db_search("RBTAMPER", ou_bars(30000, 78, 0.06))
+    rows = store.load_candles("RBTAMPER", 300)
+    store.upsert_candles("RBTAMPER", 300, [dict(rows[500], close=rows[500]["close"] + 5, high=rows[500]["high"] + 6)])
+    try:
+        jobs._candidate_test_sync(run3["id"])
+        raise AssertionError("changed candles must be refused")
+    except RuntimeError as e:
+        assert "differ" in str(e)
+    assert store.get_run(run3["id"])["test_unlocked_at"] is None, "a refused test must not use the test up"
+
+
+# ---- the decision and the risk controls
+def live_model(status="demo_validated", **kw):
+    d = CA.definition_for("RBLIVE", {"k": 3, "delay": 1, "stop_atr": 1.5, "rr": 1.5})
+    d["risk"].update(kw)
+    return {"id": 1, "name": "m", "status": status, "status_reason": "", "definition": d}
+
+
+def aligned_now(bars, k=3):
+    """The time just after the last candle that completes a k-bar block."""
+    i = max(j for j in range(len(bars)) if (bars[j]["epoch"] // 300 + 1) % k == 0)
+    return i, bars[i]["epoch"] + 300 + 20
+
+
+def test_decisions_and_their_reasons():
+    bars = ar_bars(600, 81, vol=4.0)
+    i, now = aligned_now(bars)
+    d = SS.decide(live_model(), bars[:i + 1], now)
+    assert d["decision"] in ("BUY", "SELL") and d["direction"] == (-1 if bars[i]["close"] > bars[i - 3]["close"] else 1)
+    assert d["planned_entry_epoch"] == bars[i]["epoch"] + 300 * 2 and d["expires_at"] == d["planned_entry_epoch"] + 300
+    sd = 1.5 * d["atr"]
+    assert abs(d["entry_ref"] - d["stop"]) - sd < 1e-9 and abs(d["target"] - d["entry_ref"]) - 1.5 * sd < 1e-9
+    assert d["rationale"]["plain"] and d["feature_ref"]["feature_spec_hash"] == FT.feature_spec_hash()
+    assert SS.decide(live_model(), bars[:i + 1], now)["bar_epoch"] == bars[i]["epoch"]
+    mid = SS.decide(live_model(), bars[:i], bars[i - 1]["epoch"] + 320)         # the 3-bar block is not complete yet
+    assert mid["decision"] == "WAIT" and mid["kind"] == "incomplete_bar"
+    forming = SS.decide(live_model(), bars[:i + 1], bars[i]["epoch"] + 100)      # the newest candle is still forming
+    assert forming["decision"] in ("WAIT", "NO_TRADE") and forming.get("bar_epoch") != bars[i]["epoch"]
+    assert SS.decide(live_model(), bars[:i + 1], now + 3600)["kind"] == "stale_data"
+    gap = [dict(b) for b in bars[:i + 1]]
+    del gap[-2]
+    assert SS.decide(live_model(), gap, now)["kind"] == "data_gap"
+    assert SS.decide(live_model(), bars[:100], bars[99]["epoch"] + 320)["kind"] == "insufficient_data"
+    assert SS.decide(live_model(status="suspended"), bars[:i + 1], now)["kind"] == "model_suspended"
+    assert SS.decide(live_model(status="research_only"), bars[:i + 1], now)["kind"] == "not_validated"
+    assert SS.decide(live_model(), bars[:i + 1], now, signals_today=24)["kind"] == "daily_cap"
+    assert SS.decide(live_model(min_stop_points=10_000.0), bars[:i + 1], now)["kind"] == "stop_too_tight"
+    spike = [dict(b) for b in bars[:i + 1]]
+    spike[-1].update(high=spike[-1]["high"] + 400, low=spike[-1]["low"] - 400)
+    assert SS.decide(live_model(), spike, now)["kind"] == "volatility_spike"
+    flat = [dict(b) for b in bars[:i + 1]]
+    flat[i]["close"] = flat[i - 3]["close"]
+    assert SS.decide(live_model(), flat, now)["kind"] == "no_direction"
+
+
+def test_live_decisions_equal_the_research_signals_bar_by_bar():
+    bars = ar_bars(2500, 82, vol=4.0)
+    research = {i: d for i, d in CA.fade_signals(bars, 0, len(bars), 3)}
+    m = live_model(max_vol_ratio=1e9, min_stop_points=0.0, max_signals_per_day=10 ** 6)
+    live = {}
+    for i in range(160, len(bars)):
+        dec = SS.decide(m, bars[:i + 1], bars[i]["epoch"] + 320)
+        if dec["decision"] in ("BUY", "SELL"):
+            live[i] = dec["direction"]
+    assert live and all(research[i] == d for i, d in live.items())
+    assert set(research) & set(range(160, len(bars))) == set(live), "live must produce exactly the research signals"
+
+
+def test_scan_stores_dedupes_tracks_and_suspends():
+    bars = ar_bars(900, 83, vol=4.0, rho=-0.3)
+    mid = store.register_model("range_break", "candidate:test_live", 1, CA.definition_for("RBLIVE", {"k": 3, "delay": 1, "stop_atr": 1.5, "rr": 1.5}),
+                               FT.feature_spec_hash(), "c")
+    assert SS._models() == [] or all(m["id"] != mid for m in SS._models()), "a research-only model must not be scanned"
+    store.set_model_status(mid, "demo_validated", "test")
+    model = next(m for m in SS._models() if m["id"] == mid)
+    created = 0
+    for i in range(150, len(bars) - 1):
+        if (bars[i]["epoch"] // 300 + 1) % 3:
+            continue
+        out = SS.scan_model(model, bars[:i + 1], bars[i]["epoch"] + 320)
+        created += bool(out.get("created"))
+        again = SS.scan_model(model, bars[:i + 1], bars[i]["epoch"] + 320)
+        assert not again.get("created"), "scanning the same bar twice must not duplicate the signal"
+    with contextlib.closing(store.db()) as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM ai_signals WHERE model_version_id=? ORDER BY bar_epoch", (mid,)).fetchall()]
+    assert created and len(rows) == created and all(r["visibility"] == "admin" and r["confidence"] is None for r in rows)
+    assert all(r["evidence_status"] == "demo_validated" and json.loads(r["feature_ref"])["feature_spec_hash"] for r in rows)
+    atr, _ = FT.atr_series(bars)
+    defn = CA.definition_for("RBLIVE", {"k": 3, "delay": 1, "stop_atr": 1.5, "rr": 1.5})
+    resolved = [r for r in rows if r["status"] != "open"]
+    assert len(resolved) > 20
+    for r in resolved[:25]:                                   # the tracked outcome equals the research simulator's, signal by signal
+        i = next(n for n, b in enumerate(bars) if b["epoch"] == r["bar_epoch"])
+        d = 1 if r["decision"] == "BUY" else -1
+        t = RS.simulate(bars, atr, [(i, d)], defn["stop_atr"], defn["rr"], defn["horizon"], defn["cost_atr"], i, len(bars), defn["delay"])[0]
+        assert abs(t["r"] - r["result_r"]) < 1e-9 and t["kind"] == r["status"]
+    # automatic suspension after a losing streak, then no new signals but open ones are still tracked
+    with contextlib.closing(store.db()) as con:
+        con.execute("UPDATE ai_signals SET result_r=-1.0, status='stop' WHERE model_version_id=? AND status<>'open'", (mid,))
+        con.commit()
+        reason = SS.check_suspension(con, dict(store.get_model(mid)))
+    assert "losing signals in a row" in reason
+    last = max(i for i in range(len(bars) - 1) if (bars[i]["epoch"] // 300 + 1) % 3 == 0)
+    out = SS.scan_model(store.get_model(mid), bars[:last + 1], bars[last]["epoch"] + 320)
+    assert out.get("suspended") and store.get_model(mid)["status"] == "suspended"
+    out2 = SS.scan_model(store.get_model(mid), bars[:last + 1], bars[last]["epoch"] + 320)
+    assert out2["decision"] == "NO_TRADE" and out2["kind"] == "model_suspended" and not out2.get("created")
+    with contextlib.closing(store.db()) as con:
+        kinds = {r["kind"] for r in con.execute("SELECT kind FROM risk_events WHERE model_version_id=?", (mid,)).fetchall()}
+    assert {"auto_suspended", "model_suspended"} <= kinds
+
+
+def test_scan_once_end_to_end_and_summary():
+    bars = ar_bars(900, 84, vol=4.0)
+    mid = store.register_model("range_break", "candidate:test_scan_once", 1, CA.definition_for("RBSCAN", {"k": 3, "delay": 1, "stop_atr": 1.5, "rr": 1.5}),
+                               FT.feature_spec_hash(), "c")
+    store.set_model_status(mid, "demo_validated", "test")
+    i, now = aligned_now(bars)
+    res = _run(SS.scan_once(now=now, data={"RBSCAN": bars[:i + 1]}))
+    mine = [r for r in res if r["model"] == "candidate:test_scan_once"]
+    assert mine and mine[0]["decision"] in ("BUY", "SELL")
+    res2 = _run(SS.scan_once(now=now, data={}))
+    assert [r for r in res2 if r["model"] == "candidate:test_scan_once"][0]["kind"] == "data_unavailable"
+    s = SS.summary()
+    assert any(m["name"] == "candidate:test_scan_once" for m in s["models"]) and s["signals"] and s["enabled"] is False
+    c = jobs.condense_candidates(CA.search(ar_bars(12000, 85), "RBX"))
+    assert c["verdict"] and c["selected"] is None and c["top"]
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted(globals().items()):

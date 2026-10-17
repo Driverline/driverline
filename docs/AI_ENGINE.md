@@ -83,3 +83,35 @@ A structure test says a pattern exists. The diagnostics ask whether a member cou
   development and validation segments with a normal entry, one bar late, and one bar late with doubled costs.
 - The untouched test segment is still never read. A candidate stays Research Only until the untouched test and a forward demo.
 - `research.simulate()` gained an optional `delay` and now reports each trade's outcome kind; delay 0 is identical to before.
+
+
+## Phase 4a: candidate search and the one-shot untouched test (`app/engine/candidates.py`)
+- 16 pre-registered candidates: fade the last completed 5-minute or 15-minute bar, enter 1 or 2 five-minute bars late,
+  stop 1.5 or 3 ATR, target 1.0R or 1.5R, costs doubled. All 16 are run on development and validation and logged.
+- Advance gate: the 95% interval must be above zero in BOTH segments (late entry, doubled costs) with at least 150 validation
+  trades. Nothing advances otherwise, and the untouched test stays untouched.
+- The split is frozen as epochs at search time, so new data cannot move bars between segments. The test refuses to run if the
+  stored candles differ from those the search used, and a refusal does not use the test up.
+- Test (once per search): at least 300 trades, interval above zero after doubled costs, beats the random baseline with the same
+  delay and costs, positive in two of three time-thirds. Pass: status `demo_validated`. Fail: stays `research_only`.
+  The one-shot lock is taken only after the result has been computed, so a bug cannot burn the test.
+
+## Phase 4b: signal service in shadow mode (`app/engine/signals_service.py`)
+- Only models with status `demo_validated` or `approved` produce signals. Signals are stored in `ai_signals` with visibility
+  `admin`; members never see them. Confidence is empty (no calibrated probability model exists); evidence status is copied
+  from the model.
+- Decisions: BUY / SELL (stored), WAIT (incomplete setup, not stored), NO_TRADE (mandatory criterion failed, stored once per bar in
+  `risk_events`): stale data, data gap, insufficient data, volatility spike, stop too tight, invalid target multiple, daily cap,
+  no direction, model suspended, not validated, duplicate.
+- Research and live use the same bar-alignment rule and ATR (a test checks live decisions equal the research signals bar by bar).
+- Outcomes are tracked with the same simulator as the research (a test checks they match signal by signal).
+- Automatic suspension: 12 losing signals in a row, or the last 30 averaging below -0.10R with a 95% interval entirely below
+  zero. A suspended model produces no signals but open ones are still tracked. Resuming needs an admin and a reason, and returns
+  the model to `demo_validated` (never `approved`).
+- No position sizing, no loss chasing, no execution.
+- The background loop runs only if `DRIVERLINE_ENGINE_SHADOW=1` is set on Render (off by default); "Scan now" in Admin runs a
+  single pass at any time.
+
+## Rollback
+Unset `DRIVERLINE_ENGINE_SHADOW` (or set it to 0) and redeploy to stop the shadow loop. Suspend any model from Admin.
+`ai_signals` and `risk_events` are additive tables; reverting the commit leaves them unused.

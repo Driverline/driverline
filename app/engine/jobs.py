@@ -15,7 +15,7 @@ from .. import auth, deriv
 from ..config import DERIV_WS_URL
 from . import features as FT
 from . import research as RS
-from . import diagnostics as DG, store, structure as ST, validate as VAL
+from . import candidates as CA, diagnostics as DG, signals_service as SS, store, structure as ST, validate as VAL
 
 TF = 300      # the stored timeframe: M5
 # Symbols we expect to exist. The codes are NOT confirmed: the probe checks them against Deriv's live symbol list, and
@@ -329,6 +329,67 @@ async def tick_structure_job(symbol: str):
     store.finish_run(rid, res)
 
 
+def _candidates_sync(symbol: str):
+    ds = store.latest_dataset(symbol, TF)
+    if not ds:
+        raise RuntimeError("There is no validated dataset for this symbol. Ingest it first.")
+    if ds["status"] == "invalid":
+        raise RuntimeError("The latest dataset failed validation, so it cannot be used.")
+    bars = store.load_candles(symbol, TF)
+    if VAL.dataset_hash(bars) != ds["sha256"]:
+        raise RuntimeError("The stored candles changed since they were validated. Validate again first.")
+    run_id = store.start_run("candidates", symbol, ds["id"], split={k: list(v) for k, v in RS.split_bounds(len(bars)).items() if k != "test"},
+                             params={"grid": CA.GRID, "cost_multiple": CA.COST_MULT, "dataset_sha": ds["sha256"],
+                                     "advance_gate": "95% interval above zero in development AND validation, late entry, doubled costs, "
+                                                     f"at least {CA.MIN_VAL_TRADES} validation trades",
+                                     "test_rule": f"one shot; at least {CA.MIN_TEST_TRADES} trades, interval above zero after doubled "
+                                                  "costs, beats the random baseline with the same delay and costs, positive in two of "
+                                                  "three time-thirds"})
+    try:
+        res = CA.search(bars, symbol, lambda label, seg, params, metrics: store.log_trial(run_id, label, seg, params, metrics))
+        res["dataset"] = {"id": ds["id"], "sha256": ds["sha256"], "status": ds["status"]}
+        if res["advance"]:
+            sel = res["selected"]
+            res["model_id"] = store.register_model("range_break", f"candidate:{sel['name']}", 1, CA.definition_for(symbol, sel),
+                                                   FT.feature_spec_hash(), store.file_hash(CA.__file__))
+        store.finish_run(run_id, res)
+    except Exception:
+        store.finish_run(run_id, {"error": "run failed"}, ok=False)
+        raise
+
+
+async def candidates_job(symbol: str):
+    await asyncio.to_thread(_candidates_sync, symbol)
+
+
+def _candidate_test_sync(run_id: int):
+    run = store.get_run(run_id)
+    if not run or run["kind"] != "candidates" or run["status"] != "done":
+        raise RuntimeError("That candidate search does not exist or has not finished.")
+    res = json.loads(run["result"])
+    if res.get("test_result") is not None or run["test_unlocked_at"]:
+        raise RuntimeError("The untouched test for this search has already been used. It can never be run twice.")
+    bars = store.load_candles(run["symbol"], TF)
+    result = CA.evaluate_test(bars, res, run_id)           # takes the one-shot lock only after it has a result
+    res["test_result"] = result
+    store.set_run_result(run_id, res)
+    CA.apply_outcome(res["model_id"], result)
+    rid = store.start_run("candidate_test", run["symbol"], run["dataset_id"], model_version_id=res["model_id"], params={"search_run": run_id})
+    store.finish_run(rid, result)
+
+
+async def candidate_test_job(run_id: int):
+    await asyncio.to_thread(_candidate_test_sync, run_id)
+
+
+def condense_candidates(res: dict) -> dict:
+    rows = sorted([r for r in res.get("candidates", []) if r.get("worst_lower") is not None], key=lambda r: -r["worst_lower"])[:6]
+    f = lambda m: "no trades" if not m.get("n") else f"n={m['n']} {m['avg_r']:+.3f} [{m['ci95'][0]:+.3f}, {m['ci95'][1]:+.3f}]" if m.get("ci95") else f"n={m['n']}"
+    return {"verdict": res.get("verdict"), "advance": res.get("advance"), "selected": (res.get("selected") or {}).get("name"),
+            "model_id": res.get("model_id"), "grid_size": res.get("grid_size"), "test_result": res.get("test_result"),
+            "top": [{"name": r["name"], "dev": f(r["dev"]), "val": f(r["val"]), "passes": r["passes_gate"]} for r in rows]}
+
+
 def condense_diag(res: dict) -> dict:
     """What the Admin page shows: the verdict, delay lines, outcome breakdown, block z-scores and scales."""
     f = lambda m: "-" if not m or m.get("avg_r") is None else (
@@ -437,6 +498,57 @@ async def api_ticks(request):
     return JSONResponse({"started": _start(tick_structure_job(sym), "ticks", sym)})
 
 
+async def api_candidates(request):
+    auth.require_admin(request)
+    sym = _symbol(await auth._json(request))
+    return JSONResponse({"started": _start(candidates_job(sym), "candidates", sym)})
+
+
+async def api_candidate_test(request):
+    auth.require_admin(request)
+    d = await auth._json(request)
+    try:
+        run_id = int(d.get("run_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "run_id must be a number")
+    if d.get("confirm") is not True:
+        raise HTTPException(422, "The untouched test can only be used once. Confirm that you want to use it now.")
+    return JSONResponse({"started": _start(candidate_test_job(run_id), "candidate_test", str(run_id))})
+
+
+async def api_shadow_scan(request):
+    auth.require_admin(request)
+    if _state["running"]:
+        return JSONResponse({"started": False})
+    res = await SS.scan_once()
+    return JSONResponse({"started": True, "results": res})
+
+
+async def api_model(request):
+    u = auth.require_admin(request)
+    d = await auth._json(request)
+    try:
+        mid = int(d.get("model_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "model_id must be a number")
+    action, reason = d.get("action"), str(d.get("reason", "")).strip()[:200]
+    m = store.get_model(mid)
+    if not m:
+        raise HTTPException(404, "No such model")
+    if action == "suspend":
+        store.set_model_status(mid, "suspended", f"manual by admin {u['id']}: {reason or 'no reason given'}")
+    elif action == "resume":
+        if m["status"] != "suspended":
+            raise HTTPException(409, "Only a suspended model can be resumed")
+        if not reason:
+            raise HTTPException(422, "Say why it is safe to resume")
+        # back to the status it earned: it passed the untouched test, so demo_validated (never approved by resuming)
+        store.set_model_status(mid, "demo_validated", f"resumed by admin {u['id']}: {reason}")
+    else:
+        raise HTTPException(422, "action must be suspend or resume")
+    return JSONResponse({"ok": True})
+
+
 async def api_baselines(request):
     auth.require_admin(request)
     sym = _symbol(await auth._json(request))
@@ -472,9 +584,11 @@ async def api_status(request):
                                "AND status='done' ORDER BY id DESC LIMIT 3").fetchall()
             tickruns = con.execute("SELECT id, symbol, result, finished_at FROM research_runs WHERE kind='ticks' "
                                    "AND status='done' ORDER BY id DESC LIMIT 3").fetchall()
-        return probe, ds, runs, structure, diag, tickruns
+            cands = con.execute("SELECT id, symbol, result, finished_at, test_unlocked_at FROM research_runs WHERE kind='candidates' "
+                                "AND status='done' ORDER BY id DESC LIMIT 2").fetchall()
+        return probe, ds, runs, structure, diag, tickruns, cands
 
-    probe, ds, runs, structure, diag, tickruns = await asyncio.to_thread(read)
+    probe, ds, runs, structure, diag, tickruns, cands = await asyncio.to_thread(read)
     datasets = []
     for d in ds:
         rep = json.loads(d["report"])
@@ -505,7 +619,10 @@ async def api_status(request):
                           "scales": res.get("scales"), "note": res.get("note")})
     return JSONResponse({"state": dict(_state), "probe": json.loads(probe["result"]) if probe else None,
                          "datasets": datasets, "runs": out_runs, "structure": out_struct, "diagnostics": out_diag,
-                         "tick_runs": out_ticks})
+                         "tick_runs": out_ticks,
+                         "candidates": [{"id": r["id"], "symbol": r["symbol"], "finished_at": r["finished_at"],
+                                         "test_used": bool(r["test_unlocked_at"]), **condense_candidates(json.loads(r["result"]))} for r in cands],
+                         "shadow": await asyncio.to_thread(SS.summary)})
 
 
 routes = [
@@ -517,4 +634,8 @@ routes = [
     Route("/api/admin/engine/structure", api_structure, methods=["POST"]),
     Route("/api/admin/engine/diagnostics", api_diagnostics, methods=["POST"]),
     Route("/api/admin/engine/ticks", api_ticks, methods=["POST"]),
+    Route("/api/admin/engine/candidates", api_candidates, methods=["POST"]),
+    Route("/api/admin/engine/candidates/test", api_candidate_test, methods=["POST"]),
+    Route("/api/admin/engine/shadow/scan", api_shadow_scan, methods=["POST"]),
+    Route("/api/admin/engine/model", api_model, methods=["POST"]),
 ]

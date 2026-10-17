@@ -12,6 +12,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks
 from .engine import jobs as engine_jobs
+from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
 from .deriv import fetch_candles, fetch_active_symbols
 from .indicators import analyze_all
@@ -137,6 +138,8 @@ async def lifespan(app):
     tasks = await radar.background_loops() if os.environ.get("DRIVERLINE_RADAR", "1") != "0" else []
     if os.environ.get("DRIVERLINE_SIGNALS", "1") != "0":
         tasks.append(asyncio.create_task(signal_feed.signal_loop()))
+    if engine_signals.enabled():           # shadow signals for validated research models only; off unless DRIVERLINE_ENGINE_SHADOW=1
+        tasks.append(asyncio.create_task(engine_signals.engine_loop()))
     yield
     for t in tasks:
         t.cancel()

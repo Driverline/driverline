@@ -26,7 +26,22 @@ SCHEMA = """
     CREATE INDEX IF NOT EXISTS ix_runs_kind ON research_runs(kind, id);
     CREATE TABLE IF NOT EXISTS research_trials(id {ID}, run_id BIGINT NOT NULL, label TEXT NOT NULL, segment TEXT,
         params TEXT, metrics TEXT, created_at BIGINT NOT NULL);
-    CREATE INDEX IF NOT EXISTS ix_trials_run ON research_trials(run_id)"""
+    CREATE INDEX IF NOT EXISTS ix_trials_run ON research_trials(run_id);
+    CREATE TABLE IF NOT EXISTS ai_signals(id {ID}, model_version_id BIGINT NOT NULL, symbol TEXT NOT NULL, tf INTEGER NOT NULL,
+        bar_epoch BIGINT NOT NULL, decision TEXT NOT NULL CHECK (decision IN ('BUY','SELL')),
+        entry_ref DOUBLE PRECISION NOT NULL, atr DOUBLE PRECISION NOT NULL, stop DOUBLE PRECISION NOT NULL,
+        target DOUBLE PRECISION NOT NULL, rr DOUBLE PRECISION NOT NULL, planned_entry_epoch BIGINT NOT NULL,
+        expires_at BIGINT NOT NULL, rationale TEXT NOT NULL, confidence DOUBLE PRECISION,
+        evidence_status TEXT NOT NULL CHECK (evidence_status IN ('research_only','demo_validated','approved')),
+        feature_ref TEXT NOT NULL, visibility TEXT NOT NULL DEFAULT 'admin' CHECK (visibility IN ('admin','members')),
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','target','stop','timeout')),
+        result_r DOUBLE PRECISION, closed_at BIGINT, created_at BIGINT NOT NULL,
+        UNIQUE(model_version_id, symbol, bar_epoch));
+    CREATE INDEX IF NOT EXISTS ix_ai_signals_model ON ai_signals(model_version_id, id);
+    CREATE TABLE IF NOT EXISTS risk_events(id {ID}, model_version_id BIGINT NOT NULL, symbol TEXT NOT NULL,
+        bar_epoch BIGINT NOT NULL, kind TEXT NOT NULL, detail TEXT, created_at BIGINT NOT NULL,
+        UNIQUE(model_version_id, symbol, bar_epoch, kind));
+    CREATE INDEX IF NOT EXISTS ix_risk_events_model ON risk_events(model_version_id, id)"""
 
 
 def db():
@@ -139,6 +154,28 @@ def log_trial(run_id: int, label: str, segment: str, params: dict, metrics: dict
         con.commit()
 
 
+STATUSES = ("research_only", "demo_validated", "approved", "suspended")
+
+
+def set_model_status(model_id: int, status: str, reason: str) -> None:
+    """Changes a model's evidence status. A reason is always required. Moving UP to demo_validated or approved is done
+    only by the code that holds the proof (the untouched-test evaluation, the forward-demo evaluation)."""
+    if status not in STATUSES or not reason.strip():
+        raise ValueError("a valid status and a reason are required")
+    with closing(db()) as con:
+        cur = con.execute("UPDATE model_versions SET status=?, status_reason=?, status_changed_at=? WHERE id=?",
+                          (status, reason[:300], now(), model_id))
+        con.commit()
+        if cur.rowcount != 1:
+            raise ValueError("unknown model")
+
+
+def get_model(model_id: int):
+    with closing(db()) as con:
+        r = con.execute("SELECT * FROM model_versions WHERE id=?", (model_id,)).fetchone()
+    return dict(r) if r else None
+
+
 def unlock_test(run_id: int) -> bool:
     """The untouched test segment can be evaluated ONCE per run. True the first time, False ever after."""
     with closing(db()) as con:
@@ -146,6 +183,18 @@ def unlock_test(run_id: int) -> bool:
                           (now(), run_id))
         con.commit()
         return cur.rowcount == 1
+
+
+def set_run_result(run_id: int, result: dict) -> None:
+    with closing(db()) as con:
+        con.execute("UPDATE research_runs SET result=? WHERE id=?", (json.dumps(result), run_id))
+        con.commit()
+
+
+def get_run(run_id: int):
+    with closing(db()) as con:
+        r = con.execute("SELECT * FROM research_runs WHERE id=?", (run_id,)).fetchone()
+    return dict(r) if r else None
 
 
 def file_hash(path: str) -> str:

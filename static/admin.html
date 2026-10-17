@@ -263,6 +263,7 @@ async function loadEngine(box){
         el('div','mut','Tick statistics on '+Math.round((d.tick_stats_share||0)*100)+'% of bars'+(d.reasons.length?'. '+d.reasons.join('; '):'')));
       const row=el('div','btns');row.append(run('Validate again','/validate',{symbol:d.symbol}));
       if(d.status!=='invalid')row.append(run('Run baselines','/baselines',{symbol:d.symbol},'Run the baseline study on '+d.symbol+'? It uses development and validation data only.'));
+      if(d.status!=='invalid')row.append(run('Run candidate search','/candidates',{symbol:d.symbol},'Run the pre-registered candidate search on '+d.symbol+'? 16 candidates are tested on development and validation data with doubled costs. The untouched test is not used.'));
       if(d.status!=='invalid')row.append(run('Run diagnostics','/diagnostics',{symbol:d.symbol,n_surrogates:40},'Run the Phase 3b diagnostics on '+d.symbol+'? Outcome breakdown, entry-delay and cost tests, block-shuffled copies and time scales. Development and validation data only; it takes a few minutes.'));
       row.append(run('Tick structure (last 24 h)','/ticks',{symbol:d.symbol},'Download the last 24 hours of ticks for '+d.symbol+' and analyse them?'));
       if(d.status!=='invalid')row.append(run('Run structure tests','/structure',{symbol:d.symbol,n_surrogates:80},'Run the pre-registered structure tests on '+d.symbol+'? It registers the hypotheses first, uses development and validation data only, and takes a few minutes.'));
@@ -273,6 +274,34 @@ async function loadEngine(box){
       box.append(el('div','mut',u.symbol+' \u00b7 '+(u.family==='range_break'?'Range Break':'Step Index')+' \u00b7 run '+u.id+' \u00b7 '+dt(u.finished_at)+' \u00b7 '+u.tests_per_segment+' tests per period, '+u.n_surrogates+' shuffled copies'));
       box.append(el('div',u.replicated.length?'warn':'mut',u.verdict));
       u.replicated.forEach(x=>{const d=el('div','mut',x.hypothesis+' ('+x.name+'): development '+(x.dev===null?'-':Number(x.dev).toFixed(3))+', validation '+(x.val===null?'-':Number(x.val).toFixed(3))+', adjusted p '+Number(x.dev_p_adj).toExponential(1)+' / '+Number(x.val_p_adj).toExponential(1));d.style.fontSize='13px';box.append(d)})});
+    box.append(el('h2','','Candidate search (Phase 4a): advance gate, then one shot on the untouched test'));
+    if(!(r.candidates||[]).length)box.append(el('div','mut','No candidate search yet.'));
+    (r.candidates||[]).forEach(u=>{
+      box.append(el('div','mut',u.symbol+' \u00b7 search '+u.id+' \u00b7 '+dt(u.finished_at)+' \u00b7 '+u.grid_size+' candidates, costs doubled'));
+      box.append(el('div',u.advance?'warn':'mut',u.verdict));
+      u.top.forEach(t=>{const d=el('div',t.passes?'win':'mut',t.name+': development '+t.dev+' | validation '+t.val+(t.passes?' (passes the gate)':''));d.style.fontSize='13px';box.append(d)});
+      if(u.test_result){const t=u.test_result;
+        box.append(el('div',t.passed?'win':'loss','UNTOUCHED TEST (used once): '+t.candidate+', '+t.n+' trades, average '+(t.avg_r===null?'-':Number(t.avg_r).toFixed(3))+'R'+(t.ci95?' ['+Number(t.ci95[0]).toFixed(3)+', '+Number(t.ci95[1]).toFixed(3)+']':'')+', random baseline '+(t.random_baseline_avg_r===null?'-':Number(t.random_baseline_avg_r).toFixed(3))+'R, time thirds '+(t.time_thirds||[]).map(x=>Number(x).toFixed(2)).join(' / ')+'. '+(t.passed?'PASSED: now Demo Validated.':'FAILED: stays Research Only ('+(t.why_not||[]).join('; ')+').')))}
+      else if(u.advance&&!u.test_used){const b=el('button','',"Use the untouched test now (one shot)");b.style.marginTop='8px';
+        b.onclick=async()=>{if(!confirm('This evaluates '+u.selected+' on the untouched test segment. It can only EVER be done once for this search, and the result decides its status. Continue?'))return;
+          try{await api('/engine/candidates/test','POST',{run_id:u.id,confirm:true});loadEngine(box)}catch(e){alert(e.message)}};box.append(b)}
+      else if(u.test_used)box.append(el('div','warn','The untouched test for this search has been used.'))});
+    const sh=r.shadow||{};
+    box.append(el('h2','','Shadow signals (Phase 4b): admin only, never shown to members'));
+    box.append(el('div','mut','Service '+(sh.enabled?'ON':'OFF (set DRIVERLINE_ENGINE_SHADOW=1 on Render to run it every minute)')+'. Last scan '+(sh.last_scan?new Date(sh.last_scan*1000).toISOString().slice(0,16).replace('T',' ')+' UTC':'never')+(sh.last_error?'. Last error: '+sh.last_error:'')+'. Only models that passed the untouched test produce signals.'));
+    const scan=el('button','ghost','Scan now');scan.style.marginTop='8px';
+    scan.onclick=async()=>{try{const x=await api('/engine/shadow/scan','POST',{});alert((x.results||[]).map(y=>y.model+': '+y.decision+(y.kind?' ('+y.kind+')':'')+' - '+(y.reason||'')).join('\n')||'No live models yet.');loadEngine(box)}catch(e){alert(e.message)}};box.append(scan);
+    if(!(sh.models||[]).length)box.append(el('div','mut','No models yet.'));
+    (sh.models||[]).forEach(m=>{
+      const c=el('div');c.style.cssText='border-top:1px solid var(--line);padding:8px 0';
+      c.append(el('div',m.status==='suspended'?'loss':m.status==='research_only'?'mut':'win',m.name+' \u00b7 '+m.status.replace('_',' ').toUpperCase()),
+        el('div','mut',(m.status_reason||'')+' \u00b7 '+m.open+' open, '+m.resolved+' resolved'+(m.avg_r!==null?', average '+Number(m.avg_r).toFixed(3)+'R'+(m.ci95?' ['+Number(m.ci95[0]).toFixed(3)+', '+Number(m.ci95[1]).toFixed(3)+']':''):'')));
+      const row=el('div','btns');
+      if(m.status==='suspended'){const b=el('button','ghost','Resume');b.onclick=async()=>{const why=prompt('Why is it safe to resume?');if(!why)return;try{await api('/engine/model','POST',{model_id:m.id,action:'resume',reason:why});loadEngine(box)}catch(e){alert(e.message)}};row.append(b)}
+      else if(m.status!=='research_only'){const b=el('button','ghost','Suspend');b.onclick=async()=>{const why=prompt('Reason for suspending:','manual check');if(why===null)return;try{await api('/engine/model','POST',{model_id:m.id,action:'suspend',reason:why});loadEngine(box)}catch(e){alert(e.message)}};row.append(b)}
+      c.append(row);box.append(c)});
+    (sh.signals||[]).forEach(s=>{const d=el('div',s.status==='open'?'mut':(s.result_r>0?'win':'loss'),dt(s.created_at)+' \u00b7 '+s.symbol+' '+s.decision+' \u00b7 entry about '+Number(s.entry_ref).toFixed(1)+', stop '+Number(s.stop).toFixed(1)+', target '+Number(s.target).toFixed(1)+' \u00b7 '+s.evidence_status.replace('_',' ')+' \u00b7 '+(s.status==='open'?'open':s.status+' '+(s.result_r===null?'':Number(s.result_r).toFixed(2)+'R')));d.style.fontSize='13px';box.append(d)});
+    if((sh.events||[]).length){box.append(el('div','mut','Recent risk events:'));(sh.events||[]).forEach(e=>{const d=el('div','mut',dt(e.created_at)+' \u00b7 '+e.symbol+' \u00b7 '+e.kind+': '+(e.detail||''));d.style.fontSize='13px';box.append(d)})}
     box.append(el('h2','','Diagnostics (would the pattern survive real conditions?)'));
     if(!(r.diagnostics||[]).length)box.append(el('div','mut','No diagnostics runs yet.'));
     (r.diagnostics||[]).forEach(u=>{
