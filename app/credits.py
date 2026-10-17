@@ -50,6 +50,11 @@ CATALOG = {
     "plus": {"label": "Signals Plus", "usd": 15, "signals": 550, "days": 30, "notify": True, "mt5": False},
     "pro": {"label": "Signals Pro", "usd": 30, "signals": 550, "days": 30, "notify": True, "mt5": True},
 }
+# Free plans given by perks.py. They are not products: they cannot be bought and do not appear in the shop.
+GRANTS = {
+    "partner_notify": {"label": "Partner notifications (free)", "notify": True, "mt5": False},
+    "founder_mt5": {"label": "Founding member: MT5 connection (free)", "notify": True, "mt5": True},
+}
 METHODS = {"trc20": "USDT (TRC20)", "bep20": "USDT (BEP20)", "ngn": "Naira bank transfer"}
 SETTING_KEYS = ("pay_trc20", "pay_bep20", "bank_name", "bank_account_name", "bank_account_number", "ngn_rate", "note",
                 "support", "deriv_enabled", "deriv_app_id", "deriv_ib_link", "deriv_cashier_url")
@@ -172,7 +177,7 @@ def entitled(user: dict, feature: str) -> bool:
         return True
     if not billing_on():
         return False
-    return any(CATALOG[p["plan"]].get(feature) for p in active_plans(user["id"]) if p["plan"] in CATALOG)
+    return any((CATALOG.get(p["plan"]) or GRANTS.get(p["plan"]) or {}).get(feature) for p in active_plans(user["id"]))
 
 
 def mt5_allowed(user: dict) -> bool:
@@ -180,9 +185,39 @@ def mt5_allowed(user: dict) -> bool:
     return (not billing_on()) or entitled(user, "mt5")
 
 
+def mt5_can_report(user: dict) -> bool:
+    """mt5_allowed, plus a founding member whose funding is still to be verified: they must connect so the EA can report it."""
+    if mt5_allowed(user):
+        return True
+    try:
+        from . import perks
+        return perks.founder_pending(user["id"])
+    except Exception:
+        return False
+
+
+def _price_fields(user: dict, product: str) -> dict:
+    """The price this member pays (partner members pay less for Pro) and, when different, the list price."""
+    base = float(CATALOG[product]["usd"])
+    try:
+        from . import perks
+        price = float(perks.price_for(user, product, base))
+    except Exception:
+        price = base
+    return {"usd": price, **({"list_usd": base} if price != base else {})}
+
+
+def _partner_view(user: dict):
+    try:
+        from . import perks
+        return perks.member_view(user["id"])
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------- member API
 def _label(product: str) -> str:
-    return CATALOG.get(product, {}).get("label", product)
+    return (CATALOG.get(product) or GRANTS.get(product) or {}).get("label", product)
 
 
 def _order_public(r) -> dict:
@@ -213,6 +248,11 @@ async def billing_view(request):
     on = billing_on()
     if on and not grandfathered(user):
         ensure_welcome(user["id"])
+        try:
+            from . import perks
+            perks.sync(user["id"])          # partner perks, if Deriv has confirmed this member
+        except Exception as e:
+            print(f"[perks] sync failed: {type(e).__name__}", flush=True)
     with closing(db()) as con:
         s = settings(con)
         orders = [_order_public(r) for r in con.execute(
@@ -223,7 +263,8 @@ async def billing_view(request):
     plans = active_plans(user["id"])
     return JSONResponse({
         "enabled": on, "grandfathered": grandfathered(user), "balance": balance(user["id"]), "welcome": WELCOME,
-        "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")}}
+        "partner": _partner_view(user),
+        "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")}, **_price_fields(user, k)}
                     for k, v in CATALOG.items()],
         "plans": [{"plan": p["plan"], "label": _label(p["plan"]), "ends_at": p["ends_at"]} for p in plans],
         "pay": _pay_info(s) if on else None, "methods": METHODS, "orders": orders, "ledger": ledger})
@@ -251,7 +292,7 @@ async def order_create(request):
         raise HTTPException(422, "Unknown product")
     if method not in METHODS:
         raise HTTPException(422, "Choose a payment method")
-    usd, now = float(CATALOG[product]["usd"]), _now()
+    usd, now = _price_fields(user, product)["usd"], _now()
     with closing(db()) as con:
         s = settings(con)
         con.execute("UPDATE billing_orders SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",

@@ -30,7 +30,7 @@ async function api(path,method,body){
   const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
 const STATUS={pending:'Waiting for your payment',submitted:'Being checked',approved:'Signals added',rejected:'Not confirmed',cancelled:'Cancelled',expired:'Expired'};
-const KIND={welcome:'Welcome signals',purchase:'Purchase',spend:'Setup opened',adjust:'Adjustment by support'};
+const KIND={welcome:'Welcome signals',partner_welcome:'Partner member bonus',purchase:'Purchase',spend:'Setup opened',adjust:'Adjustment by support'};
 let D=null,openId=null;
 const date=t=>new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});
 const usd=x=>'$'+(Number.isInteger(x)?x:x.toFixed(2));
@@ -44,6 +44,10 @@ function renderBalance(){
   if(D.grandfathered)c.append(el('div','mut','Your member access is unchanged. Signals you buy here are added on top.'));
   else c.append(el('div','mut','Opening a setup uses 1 signal. Signals never expire. New members get '+D.welcome+' free signals once.'));
   D.plans.forEach(p=>c.append(el('div','win',p.label+' is active until '+date(p.ends_at)+'.')));
+  if(D.partner&&D.partner.partner){const P=D.partner;
+    c.append(el('div','win','Partner member: notifications are free until '+(P.notify_until?date(P.notify_until):'soon')+', you received '+P.bonus+' bonus signals, and Signals Pro costs $'+P.pro_usd+'.'));
+    if(P.founder&&P.founder.status==='pending')c.append(el('div','warn','Founding member: connect a live Deriv MT5 account with at least $'+P.founder.min_balance+' in it and your MT5 connection is free for 30 days.'+(P.founder.last_balance!=null?' Last balance we saw: $'+Number(P.founder.last_balance).toFixed(2)+'.':'')));
+    if(P.founder&&P.founder.status==='verified')c.append(el('div','win','Founding member: your MT5 connection is free until '+(P.founder.until?date(P.founder.until):'')+'.'))}
   const a=el('a','','Back to Signals');a.href='/signals.html';a.style.cssText='display:block;margin-top:8px;color:var(--gold2)';c.append(a);
 }
 function renderShop(){
@@ -55,7 +59,7 @@ function renderShop(){
     const c=el('div','card');c.append(el('h2','',title),el('div','mut',sub));
     items.forEach(p=>{
       const row=el('div');row.style.cssText='border-top:1px solid var(--line);margin-top:10px;padding-top:10px';
-      const h=el('div','hd');h.append(el('span','',p.label),el('span','',usd(p.usd)+(p.days?' / '+p.days+' days':'')));
+      const h=el('div','hd');h.append(el('span','',p.label),el('span','',usd(p.usd)+(p.list_usd?' (was '+usd(p.list_usd)+')':'')+(p.days?' / '+p.days+' days':'')));
       row.append(h,el('div','mut',p.signals.toLocaleString()+' signals \u00b7 '+per(p)+(p.notify?' \u00b7 notifications':'')+(p.mt5?' \u00b7 MT5 connection':'')));
       if(p.key==='pro')row.append(el('div','mut','MT5 connection does not by itself guarantee automatic trade execution.'));
       const b=el('button','','Buy '+p.label);b.style.marginTop='8px';b.onclick=()=>choose(p,row);row.append(b);c.append(row)});

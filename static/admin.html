@@ -40,6 +40,7 @@ function render(d){
   const lb=el('div','card');lb.id='linkbox';lb.hidden=true;root.append(lb);
   const gr=el('div','card');gr.append(el('h2','','Growth: which ads bring members'));const grb=el('div');gr.append(grb);root.append(gr);loadGrowth(grb);
   const pt=el('div','card');pt.append(el('h2','','Partner tags: who is really tagged to you'));const ptb=el('div');pt.append(ptb);root.append(pt);loadPartner(ptb);
+  const pk=el('div','card');pk.append(el('h2','','Partner perks and founding members'));const pkb=el('div');pk.append(pkb);root.append(pk);loadPerks(pkb);
 
   const inv=el('div','card');inv.append(el('h2','','Invite codes'));
   const t=document.createElement('select');opt(t,'free','free');opt(t,'member','member');
@@ -162,6 +163,21 @@ async function loadGrowth(box){
       if(!d.rows.length)res.append(el('div','mut','No tracked visits yet. Share a tracked link and check back.'));
     }catch(e){res.textContent=e.message}};
   days.onchange=show;show();
+}
+async function loadPerks(box){
+  box.textContent='';
+  let d;try{d=await api('/perks')}catch(e){box.append(el('div','err',e.message));return}
+  box.append(el('div','mut','Members whose Deriv account Deriv confirms as tagged to you get free notifications for 60 days, 5 bonus signals and Pro at $15. The first '+d.slots+' also get the MT5 connection free for 30 days once a live Deriv MT5 account shows at least $'+d.min_balance+'.'));
+  box.append(kv('Partner members',d.partners),kv('Founder slots taken',d.taken+' of '+d.slots),kv('Founders verified',d.verified));
+  const sy=el('button','ghost','Give perks now');sy.style.cssText='width:auto;padding:6px 12px;margin:8px 0';
+  sy.onclick=async()=>{sy.disabled=true;try{const r=await api('/perks/sync','POST');alert('Checked '+r.synced+' partner members.');loadPerks(box)}catch(e){alert(e.message);sy.disabled=false}};box.append(sy);
+  if(!d.members.length){box.append(el('div','mut','No partner members yet. Perks start after an account is confirmed in Partner tags.'));return}
+  d.members.forEach(m=>{const c=el('div','card');
+    c.append(el('h2','',(m.email||('member '+m.user_id))+(m.rank?' \u00b7 slot '+m.rank:'')),kv('Founder status',m.status||'not a founder'));
+    if(m.last_balance!=null)c.append(kv('Last MT5 balance seen','$'+Number(m.last_balance).toFixed(2)));
+    if(m.status==='pending'){const b=el('button','ghost','Release this slot');b.style.cssText='width:auto;padding:6px 10px;margin-top:6px';
+      b.onclick=async()=>{if(!confirm('Release this founder slot?'))return;try{await api('/perks/release','POST',{user_id:m.user_id});loadPerks(box)}catch(e){alert(e.message)}};c.append(b)}
+    box.append(c)})
 }
 async function loadBilling(box){
   try{

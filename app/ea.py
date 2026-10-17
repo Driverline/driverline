@@ -121,7 +121,7 @@ async def report(request):
                         "WHERE k.key_hash=?", (_hash(key),)).fetchone()
         if not r or r["blocked"]:
             raise HTTPException(401, "Invalid or revoked connection key")
-        if not credits.mt5_allowed({"id": r["user_id"], "tier": r["tier"]}):
+        if not credits.mt5_can_report({"id": r["user_id"], "tier": r["tier"]}):
             raise HTTPException(403, "The MT5 connection is part of Signals Pro. Renew it in the Billing tab.")
         uid, now = r["user_id"], time.time()
         if now - _last_report.get(uid, 0) < 3:
@@ -141,6 +141,11 @@ async def report(request):
                     (uid, json.dumps(state), specs_json, int(now)))
         con.execute("UPDATE ea_keys SET last_seen=? WHERE user_id=?", (int(now), uid))
         con.commit()
+        try:                                       # founding members: read the funded balance the EA reported (perks.py)
+            from . import perks
+            perks.verify_founder(uid, state["account"])
+        except Exception as e:
+            print(f"[perks] founder check failed: {type(e).__name__}", flush=True)
         rules = get_rules(con, uid)
     closed = [c for c in (d.get("closed") or []) if isinstance(c, dict)] if isinstance(d.get("closed"), list) else []
     out = risk_check(state, rules)
@@ -326,7 +331,7 @@ def queue_open(con, uid: int, payload: dict) -> int:
 
 async def key_create(request):
     u = auth.require_user(request)
-    if not credits.mt5_allowed(u):
+    if not credits.mt5_can_report(u):
         raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
     raw = "dlk_" + secrets.token_urlsafe(24)
     with closing(db()) as con:
@@ -356,7 +361,7 @@ async def status(request):
                           "ORDER BY id DESC LIMIT 1", (u["id"],)).fetchone()
     now = time.time()
     seen = k["last_seen"] if k else None
-    out = {"mt5_allowed": credits.mt5_allowed(u), "has_key": bool(k), "connected": bool(seen and now - seen < 120),
+    out = {"mt5_allowed": credits.mt5_can_report(u), "has_key": bool(k), "connected": bool(seen and now - seen < 120),
            "last_seen_ago": int(now - seen) if seen else None, "rules": rules, "manage": mg}
     if s:
         st = json.loads(s["state"])

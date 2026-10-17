@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner
+from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks
 from .engine import jobs as engine_jobs
 from .config import INSTRUMENTS, market
 from .deriv import fetch_candles, fetch_active_symbols
@@ -161,6 +161,7 @@ routes = [
     *deriv_login.routes,
     *deriv_trade.routes,
     *partner.routes,
+    *perks.routes,
     *track.routes,
     *engine_jobs.routes,
     *journal.routes,

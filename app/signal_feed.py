@@ -21,7 +21,7 @@ from . import fxresearch as FX
 from . import signals as S
 from .config import INSTRUMENTS, market, match_key, spread as spread_of
 
-CFG = {"exec_max_dev_r": 0.5, "min_publish_t": -1.0, "fallback_rr": 1.5, "limit_default": 5, "limit_max": 10, "scan_seconds": 300,
+CFG = {"exec_max_dev_r": 0.5, "min_publish_t": -1.0, "fallback_rr": 1.5, "limit_default": 5, "limit_max": 100000, "scan_seconds": 300,
        "view_hours": 12, "min_pooled_n": 300,
        # Forex and gold are judged on their own backtest results and stay OFF until real_markets_enabled is switched on
        # (DRIVERLINE_FEED_CONFIG='{"real_markets_enabled": true}') after the owner has reviewed those results.
@@ -295,6 +295,11 @@ async def signal_loop():
     from . import push
     await asyncio.sleep(20)
     while True:
+        try:                                       # perks for newly confirmed partner members (perks.py)
+            from . import perks
+            await asyncio.to_thread(perks.sync_all)
+        except Exception as e:
+            print(f"[perks] sync failed: {type(e).__name__}", flush=True)
         try:
             new = await asyncio.wait_for(scan_signals(), timeout=120)
             if new:
@@ -477,7 +482,7 @@ async def set_limit(request):
     except (TypeError, ValueError):
         raise HTTPException(422, "Enter a whole number")
     if not 1 <= v <= CFG["limit_max"]:
-        raise HTTPException(422, f"Choose between 1 and {CFG['limit_max']}")
+        raise HTTPException(422, "Enter a whole number of 1 or more")
     with closing(db()) as con:
         cur = _prefs(con, user["id"])["limit"]
         if v <= cur:
