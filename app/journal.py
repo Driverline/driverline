@@ -151,7 +151,7 @@ def _norm(s: str) -> str:
 
 
 
-def import_mt5(uid: int, login, rows: list, offset: int = 0) -> int:
+def import_mt5(uid: int, login, rows: list, offset: int = 0, fresh: list = None) -> int:
     """Log closed MT5 positions into the journal. Safe to repeat: each position is stored once."""
     added = 0
     with closing(db()) as con:
@@ -174,6 +174,11 @@ def import_mt5(uid: int, login, rows: list, offset: int = 0) -> int:
                 (uid, match_key(sym) or sym, direction, entry, sl, tp, lots, exit_p, profit,
                  r_mult(direction, entry, sl, exit_p), iso(opened), iso(closed), f"{login}:{pid}"))
             added += cur.rowcount
+            if cur.rowcount == 1 and fresh is not None:        # a trade we have not seen before: closed_alerts tells the member
+                fresh.append({"id": f"{login}:{pid}", "symbol": sym, "instrument": match_key(sym), "direction": direction,
+                              "lots": lots, "entry": entry, "exit": exit_p, "sl": sl, "tp": tp, "profit": profit,
+                              "r_multiple": r_mult(direction, entry, sl, exit_p), "closed_at": closed,
+                              "reason": str(r.get("reason") or "")[:12]})
         con.commit()
     return added
 

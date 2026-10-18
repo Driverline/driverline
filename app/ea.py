@@ -149,7 +149,15 @@ async def report(request):
         rules = get_rules(con, uid)
     closed = [c for c in (d.get("closed") or []) if isinstance(c, dict)] if isinstance(d.get("closed"), list) else []
     out = risk_check(state, rules)
-    out["journal"] = journal.import_mt5(uid, acc.get("login"), closed, int(_f(acc.get("server_offset")))) if closed else 0
+    fresh: list = []
+    out["journal"] = journal.import_mt5(uid, acc.get("login"), closed, int(_f(acc.get("server_offset"))), fresh) if closed else 0
+    if fresh:                                  # tell the member their trades closed; runs in the background, never delays the EA
+        try:
+            import asyncio
+            from . import closed_alerts
+            asyncio.get_running_loop().run_in_executor(None, closed_alerts.notify_closed, uid, fresh, acc.get("currency"))
+        except Exception as e:
+            print(f"[push] closed-trade alert not started: {type(e).__name__}", flush=True)
     return JSONResponse(out)
 
 
