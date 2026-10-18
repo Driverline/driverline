@@ -250,18 +250,20 @@ async function pushState(){try{const reg=await Promise.race([navigator.serviceWo
 async function renderNotif(){
   const n=$('notif');n.textContent='';n.hidden=false;n.append(el('h2','','Notifications'));
   if(!state.paid){n.append(el('div','mut','Notifications are for paid members. They arrive even when the app is closed, within your own daily limit.'));return}
-  let p={styles:[],quiet_start:null,quiet_end:null,tz_offset:0};
+  let p={styles:[],quiet_start:null,quiet_end:null,tz_offset:0,closed:true};
   try{p=await api('/api/signals/notify')}catch(e){}
   const sub=('serviceWorker' in navigator&&'PushManager' in window)?await pushState():null;
   n.append(el('div','mut',sub?'Notifications are on for this device.':'Notifications are off for this device. On iPhone, add TradeLens to your home screen first.'));
   const styles=['scalp','day','swing','h4'],boxes={};
   styles.forEach(k=>{const l=el('label','sw');const i=document.createElement('input');i.type='checkbox';i.checked=p.styles.includes(k);boxes[k]=i;l.append(i,document.createTextNode((k==='h4'?'H4 gold':STY[k])+' setups'));n.append(l)});
+  const cl=el('label','sw'),clb=document.createElement('input');clb.type='checkbox';clb.checked=p.closed!==false;
+  cl.append(clb,document.createTextNode('Alert me when my MT5 trades close (take profit, stop loss or closed by hand)'));n.append(cl);
   const row=el('div','row'),qs=document.createElement('input'),qe=document.createElement('input');
   [qs,qe].forEach(i=>{i.type='number';i.min=0;i.max=23;i.inputMode='numeric'});qs.placeholder='Quiet from (hour)';qe.placeholder='Quiet until (hour)';
   qs.value=p.quiet_start??'';qe.value=p.quiet_end??'';row.append(qs,qe);n.append(row);
   n.append(el('div','mut','Quiet hours use your phone\u2019s clock. You are alerted at most as many times a day as your own daily limit, and never once you have reached it.'));
   const btns=el('div','btns'),msg=el('div','mut');
-  const save=el('button','','Save');save.onclick=async()=>{try{await api('/api/signals/notify','POST',{styles:styles.filter(k=>boxes[k].checked),quiet_start:qs.value===''?null:Number(qs.value),quiet_end:qe.value===''?null:Number(qe.value),tz_offset:-new Date().getTimezoneOffset()});msg.textContent='Saved.'}catch(e){msg.textContent=e.message}};
+  const save=el('button','','Save');save.onclick=async()=>{try{await api('/api/signals/notify','POST',{styles:styles.filter(k=>boxes[k].checked),quiet_start:qs.value===''?null:Number(qs.value),quiet_end:qe.value===''?null:Number(qe.value),tz_offset:-new Date().getTimezoneOffset(),closed:clb.checked});msg.textContent='Saved.'}catch(e){msg.textContent=e.message}};
   const tog=el('button','ghost',sub?'Turn off for this device':'Turn on for this device');
   tog.onclick=async()=>{try{
     if(sub){await api('/api/push/unsubscribe','POST',{endpoint:sub.endpoint});await sub.unsubscribe()}

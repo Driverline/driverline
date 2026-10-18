@@ -6,7 +6,7 @@ MT5's own deal reason). For older EA versions the reason is judged from where th
 
 Safeguards: only trades that closed in the last 30 minutes alert (so reconnecting an old terminal never floods a phone),
 at most 3 separate alerts per report (more are combined into one summary), nothing for blocked members, members without
-notifications, or inside their own quiet hours. NOTIFY_CLOSED=0 switches these alerts off.
+notifications, members who switched them off (a checkbox in Notifications), or inside their own quiet hours. NOTIFY_CLOSED=0 switches these alerts off.
 """
 import os
 import time
@@ -86,6 +86,8 @@ def notify_closed(uid: int, trades: list, currency=None, sender=None) -> int:
         return 0
     with closing(F.db()) as con:
         prefs = F._prefs(con, uid)
+    if prefs.get("notify_closed") == 0:              # the member switched closed-trade alerts off in their notification settings
+        return 0
     if push._quiet(prefs, datetime.now(timezone.utc)):
         return 0
     with closing(push.db()) as con:

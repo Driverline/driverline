@@ -54,9 +54,13 @@ SCHEMA = """
         PRIMARY KEY(user_id, signal_id))"""
 
 
+def _migrate(con):
+    con.add_column("user_prefs", "notify_closed", "INTEGER")      # 0 = the member switched closed-trade alerts off
+
+
 def db():
     auth.db().close()
-    return dbx.connect("feed", SCHEMA)
+    return dbx.connect("feed", SCHEMA, _migrate)
 
 
 # Styles beyond the backtest's three: the H4 setups of the validated real-market strategies.
@@ -517,11 +521,13 @@ async def notify_prefs(request):
                         "ON CONFLICT(user_id) DO UPDATE SET notify_styles=excluded.notify_styles, "
                         "quiet_start=excluded.quiet_start, quiet_end=excluded.quiet_end, tz_offset=excluded.tz_offset",
                         (user["id"], ",".join(styles), qs, qe, tz))
+            if isinstance(d.get("closed"), bool):          # alerts when the member's MT5 trades close (closed_alerts.py)
+                con.execute("UPDATE user_prefs SET notify_closed=? WHERE user_id=?", (1 if d["closed"] else 0, user["id"]))
             con.commit()
         p = _prefs(con, user["id"])
     return JSONResponse({"styles": [s for s in (p.get("notify_styles") or "").split(",") if s],
                          "quiet_start": p.get("quiet_start"), "quiet_end": p.get("quiet_end"),
-                         "tz_offset": p.get("tz_offset") or 0})
+                         "tz_offset": p.get("tz_offset") or 0, "closed": p.get("notify_closed") != 0})
 
 
 async def record(request):
