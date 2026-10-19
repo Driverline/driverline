@@ -195,7 +195,30 @@ def _invite_open(code: str) -> bool:
         return bool(a.execute("SELECT 1 FROM invites WHERE code=? AND uses_left>0", (code,)).fetchone())
 
 
+_DONE: dict = {}          # state -> (expires, response, ip): the same callback address can reach us twice a moment apart
+
+
+def _client_ip(request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return (fwd.split(",")[0].strip() or (request.client.host if request.client else "?"))[:60]
+
+
 async def callback(request):
+    """Answers a repeated hit on the same callback exactly as the first time (2 minutes, same IP address only)."""
+    state = request.query_params.get("state", "")
+    now = time.time()
+    for k in [k for k, v in _DONE.items() if v[0] < now]:
+        _DONE.pop(k, None)
+    hit = _DONE.get(state) if state else None
+    if hit and hit[2] == _client_ip(request):
+        return hit[1]
+    resp = await _callback_inner(request)
+    if state and getattr(resp, "status_code", 500) in (200, 303):
+        _DONE[state] = (now + 120, resp, _client_ip(request))
+    return resp
+
+
+async def _callback_inner(request):
     from . import deriv_trade
     state = request.query_params.get("state", "")
     if deriv_trade.owns_state(state):          # started from "Connect Deriv to trade" on a signal, not from sign-up
