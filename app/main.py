@@ -108,6 +108,11 @@ async def tradecard(request):
         else:
             try:
                 out["card"] = await generate_trade_card(name, facts, real_market=market(key) != "synthetic")
+                try:                       # a picture of what would change a NO TRADE (watch_chart.py); never blocks the card
+                    from . import watch_chart
+                    out["watch"] = watch_chart.build_watch(facts, out["card"], candles)
+                except Exception as e:
+                    print(f"[watch] could not build the picture: {type(e).__name__}", flush=True)
                 auth.consume_quota(user)
                 if market(key) == "synthetic":
                     radar.record_analysis(key, out["card"])  # feeds Smart Analysis Timing; never raises

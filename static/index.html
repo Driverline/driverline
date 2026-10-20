@@ -54,6 +54,63 @@ function ticketSection(c){
   box.append(a,el('div','mut','MT5 cannot be filled in from a link. Open it, tap New Order, and enter these values yourself. The Open button works on Android only.'));
   return section('Enter this in MT5',box);
 }
+/*watch-chart-v1*/
+function wEsc(s){return String(s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]))}
+function wFmt(x){x=Number(x);const d=Math.abs(x)>=1000?2:Math.abs(x)>=50?3:Math.abs(x)>=1?4:5;return x.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})}
+function watchSvg(v){
+  const W=340,H=220,L=6,R=86,T=12,B=12,pw=W-L-R,ph=H-T-B,cs=v.candles,n=cs.length;
+  let lo=Math.min(...cs.map(c=>c[3])),hi=Math.max(...cs.map(c=>c[2]));
+  v.levels.forEach(l=>{lo=Math.min(lo,l.price);hi=Math.max(hi,l.price)});
+  if(v.zone){lo=Math.min(lo,v.zone.low);hi=Math.max(hi,v.zone.high)}
+  const pad=(hi-lo)*0.08||1;lo-=pad;hi+=pad;
+  const y=p=>T+ph*(1-(p-lo)/(hi-lo)),step=pw/n,bw=Math.max(1.6,step*0.62),x=i=>L+step*(i+0.5);
+  const col={ceiling:'#ffb454',floor:'#5cc8ff',ema:'#b49cff'},o=[];
+  const aria='Chart of the last '+n+' '+(v.tf==='H1'?'hourly':'15-minute')+' candles. Price now '+wFmt(v.price)+'.'
+    +v.levels.map(l=>' '+l.label+' at '+wFmt(l.price)+'.').join('');
+  o.push('<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="'+wEsc(aria)+'" style="display:block;max-width:100%;height:auto;font-family:inherit">');
+  o.push('<rect x="0" y="0" width="'+W+'" height="'+H+'" rx="10" fill="#07102a" stroke="#16305f"/>');
+  if(v.zone){const zy=y(v.zone.high),zh=y(v.zone.low)-zy;
+    o.push('<rect x="'+L+'" y="'+zy+'" width="'+pw+'" height="'+zh+'" fill="rgba(92,200,255,.12)" stroke="#5cc8ff" stroke-dasharray="3 3" stroke-opacity=".6"/>');
+    o.push('<text x="'+(L+5)+'" y="'+(zy+11)+'" fill="#8fd8ff" font-size="9.5" font-weight="700">'+wEsc(v.zone.label)+'</text>')}
+  cs.forEach((c,i)=>{const up=c[4]>=c[1],k=up?'#46d6a4':'#ff7b7b',xx=x(i),t=y(Math.max(c[1],c[4])),b=y(Math.min(c[1],c[4]));
+    o.push('<line x1="'+xx+'" x2="'+xx+'" y1="'+y(c[2])+'" y2="'+y(c[3])+'" stroke="'+k+'" stroke-width="1"/>');
+    o.push('<rect x="'+(xx-bw/2)+'" y="'+t+'" width="'+bw+'" height="'+Math.max(1,b-t)+'" fill="'+(up?'#07102a':k)+'" stroke="'+k+'" stroke-width="1"/>')});
+  (v.spikes||[]).forEach(i=>{if(cs[i])o.push('<circle cx="'+x(i)+'" cy="'+y(cs[i][2])+'" r="4" fill="none" stroke="#ffd166" stroke-width="1.5"/>')});
+  const labs=[];
+  v.levels.forEach(l=>{const yy=y(l.price),k=col[l.kind]||'#ccc';
+    o.push('<line x1="'+L+'" x2="'+(L+pw)+'" y1="'+yy+'" y2="'+yy+'" stroke="'+k+'" stroke-width="1.4" stroke-dasharray="5 3"/>');
+    labs.push({y:yy,k:k,a:l.label,b:wFmt(l.price)})});
+  const py=y(v.price);o.push('<line x1="'+L+'" x2="'+(L+pw)+'" y1="'+py+'" y2="'+py+'" stroke="#ffffff" stroke-opacity=".55" stroke-width="1"/>');
+  o.push('<circle cx="'+x(n-1)+'" cy="'+py+'" r="3.2" fill="#ffffff"/>');
+  labs.push({y:py,k:'#ffffff',a:'You are here',b:wFmt(v.price)});
+  labs.sort((p,q)=>p.y-q.y);
+  for(let i=1;i<labs.length;i++)if(labs[i].y-labs[i-1].y<25)labs[i].y=labs[i-1].y+25;
+  const over=labs.length?labs[labs.length-1].y+12-(H-4):0;if(over>0)for(let i=labs.length-1;i>=0;i--){labs[i].y-=over;if(i&&labs[i].y-labs[i-1].y<25)labs[i-1].y=labs[i].y-25}
+  labs.forEach(l=>{o.push('<text x="'+(L+pw+5)+'" y="'+(l.y-1)+'" fill="'+l.k+'" font-size="9.5" font-weight="700">'+wEsc(l.a)+'</text>'
+    +'<text x="'+(L+pw+5)+'" y="'+(l.y+10)+'" fill="#cfd9f6" font-size="9.5">'+wEsc(l.b)+'</text>')});
+  o.push('</svg>');return o.join('')
+}
+function watchChart(w){
+  const box=el('div'),keys=Object.keys(w.views);let cur=w.default;
+  const ttl=el('div','',w.title);ttl.style.cssText='font-weight:700;margin-bottom:8px';box.append(ttl);
+  const bar=el('div'),holder=el('div'),cap=el('div','mut'),sc=el('div'),btns={};cap.style.cssText='margin-top:6px;font-size:13px';bar.style.cssText='display:flex;gap:8px;margin-bottom:8px';
+  if(w.chips&&w.chips.length){const r=el('div');r.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px';
+    w.chips.forEach(c=>{const s=el('span','',c.tf+' \u00b7 '+(c.dir==='up'?'Up':c.dir==='down'?'Down':'Mixed'));
+      s.style.cssText='padding:4px 10px;border-radius:999px;border:1px solid '+(c.dir==='up'?'#46d6a4':c.dir==='down'?'#ff7b7b':'#7d8bb3')+';font-size:13px';r.append(s)});box.append(r)}
+  function show(k){cur=k;holder.innerHTML=watchSvg(w.views[k]);cap.textContent=w.views[k].caption||'';cap.style.display=w.views[k].caption?'block':'none';sc.textContent='';
+    w.views[k].scenarios.forEach(s=>{const r=el('div'),b=el('span','',s.kind==='buy'?'BUY':s.kind==='sell'?'SELL':'WAIT');
+      const kc=s.kind==='buy'?'#46d6a4':s.kind==='sell'?'#ff7b7b':'#9fb0d9';
+      r.style.cssText='display:flex;gap:10px;align-items:flex-start;margin:8px 0;padding:8px 10px;border-radius:10px;border:1px solid #16305f;border-left:4px solid '+kc;
+      b.style.cssText='font-size:11px;font-weight:700;letter-spacing:.06em;color:'+kc+';min-width:38px;padding-top:2px';
+      r.append(b,el('span','',s.text));sc.append(r)});
+    keys.forEach(q=>{btns[q].style.borderColor=q===k?'#5cc8ff':'#16305f';btns[q].style.color=q===k?'#fff':'#9fb0d9'})}
+  if(keys.length>1)keys.forEach(k=>{const b=el('button','ghost',k==='H1'?'1-hour candles':'15-minute candles');b.style.cssText='width:auto;padding:6px 12px;font-size:14px';
+    b.onclick=()=>show(k);btns[k]=b;bar.append(b)});else keys.forEach(k=>{btns[k]=el('span')});
+  box.append(bar,holder,cap,sc);show(cur);
+  const g=el('details');g.append(el('summary','','What do these words mean?'));
+  w.glossary.forEach(t=>{const d=el('div');d.style.cssText='margin:6px 0';const b=el('b','',t.term+': ');d.append(b,document.createTextNode(t.text));g.append(d)});
+  box.append(g);const n=el('div','mut',w.note);n.style.marginTop='8px';box.append(n);return box
+}
 function render(d){
   if(!d.card){renderFallback(d);return}
   const c=d.card,box=el('div','msg');
@@ -76,6 +133,7 @@ function render(d){
   }
   t.append(el('div','',''),el('div','hello','Next: '+c.next_step));
   box.append(section('Trade Card',t));
+  if(d.watch)box.append(section('What to wait for',watchChart(d.watch)));      // NO TRADE only: the picture of the gray Next: line
   if(c.status==='TRADE')box.append(ticketSection(c));
   box.append(factsBlock(d));
   feed.append(box);box.scrollIntoView({behavior:'smooth'});
