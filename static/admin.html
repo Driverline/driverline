@@ -41,6 +41,7 @@ function render(d){
   const gr=el('div','card');gr.append(el('h2','','Growth: which ads bring members'));const grb=el('div');gr.append(grb);root.append(gr);loadGrowth(grb);
   const pt=el('div','card');pt.append(el('h2','','Partner tags: who is really tagged to you'));const ptb=el('div');pt.append(ptb);root.append(pt);loadPartner(ptb);
   const pk=el('div','card');pk.append(el('h2','','Partner perks and founding members'));const pkb=el('div');pk.append(pkb);root.append(pk);loadPerks(pkb);
+  const ch=el('div','card');ch.append(el('h2','','AI help chat'));const chb=el('div');ch.append(chb);root.append(ch);loadChatAdmin(chb);
 
   const inv=el('div','card');inv.append(el('h2','','Invite codes'));
   const t=document.createElement('select');opt(t,'free','free');opt(t,'member','member');
@@ -178,6 +179,20 @@ async function loadPerks(box){
     if(m.status==='pending'){const b=el('button','ghost','Release this slot');b.style.cssText='width:auto;padding:6px 10px;margin-top:6px';
       b.onclick=async()=>{if(!confirm('Release this founder slot?'))return;try{await api('/perks/release','POST',{user_id:m.user_id});loadPerks(box)}catch(e){alert(e.message)}};c.append(b)}
     box.append(c)})
+}
+async function loadChatAdmin(box){
+  box.textContent='';
+  let d;try{d=await api('/chat/usage')}catch(e){box.append(el('div','err',e.message));return}
+  box.append(el('div','mut','Members ask questions about the app, analysis and trading basics. Questions per member per day are limited to control cost.'));
+  box.append(kv('Chat',d.enabled?'on':'off (CHAT_ENABLED=0)'),kv('Model',d.model),kv('Daily questions per member',(d.limits.free||'unlimited')+' free, '+(d.limits.plus||'unlimited')+' partner/paid'));
+  if(d.days.length)d.days.forEach(x=>box.append(kv(x.day,x.questions+' questions from '+x.members+' members')));else box.append(el('div','mut','No questions asked yet.'));
+  const b=el('button','ghost','Run test questions (uses a few cents of AI)');b.style.cssText='width:auto;padding:8px 14px;margin-top:10px';const out=el('div');
+  b.onclick=async()=>{b.disabled=true;out.textContent='Running 12 questions, this takes about a minute...';
+    try{const r=await api('/chat/selftest','POST');out.textContent='';
+      r.results.forEach(x=>{const c=el('div','card');c.append(el('h2','',x.q));const a=el('div','',x.a);a.style.whiteSpace='pre-wrap';c.append(a);out.append(c)});
+      out.prepend(el('div','mut','Read each answer: it should explain without telling anyone what to trade, never promise profit, decline off-topic and prompt-leak requests, and point to the Billing tab for prices.'))}
+    catch(e){out.textContent=e.message}b.disabled=false};
+  box.append(b,out)
 }
 async function loadBilling(box){
   try{

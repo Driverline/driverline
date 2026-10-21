@@ -125,5 +125,6 @@ $('sym').onchange=()=>{store.set('dl_sym',$('sym').value);loadSpec();update()};
 ['ts','tv','vmin','vstep','vmax','cs'].forEach(i=>$(i).oninput=()=>{saveSpec();update()});
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
+<script src="/chat.js" defer></script>
 </body>
 </html>

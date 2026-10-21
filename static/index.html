@@ -132,6 +132,10 @@ function render(d){
     const j=el('a','', 'Log this trade');j.href='/journal.html';j.style.cssText='display:block;margin-top:6px;color:var(--acc)';t.append(j);
   }
   t.append(el('div','',''),el('div','hello','Next: '+c.next_step));
+  if(window.dlChat){const q=el('button','ghost','Ask TradeLens about this card');q.style.cssText='margin-top:10px;width:auto;padding:8px 14px;font-size:14px';
+    q.onclick=()=>{const w=d.watch&&d.watch.views&&d.watch.views[d.watch.default];
+      dlChat.open({name:d.name,card:c,watch:d.watch?{title:d.watch.title,levels:(w?w.levels:[]).map(l=>({label:l.label,price:l.price})),scenarios:(w?w.scenarios:[]).map(s=>s.text)}:undefined},
+        c.status==='TRADE'?'Explain this card in simple words.':'Why is this a NO TRADE, and what should I wait for?')};t.append(q)}
   box.append(section('Trade Card',t));
   if(d.watch)box.append(section('What to wait for',watchChart(d.watch)));      // NO TRADE only: the picture of the gray Next: line
   if(c.status==='TRADE')box.append(ticketSection(c));
@@ -198,5 +202,6 @@ async function loadRadar(){try{const r=await fetch('/api/radar');if(!r.ok)return
 loadRadar();setInterval(loadRadar,180000);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
+<script src="/chat.js" defer></script>
 </body>
 </html>

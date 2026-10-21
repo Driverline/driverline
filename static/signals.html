@@ -291,5 +291,6 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch
 dvBanner();load();renderRecord();setInterval(()=>{if(!hold)load()},60000);
 setTimeout(async()=>{if(state)renderNotif()},900);
 </script>
+<script src="/chat.js" defer></script>
 </body>
 </html>
