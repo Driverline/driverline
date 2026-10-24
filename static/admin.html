@@ -265,7 +265,7 @@ async function loadCrypto(box,filter){
   ck.onclick=async()=>{ck.disabled=true;cm.className='mut';cm.textContent='Checking...';
     try{const x=await api('/pay/crypto/check','POST');
       cm.className=x.api_reachable&&x.currency_listed!==false?'win':'warn';
-      cm.textContent=(x.problems.length?'Missing: '+x.problems.join('; '):'')+(x.api_reachable===null?'':(x.api_reachable?'NOWPayments reachable with your key. ':'NOWPayments not reachable or key rejected ('+x.detail+'). '))+(x.currency_listed===null?'':(x.currency_listed?r.pay_currency+' is offered.':r.pay_currency+' is NOT offered on this account.'))}
+      cm.textContent=(x.problems.length?'Missing: '+x.problems.join('; '):'')+(x.api_reachable===null?'':(x.api_reachable?'NOWPayments reachable with your key. ':'NOWPayments not reachable or key rejected ('+x.detail+'). '))+(x.currency_listed===null?'':Object.entries(x.currencies||{}).map(([c,ok])=>c+(ok?' is offered. ':' is NOT offered on this account. ')).join(''))}
     catch(e){cm.className='err';cm.textContent=e.message}ck.disabled=false};
   box.append(ck,cm);
   const cs=Object.entries(r.counts).map(([k,v])=>k+' '+v).join(' · ');box.append(el('div','mut',cs?'Orders: '+cs:'No automatic orders yet.'));

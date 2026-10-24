@@ -42,6 +42,7 @@ AUTO = credits.AUTO_METHOD
 DEFAULT_API_BASE = "https://api.nowpayments.io/v1"
 DEFAULT_PAY_CURRENCY = "usdttrc20"                      # NOWPayments' code for USDT on the TRON network
 NETWORKS = {"usdttrc20": "TRON (TRC20)", "usdtbsc": "BNB Smart Chain (BEP20)"}
+SHORT = {"usdttrc20": "TRC20", "usdtbsc": "BEP20"}
 OPEN = ("pending", "confirming")                       # waiting for money / money seen, not final
 FINAL = ("approved", "rejected", "cancelled", "refunded")
 PRICE_TOLERANCE = 0.005                                # USD; the price echoed by the provider must equal ours
@@ -72,12 +73,27 @@ def api_base() -> str:
     return (_env("NOWPAYMENTS_API_BASE") or DEFAULT_API_BASE).rstrip("/")
 
 
+def pay_currencies() -> list:
+    """The coins/networks a member may choose from, first = the default. NOWPAYMENTS_PAY_CURRENCIES is a comma list (for example
+    "usdttrc20,usdtbsc"); unset, it falls back to NOWPAYMENTS_PAY_CURRENCY, then to USDT TRC20 only. Only codes this module has a
+    label for are accepted, so a typo can never put an unknown currency in front of a member."""
+    raw = _env("NOWPAYMENTS_PAY_CURRENCIES") or _env("NOWPAYMENTS_PAY_CURRENCY") or DEFAULT_PAY_CURRENCY
+    out = []
+    for c in raw.lower().replace(";", ",").split(","):
+        c = c.strip()
+        if c in NETWORKS and c not in out:
+            out.append(c)
+    return out or [DEFAULT_PAY_CURRENCY]
+
+
 def pay_currency() -> str:
-    return (_env("NOWPAYMENTS_PAY_CURRENCY") or DEFAULT_PAY_CURRENCY).lower()
+    """The default currency (the first one offered)."""
+    return pay_currencies()[0]
 
 
-def network_label() -> str:
-    return NETWORKS.get(pay_currency(), pay_currency().upper())
+def network_label(code=None) -> str:
+    code = code or pay_currency()
+    return NETWORKS.get(code, code.upper())
 
 
 def callback_base() -> str:
@@ -146,7 +162,8 @@ def public_info(user=None) -> dict:
     if not enabled(user):
         return {"enabled": False}
     return {"enabled": True, "label": credits.AUTO_LABEL, "currency": "USDT", "network": network_label(),
-            "pilot": mode() == "admin"}
+            "pilot": mode() == "admin",
+            "options": [{"code": c, "network": network_label(c), "short": SHORT.get(c, c.upper())} for c in pay_currencies()]}
 
 
 def _now() -> int:
@@ -262,9 +279,10 @@ def _parse_time(v):
         return None
 
 
-async def create_provider_payment(ref: str, usd: float, label: str) -> dict:
+async def create_provider_payment(ref: str, usd: float, label: str, currency=None) -> dict:
     """POST /payment. The reply is checked against what we asked for before a member is shown any address."""
-    body = {"price_amount": usd, "price_currency": "usd", "pay_currency": pay_currency(), "ipn_callback_url": ipn_url(),
+    currency = currency or pay_currency()
+    body = {"price_amount": usd, "price_currency": "usd", "pay_currency": currency, "ipn_callback_url": ipn_url(),
             "order_id": ref, "order_description": f"{label} ({ref})"}
     d = await _request("POST", "/payment", body)
     if not isinstance(d, dict):
@@ -272,7 +290,7 @@ async def create_provider_payment(ref: str, usd: float, label: str) -> dict:
     pid, addr, amt = str(d.get("payment_id") or ""), str(d.get("pay_address") or ""), _f(d.get("pay_amount"))
     if not pid or not addr or amt <= 0:
         raise ProviderError("reply is missing the payment id, address or amount")
-    if str(d.get("pay_currency") or "").lower() != pay_currency():
+    if str(d.get("pay_currency") or "").lower() != currency:
         raise ProviderError("reply is for a different currency")
     if d.get("order_id") not in (None, "", ref):
         raise ProviderError("reply is for a different order")
@@ -281,8 +299,8 @@ async def create_provider_payment(ref: str, usd: float, label: str) -> dict:
     now = _now()
     exp = _parse_time(d.get("expiration_estimate_date") or d.get("valid_until"))
     exp = min(max(exp, now + 300), now + 7 * 86400) if exp else now + order_ttl()
-    return {"payment_id": pid, "pay_address": addr, "pay_amount": amt, "pay_currency": pay_currency(),
-            "network": str(d.get("network") or "") or network_label(), "status": str(d.get("payment_status") or "waiting").lower(),
+    return {"payment_id": pid, "pay_address": addr, "pay_amount": amt, "pay_currency": currency,
+            "network": str(d.get("network") or "") or network_label(currency), "status": str(d.get("payment_status") or "waiting").lower(),
             "expires_at": exp}
 
 
@@ -333,7 +351,7 @@ def order_view(row, extra_balance=None) -> dict:
     out = credits._order_public(row)
     p = credits.CATALOG.get(row["product"], {})
     live = row["status"] in OPEN
-    out.update(network=NETWORKS.get(str(credits._col(row, "pay_currency") or ""), network_label()), asset="USDT",
+    out.update(network=network_label(str(credits._col(row, "pay_currency") or "") or None), asset="USDT",
                pay_amount=credits._col(row, "pay_amount"), actually_paid=credits._col(row, "actually_paid"),
                pay_address=credits._col(row, "pay_address") if live else None,
                signals=p.get("signals"), days=p.get("days") or 0, notify=bool(p.get("notify")), mt5=bool(p.get("mt5")),
@@ -554,6 +572,9 @@ async def create_order(request):
         raise HTTPException(422, "Please accept the Terms, Refunds and Support policy to continue")
     if product not in credits.CATALOG:
         raise HTTPException(422, "Unknown product")
+    currency = str(d.get("currency") or pay_currency()).lower()
+    if currency not in pay_currencies():
+        raise HTTPException(422, "Choose one of the offered networks")
     if _limited(f"create:{user['id']}", 6, 600):
         raise HTTPException(429, "Too many attempts. Please wait a few minutes.")
     usd, now, label = credits._price_fields(user, product)["usd"], _now(), credits.CATALOG[product]["label"]
@@ -561,8 +582,8 @@ async def create_order(request):
     def _prepare():
         with closing(credits.db()) as con:
             old = con.execute("SELECT * FROM billing_orders WHERE user_id=? AND method=? AND product=? AND status IN ('pending','confirming') "
-                              "AND provider_payment_id IS NOT NULL AND amount_usd=? AND expires_at>? ORDER BY id DESC LIMIT 1",
-                              (user["id"], AUTO, product, usd, now)).fetchone()
+                              "AND provider_payment_id IS NOT NULL AND amount_usd=? AND pay_currency=? AND expires_at>? ORDER BY id DESC LIMIT 1",
+                              (user["id"], AUTO, product, usd, currency, now)).fetchone()
             if old:                                        # a double click or a second tab: show the same order, create nothing
                 return old, None
             open_n = con.execute("SELECT COUNT(*) AS c FROM billing_orders WHERE user_id=? AND status IN ('pending','submitted','confirming')",
@@ -575,7 +596,7 @@ async def create_order(request):
                     oid = con.insert("INSERT INTO billing_orders(user_id,product,method,amount_usd,amount_local,currency,ref,status,created_at,"
                                      "terms_at,provider,pay_currency,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                      (user["id"], product, AUTO, usd, usd, "USDT", ref, "pending", now, now, "nowpayments",
-                                      pay_currency(), now))
+                                      currency, now))
                     _event(con, oid, "member", "created", None, f"{product} {usd} usd")
                     con.commit()
                     return None, (oid, ref)
@@ -590,7 +611,7 @@ async def create_order(request):
         return JSONResponse({"order": order_view(old)})
     oid, ref = new
     try:
-        pay = await create_provider_payment(ref, usd, label)
+        pay = await create_provider_payment(ref, usd, label, currency)
     except ProviderError as e:
         print(f"[nowpay] could not create a payment: {e} {e.detail}", flush=True)
 
@@ -724,11 +745,11 @@ async def admin_view(request):
     rows, counts, exc = await asyncio.to_thread(_admin_rows, status, 60)
     names = credits._emails([r["user_id"] for r in rows])
     orders = [{**credits._order_public(r), "email": names.get(r["user_id"], "?"), "pay_amount": r["pay_amount"],
-               "actually_paid": r["actually_paid"], "network": NETWORKS.get(str(r["pay_currency"] or ""), r["pay_currency"]),
+               "actually_paid": r["actually_paid"], "network": network_label(r["pay_currency"] or None),
                "review_reason": r["review_reason"], "provider_status": r["provider_status"], "provider_payment_id": r["provider_payment_id"],
                "last_polled_at": r["last_polled_at"], "pay_address": r["pay_address"]} for r in rows]
     return JSONResponse({"mode": mode(), "problems": problems(), "billing_open": credits.billing_on(), "ipn_url": ipn_url() if callback_base() else "",
-                         "api_base": api_base(), "pay_currency": pay_currency(), "status": status, "counts": counts,
+                         "api_base": api_base(), "pay_currency": ", ".join(pay_currencies()), "status": status, "counts": counts,
                          "orders": orders, "exceptions": exc})
 
 
@@ -757,7 +778,7 @@ async def admin_toggle(request):
 async def admin_check(request):
     """Asks NOWPayments whether it is reachable with our key and offers the currency we sell in. Changes nothing."""
     auth.require_admin(request)
-    out = {"configured": not problems(), "problems": problems(), "api_reachable": None, "currency_listed": None, "detail": ""}
+    out = {"configured": not problems(), "problems": problems(), "api_reachable": None, "currency_listed": None, "currencies": {}, "detail": ""}
     if out["problems"]:
         return JSONResponse(out)
     try:
@@ -771,7 +792,9 @@ async def admin_check(request):
         cur = await _request("GET", "/currencies")
         lst = cur.get("currencies") if isinstance(cur, dict) else cur
         if isinstance(lst, list):
-            out["currency_listed"] = pay_currency() in {str(x).lower() for x in lst}
+            have = {str(x).lower() for x in lst}
+            out["currencies"] = {c: c in have for c in pay_currencies()}
+            out["currency_listed"] = all(out["currencies"].values())
     except ProviderError as e:
         out["detail"] = (out["detail"] + f" currencies: {e}").strip()
     return JSONResponse(out)

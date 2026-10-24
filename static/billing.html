@@ -76,11 +76,14 @@ function choose(p,row){
   box.append(tl);
   const auto=D.crypto&&D.crypto.enabled;
   if(auto){
-    const cb=el('button','','Pay with USDT ('+D.crypto.network.replace(/.*\((.*)\)/,'$1')+') \u00b7 automatic');cb.style.marginTop='8px';
-    cb.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}cb.disabled=true;
-      try{const r=await api('/api/pay/crypto/order','POST',{product:p.key,accepted:true});await load();openCrypto(r.order.id);window.scrollTo({top:0,behavior:'smooth'})}
-      catch(e){alert(e.message);cb.disabled=false}};
-    box.append(cb,el('div','mut','Confirmed automatically on the network. No screenshot or transaction ID needed.'));
+    const opts=D.crypto.options&&D.crypto.options.length?D.crypto.options:[{code:null,short:D.crypto.network.replace(/.*\((.*)\)/,'$1')}];
+    opts.forEach(op=>{
+      const cb=el('button','','Pay with USDT ('+op.short+') \u00b7 automatic');cb.style.marginTop='8px';
+      cb.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}cb.disabled=true;
+        try{const r=await api('/api/pay/crypto/order','POST',{product:p.key,accepted:true,currency:op.code||undefined});await load();openCrypto(r.order.id);window.scrollTo({top:0,behavior:'smooth'})}
+        catch(e){alert(e.message);cb.disabled=false}};
+      box.append(cb)});
+    box.append(el('div','mut','Confirmed automatically on the network. No screenshot or transaction ID needed.'+(opts.length>1?' Pick the network your wallet or exchange uses.':'')));
   }
   box.append(el('div','mut',auto?'Or pay by hand:':'How would you like to pay?'));
   const btns=el('div','btns');btns.style.flexWrap='wrap';

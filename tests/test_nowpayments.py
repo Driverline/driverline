@@ -741,6 +741,106 @@ class PilotModeTests(unittest.TestCase):
         self.assertEqual(client(self.admin).get(f"/api/pay/crypto/order/{oid}").status_code, 200)
 
 
+class TwoNetworkTests(unittest.TestCase):
+    """NOWPAYMENTS_PAY_CURRENCIES=usdttrc20,usdtbsc: the member picks TRC20 or BEP20."""
+
+    def setUp(self):
+        self._old = {k: os.environ.pop(k, None) for k in ("NOWPAYMENTS_PAY_CURRENCIES", "NOWPAYMENTS_PAY_CURRENCY")}
+        os.environ["NOWPAYMENTS_PAY_CURRENCIES"] = "usdttrc20, USDTBSC"
+
+    def tearDown(self):
+        os.environ.pop("NOWPAYMENTS_PAY_CURRENCIES", None)
+        for k, v in self._old.items():
+            if v is not None:
+                os.environ[k] = v
+
+    def order(self, uid, product="boost", currency=None):
+        body = {"product": product, "accepted": True, **({"currency": currency} if currency else {})}
+        return client(uid).post("/api/pay/crypto/order", json=body)
+
+    def test_default_when_unset_is_trc20_only_and_unknown_codes_are_ignored(self):
+        os.environ.pop("NOWPAYMENTS_PAY_CURRENCIES")
+        self.assertEqual(nowpay.pay_currencies(), ["usdttrc20"])
+        os.environ["NOWPAYMENTS_PAY_CURRENCIES"] = "usdtbsc;doge,usdtbsc,usdttrc20"
+        self.assertEqual(nowpay.pay_currencies(), ["usdtbsc", "usdttrc20"])
+        os.environ["NOWPAYMENTS_PAY_CURRENCIES"] = "nonsense"
+        self.assertEqual(nowpay.pay_currencies(), ["usdttrc20"])
+        os.environ["NOWPAYMENTS_PAY_CURRENCIES"] = "usdttrc20,usdtbsc"
+        os.environ.pop("NOWPAYMENTS_PAY_CURRENCIES")
+        os.environ["NOWPAYMENTS_PAY_CURRENCY"] = "usdtbsc"
+        try:
+            self.assertEqual(nowpay.pay_currencies(), ["usdtbsc"], "the older single setting still works")
+        finally:
+            os.environ.pop("NOWPAYMENTS_PAY_CURRENCY")
+
+    def test_member_sees_both_options(self):
+        uid = mk_user()
+        info = client(uid).get("/api/billing").json()["crypto"]
+        self.assertEqual([(o["code"], o["short"]) for o in info["options"]], [("usdttrc20", "TRC20"), ("usdtbsc", "BEP20")])
+
+    def test_bep20_order_is_created_stored_and_fulfilled(self):
+        uid = mk_user()
+        r = self.order(uid, "boost", "usdtbsc")
+        self.assertEqual(r.status_code, 200, r.text)
+        o = r.json()["order"]
+        self.assertEqual(o["network"], "BNB Smart Chain (BEP20)")
+        sent = json.loads([c for c in FAKE.calls if c[0] == "POST" and c[1] == "/payment"][-1][2])
+        self.assertEqual(sent["pay_currency"], "usdtbsc")
+        self.assertEqual(row(o["id"])["pay_currency"], "usdtbsc")
+        pid = row(o["id"])["provider_payment_id"]
+        pay(pid)
+        post_ipn(ipn_for(pid, pay_currency="usdtbsc"))
+        asyncio.run(nowpay.drain())
+        self.assertEqual((row(o["id"])["status"], balance(uid)), ("approved", 550))
+
+    def test_default_is_the_first_currency_and_trc20_still_works(self):
+        uid = mk_user()
+        o = self.order(uid, "topup").json()["order"]
+        self.assertEqual((o["network"], row(o["id"])["pay_currency"]), ("TRON (TRC20)", "usdttrc20"))
+
+    def test_currency_not_offered_is_refused(self):
+        uid = mk_user()
+        for bad in ("btc", "usdterc20", "USDT", ""):
+            if bad:
+                self.assertEqual(self.order(uid, "topup", bad).status_code, 422, bad)
+        os.environ["NOWPAYMENTS_PAY_CURRENCIES"] = "usdttrc20"
+        self.assertEqual(self.order(uid, "topup", "usdtbsc").status_code, 422, "BEP20 is refused when it is not switched on")
+
+    def test_each_network_gets_its_own_order_and_a_double_click_reuses_it(self):
+        uid = mk_user()
+        a = self.order(uid, "topup", "usdttrc20").json()["order"]
+        b = self.order(uid, "topup", "usdtbsc").json()["order"]
+        self.assertNotEqual(a["id"], b["id"])
+        n = len(FAKE.payments)
+        self.assertEqual(self.order(uid, "topup", "usdtbsc").json()["order"]["id"], b["id"])
+        self.assertEqual(len(FAKE.payments), n)
+
+    def test_paying_in_the_other_currency_is_not_fulfilled(self):
+        """A BEP20 order whose payment arrives as TRC20 (or the reverse) must not credit: it goes to review."""
+        for chosen, arrived in (("usdtbsc", "usdttrc20"), ("usdttrc20", "usdtbsc")):
+            uid = mk_user()
+            o = self.order(uid, "boost", chosen).json()["order"]
+            pid = row(o["id"])["provider_payment_id"]
+            pay(pid)
+            FAKE.set(pid, pay_currency=arrived)
+            asyncio.run(nowpay.process_order(o["id"], "t"))
+            r = row(o["id"])
+            self.assertEqual((r["status"], balance(uid)), ("review", 0), chosen)
+            self.assertIn("currency", r["review_reason"])
+
+    def test_admin_check_reports_each_network(self):
+        admin = mk_user("admin")
+        d = client(admin).post("/api/admin/pay/crypto/check").json()
+        self.assertEqual(d["currencies"], {"usdttrc20": True, "usdtbsc": True})
+        FAKE.currencies = ["btc", "usdttrc20"]
+        try:
+            d = client(admin).post("/api/admin/pay/crypto/check").json()
+        finally:
+            FAKE.currencies = ["btc", "eth", "usdttrc20", "usdtbsc"]
+        self.assertEqual((d["currencies"], d["currency_listed"]), ({"usdttrc20": True, "usdtbsc": False}, False))
+        self.assertEqual(client(admin).get("/api/admin/pay/crypto").json()["pay_currency"], "usdttrc20, usdtbsc")
+
+
 # ---------------------------------------------------------------- 6. concurrency
 class ConcurrencyTests(unittest.TestCase):
     def test_parallel_fulfilment_credits_once(self):

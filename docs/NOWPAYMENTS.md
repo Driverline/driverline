@@ -1,11 +1,11 @@
 # Automatic USDT (TRC20) payments with NOWPayments
 
-Members pick a product on the Billing page, pay USDT on the TRON network to the address NOWPayments gives them, and the signals
+Members pick a product on the Billing page, choose the network (USDT on TRON TRC20, and BEP20 once you switch it on), pay to the address NOWPayments gives them, and the signals
 or plan are added automatically a few minutes later. No screenshot, no transaction ID, no manual approval. The manual
 payment methods keep working exactly as before.
 
 ## How it works (short)
-1. **Order.** The server prices the product from `CATALOG` in `app/credits.py` (partner prices included). Nothing the browser sends
+1. **Order.** The member picks a network only from the list you allow. The server prices the product from `CATALOG` in `app/credits.py` (partner prices included). Nothing the browser sends
    can change the price, the signals or the user. It asks NOWPayments for a payment (`POST /payment`, USD price, `usdttrc20`) and
    saves the order in the existing `billing_orders` table (`method = nowpayments`).
 2. **Pay.** The page shows the address, the exact USDT amount and the network from NOWPayments, and checks the status every 8 seconds.
@@ -29,9 +29,9 @@ Type the values in Render yourself. Never paste them into chat, GitHub or a scre
 |---|---|---|
 | `NOWPAYMENTS_API_KEY` | your NOWPayments **API key** | secret |
 | `NOWPAYMENTS_IPN_SECRET` | your NOWPayments **IPN secret key** | secret. The "Public key" is not used |
-| `DRIVERLINE_BASE_URL` | `https://driverline.onrender.com` | must be the public https address. Probably already set for reset emails |
+| `DRIVERLINE_BASE_URL` | `https://tradelens360ai.live` | must be the public https address. Probably already set for reset emails |
 | `NOWPAYMENTS_API_BASE` | leave unset for the live API | only to test on the NOWPayments sandbox: set to the sandbox address from their documentation |
-| `NOWPAYMENTS_PAY_CURRENCY` | leave unset (`usdttrc20`) | NOWPayments' code for USDT on TRON |
+| `NOWPAYMENTS_PAY_CURRENCIES` | optional. Unset = USDT TRC20 only (`usdttrc20`). To let members choose, set `usdttrc20,usdtbsc` | the networks offered, first one is the default. `usdtbsc` is the NOWPayments code for USDT on BNB Smart Chain (BEP20). Run *Check connection* in Admin first: it says whether each one is offered on your account. Only these two codes are accepted |
 | `NOWPAYMENTS_ORDER_TTL_MIN` | optional, default 60 | minutes an order stays open if NOWPayments gives no expiry |
 
 Saving environment variables makes Render restart the service.
@@ -39,7 +39,7 @@ Saving environment variables makes Render restart the service.
 ## What you must set in the NOWPayments dashboard
 1. Settings > Payments: make sure **USDT on TRON (TRC20)** is an enabled coin and an outgoing wallet is set for it.
 2. Settings > Payments > **IPN**: generate the IPN secret key (this is `NOWPAYMENTS_IPN_SECRET`) and set the **IPN callback URL** to
-   `https://driverline.onrender.com/api/pay/nowpayments/ipn`. The same URL is shown, with a copy button, in Admin > Crypto payments.
+   `https://tradelens360ai.live/api/pay/nowpayments/ipn`. The same URL is shown, with a copy button, in Admin > Crypto payments.
 3. Settings > API keys: create an API key (this is `NOWPAYMENTS_API_KEY`).
 4. Leave withdrawal-IP whitelisting and payout permissions as they are.
 
@@ -84,7 +84,7 @@ with the page's own 8-second refresh, which asks NOWPayments directly. If they c
 Additive only, applied by the app itself on first use, or by running `migrations/2026_10_nowpayments.sql` in Supabase's SQL Editor beforehand (safe to run twice). Back up first. Nothing existing is edited or deleted.
 
 ## Tests
-`python tests/test_nowpayments.py`: 57 tests with a fake NOWPayments (no network): signature, pilot modes, order creation, fulfilment, duplicates and out-of-order notifications, lost notifications, underpaid and overpaid,
+`python tests/test_nowpayments.py`: 65 tests with a fake NOWPayments (no network): signature, pilot modes, order creation, fulfilment, duplicates and out-of-order notifications, lost notifications, underpaid and overpaid,
 wrong currency, access control, concurrency, secrets in logs, migration of an old database, and the manual flow.
 
 ## Known limits

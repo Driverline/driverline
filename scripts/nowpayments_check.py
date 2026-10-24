@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-os.environ.setdefault("DRIVERLINE_BASE_URL", "https://driverline.onrender.com")
+os.environ.setdefault("DRIVERLINE_BASE_URL", "https://tradelens360ai.live")
 os.environ.setdefault("NOWPAYMENTS_IPN_SECRET", "check-only")        # not used by this script
 from app import nowpay  # noqa: E402
 
