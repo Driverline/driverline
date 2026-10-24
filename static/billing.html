@@ -15,6 +15,7 @@
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
 <main>
 <div class="card" id="bal"><span class="mut">Loading...</span></div>
+<div id="crypto"></div>
 <div id="open"></div>
 <div id="shop"></div>
 <div class="card" id="fund" hidden><h2>Fund your Deriv account</h2><div class="mut">Deposits are made on Deriv's own secure site. TradeLens never handles your Deriv payments or funds.</div><a id="fundgo" href="#" target="_blank" rel="noopener" style="display:block;margin-top:8px;color:var(--gold2)">Open Deriv</a></div>
@@ -29,7 +30,7 @@ function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==u
 async function api(path,method,body){
   const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
-const STATUS={pending:'Waiting for your payment',submitted:'Being checked',approved:'Signals added',rejected:'Not confirmed',cancelled:'Cancelled',expired:'Expired'};
+const STATUS={pending:'Waiting for your payment',submitted:'Being checked',approved:'Signals added',rejected:'Not confirmed',cancelled:'Cancelled',expired:'Expired',confirming:'Payment seen, confirming',review:'Being checked by our team',failed:'Failed',refunded:'Refunded'};
 const KIND={welcome:'Welcome signals',partner_welcome:'Partner member bonus',purchase:'Purchase',spend:'Setup opened',adjust:'Adjustment by support'};
 let D=null,openId=null;
 const date=t=>new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});
@@ -68,21 +69,70 @@ function renderShop(){
 function choose(p,row){
   const old=row.querySelector('.pick');if(old){old.remove();return}
   const box=el('div','pick');box.style.marginTop='8px';
-  const ok=document.createElement('input');ok.type='checkbox';ok.style.cssText='width:auto;margin-right:8px';
+  const agree=document.createElement('input');agree.type='checkbox';agree.style.cssText='width:auto;margin-right:8px';
   const tl=el('label','');tl.style.cssText='display:flex;align-items:flex-start;gap:6px;font-size:14px;color:var(--tx)';
   const ta=el('a','','Terms, Refunds and Support');ta.href='/terms.html';ta.target='_blank';ta.style.color='var(--gold2)';
-  const tx=el('span');tx.append(document.createTextNode('I accept the '),ta,document.createTextNode('. Payments are non-refundable.'));tl.append(ok,tx);
-  box.append(tl,el('div','mut','How would you like to pay?'));
+  const tx=el('span');tx.append(document.createTextNode('I accept the '),ta,document.createTextNode('. Payments are non-refundable.'));tl.append(agree,tx);
+  box.append(tl);
+  const auto=D.crypto&&D.crypto.enabled;
+  if(auto){
+    const cb=el('button','','Pay with USDT ('+D.crypto.network.replace(/.*\((.*)\)/,'$1')+') \u00b7 automatic');cb.style.marginTop='8px';
+    cb.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}cb.disabled=true;
+      try{const r=await api('/api/pay/crypto/order','POST',{product:p.key,accepted:true});await load();openCrypto(r.order.id);window.scrollTo({top:0,behavior:'smooth'})}
+      catch(e){alert(e.message);cb.disabled=false}};
+    box.append(cb,el('div','mut','Confirmed automatically on the network. No screenshot or transaction ID needed.'));
+  }
+  box.append(el('div','mut',auto?'Or pay by hand:':'How would you like to pay?'));
   const btns=el('div','btns');btns.style.flexWrap='wrap';
   Object.entries(D.methods).forEach(([m,label])=>{
-    const ok=m==='ngn'?(D.pay.ngn_rate&&D.pay.bank):D.pay[m];
-    const b=el('button','ghost',label+(m==='ngn'&&ok?' \u20a6'+Math.round(p.usd*D.pay.ngn_rate).toLocaleString():''));b.disabled=!ok;
-    b.onclick=async()=>{if(!ok.checked){alert('Please tick the box to accept the Terms first.');return}b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m,accepted:true});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
+    const avail=m==='ngn'?(D.pay.ngn_rate&&D.pay.bank):D.pay[m];
+    const b=el('button','ghost',label+(m==='ngn'&&avail?' \u20a6'+Math.round(p.usd*D.pay.ngn_rate).toLocaleString():''));b.disabled=!avail;
+    b.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m,accepted:true});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
   box.append(btns);row.append(box);
+}
+/* ---- automatic USDT payment: the page shows what NOWPayments returned and asks the server for the live status.
+   Nothing here decides that a payment succeeded: only the server, after checking with the provider, can do that. */
+let cryptoId=null,pollT=null;
+function stopPoll(){clearTimeout(pollT);pollT=null}
+function closeCrypto(){cryptoId=null;stopPoll();$('crypto').textContent=''}
+const clock=t=>new Date(t*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+function renderCrypto(o){
+  const w=$('crypto');w.textContent='';
+  const c=el('div','card');c.append(el('h2','','Pay for '+o.label));
+  const st=el('div',o.status==='approved'?'win':(o.status==='failed'||o.status==='expired'||o.status==='rejected'||o.status==='refunded')?'loss':o.status==='review'?'warn':'mut',STATUS[o.status]||o.status);
+  st.style.fontWeight='600';c.append(st);
+  c.append(line('Order reference',o.ref,true));
+  if(o.status==='pending'||o.status==='confirming'){
+    c.append(line('Amount',(o.pay_amount!=null?o.pay_amount:o.amount_usd)+' USDT',true),line('Network',o.network),line('Address',o.pay_address||'',true));
+    c.append(el('div','warn','Send only USDT on the '+o.network+' network, and the exact amount shown. Other coins or networks can be lost for good. Do not pay a second time.'));
+    if(o.expires_at)c.append(el('div','mut','Pay before '+clock(o.expires_at)+'. This page updates by itself once your payment is seen.'));
+    if(o.status==='confirming')c.append(el('div','mut','Your payment has been seen and is being confirmed. This usually takes a few minutes.'));
+  }
+  if(o.status==='approved'){
+    c.append(el('div','win','Payment confirmed: '+(o.signals?o.signals.toLocaleString()+' signals added':'purchase complete')+(o.days?' and your plan is active for '+o.days+' days':'')+'.'));
+    if(o.balance!=null)c.append(line('Your signals now',String(o.balance)));
+  }
+  if(o.status==='review'&&o.message)c.append(el('div','warn',o.message));
+  if(o.status==='expired'||o.status==='failed')c.append(el('div','mut','This order is closed. If you already sent a payment, contact support with the reference above. You can also start a new order.'));
+  if(o.provider_payment_id)c.append(line('Payment ID',String(o.provider_payment_id),true));
+  const row=el('div','btns');
+  if(o.status==='pending'||o.status==='confirming'){const rf=el('button','ghost','Refresh status');rf.onclick=()=>openCrypto(o.id,true);row.append(rf)}
+  const cl=el('button','ghost',o.status==='approved'?'Done':'Close');cl.onclick=closeCrypto;row.append(cl);c.append(row);
+  w.append(c);
+}
+async function openCrypto(id,refresh){
+  cryptoId=id;stopPoll();
+  try{
+    const r=await api('/api/pay/crypto/order/'+id+(refresh?'?refresh=1':''));
+    if(cryptoId!==id)return;
+    const o=r.order;renderCrypto(o);
+    if(o.status==='approved')await load();
+    else if(o.status==='pending'||o.status==='confirming')pollT=setTimeout(()=>{if(cryptoId===id&&!document.hidden)openCrypto(id,true);else if(cryptoId===id)pollT=setTimeout(()=>openCrypto(id,true),8000)},8000);
+  }catch(e){const w=$('crypto');w.textContent='';const c=el('div','card');c.append(el('div','err',e.message));w.append(c)}
 }
 function renderOpen(){
   const w=$('open');w.textContent='';
-  const o=D.orders.find(x=>x.id===openId&&x.status==='pending');if(!o)return;
+  const o=D.orders.find(x=>x.id===openId&&x.status==='pending'&&x.method!=='nowpayments');if(!o)return;
   const c=el('div','card');c.append(el('h2','','Pay for '+o.label));
   c.append(el('div','mut','Order reference '+o.ref+'. Pay exactly the amount shown, then enter your transaction ID below.'));
   if(o.method==='ngn'){
@@ -111,6 +161,11 @@ function renderOrders(){
     r.append(h,el('div','mut',o.ref+' \u00b7 '+o.method_label+' \u00b7 '+(o.currency==='NGN'?'\u20a6'+Math.round(o.amount_local).toLocaleString():usd(o.amount_usd))+' \u00b7 '+date(o.created_at)));
     if(o.status==='rejected'&&o.note)r.append(el('div','warn',o.note));
     if(o.status==='submitted')r.append(el('div','mut','We are checking your payment. Your signals are added once it is confirmed.'));
+    if(o.method==='nowpayments'){
+      if(o.provider_payment_id)r.append(el('div','mut','Payment ID '+o.provider_payment_id));
+      if(o.status==='pending'||o.status==='confirming'){const v=el('button','ghost','View payment');v.style.cssText='width:auto;padding:6px 12px;margin-top:6px';v.onclick=()=>{openCrypto(o.id,true);window.scrollTo({top:0,behavior:'smooth'})};r.append(v)}
+      if(o.status==='review')r.append(el('div','warn','This payment is being checked by our team. Quote the reference above if you contact support.'));
+      b.append(r);return}
     if(o.status==='pending'){const k=el('button','ghost','Continue payment');k.style.cssText='width:auto;padding:6px 12px;margin-top:6px';k.onclick=()=>{openId=o.id;renderOpen();window.scrollTo({top:0,behavior:'smooth'})};r.append(k)}
     b.append(r)});
 }

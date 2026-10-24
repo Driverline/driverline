@@ -76,6 +76,7 @@ function render(d){
   v.append(vb,vr);root.append(v);
   const bt=el('div','card');bt.append(el('h2','','Signal backtest'));const bb=el('div');bt.append(bb);root.append(bt);loadBacktest(bb);
   const bl=el('div','card');bl.append(el('h2','','Billing and signal credits'));const blb=el('div');bl.append(blb);root.append(bl);loadBilling(blb);
+  const cx=el('div','card');cx.append(el('h2','','Crypto payments (NOWPayments)'));const cxb=el('div');cx.append(cxb);root.append(cx);loadCrypto(cxb,'open');
   const rs=el('div','card');rs.append(el('h2','','Forex and gold research'));const rsb=el('div');rs.append(rsb);root.append(rs);loadResearch(rsb);
   const en=el('div','card');en.append(el('h2','','AI signal engine research (Step and Range Break)'));const enb=el('div');en.append(enb);root.append(en);loadEngine(enb);
   const ri=el('div','card');ri.append(el('h2','','Smart Analysis Timing insights'));const rb=el('div');rb.append(el('span','mut','Loading...'));ri.append(rb);root.append(ri);loadRadarInfo(rb);
@@ -244,6 +245,53 @@ async function loadBilling(box){
     box.append(em,n,nt,ab,am);
     if(r.recent.length){box.append(el('h2','','Recently decided'));r.recent.forEach(o=>box.append(el('div','mut',o.status+' \u00b7 '+o.label+' \u00b7 '+o.email+' \u00b7 '+o.ref)))}
   }catch(e){box.textContent=e.message}
+}
+async function loadCrypto(box,filter){
+  box.textContent='';
+  let r;try{r=await api('/pay/crypto?status='+encodeURIComponent(filter||'open'))}catch(e){box.append(el('div','err',e.message));return}
+  const when=t=>t?new Date(t*1000).toLocaleString():'-';
+  box.append(el('div','mut','USDT (TRC20) payments confirmed automatically. Successful payments credit the member by themselves; you only step in for the exceptions listed here. Orders appear under Billing only if they were paid by hand.'));
+  if(r.problems.length)r.problems.forEach(p=>box.append(el('div','warn','Not ready: '+p)));
+  const sel=document.createElement('select');[['off','Off: nobody can start an automatic payment'],['admin','Pilot: admin accounts only'],['public','Public: every member']].forEach(([v,t])=>opt(sel,v,t));sel.value=r.mode;
+  const mb=el('button','','Save mode');mb.style.marginTop='8px';const mm=el('div','mut');
+  mb.onclick=async()=>{if(sel.value==='public'&&r.mode!=='public'&&!confirm('Make automatic crypto payments available to every member now?'))return;
+    try{await api('/pay/crypto/toggle','POST',{mode:sel.value});loadCrypto(box,filter)}catch(e){mm.className='err';mm.textContent=e.message}};
+  box.append(el('label','','Who can pay automatically'),sel,mb,mm);
+  box.append(el('div','mut','Switching to Off only stops new payments. A payment already sent is still detected and credited.'));
+  if(r.ipn_url){const l=el('div','kv');l.append(el('span','','IPN URL for NOWPayments'));const v=el('span','',r.ipn_url);v.style.wordBreak='break-all';l.append(v);box.append(l);
+    const cp=el('button','ghost','Copy IPN URL');cp.style.cssText='width:auto;padding:6px 12px;margin-top:4px';cp.onclick=async()=>{try{await navigator.clipboard.writeText(r.ipn_url);cp.textContent='Copied'}catch(e){prompt('Copy this:',r.ipn_url)}};box.append(cp)}
+  box.append(kv('API address',r.api_base),kv('Currency / network',r.pay_currency));
+  const ck=el('button','ghost','Check connection to NOWPayments');ck.style.cssText='width:auto;padding:6px 12px;margin:8px 0';const cm=el('div','mut');
+  ck.onclick=async()=>{ck.disabled=true;cm.className='mut';cm.textContent='Checking...';
+    try{const x=await api('/pay/crypto/check','POST');
+      cm.className=x.api_reachable&&x.currency_listed!==false?'win':'warn';
+      cm.textContent=(x.problems.length?'Missing: '+x.problems.join('; '):'')+(x.api_reachable===null?'':(x.api_reachable?'NOWPayments reachable with your key. ':'NOWPayments not reachable or key rejected ('+x.detail+'). '))+(x.currency_listed===null?'':(x.currency_listed?r.pay_currency+' is offered.':r.pay_currency+' is NOT offered on this account.'))}
+    catch(e){cm.className='err';cm.textContent=e.message}ck.disabled=false};
+  box.append(ck,cm);
+  const cs=Object.entries(r.counts).map(([k,v])=>k+' '+v).join(' · ');box.append(el('div','mut',cs?'Orders: '+cs:'No automatic orders yet.'));
+  const f=document.createElement('select');['open','review','approved','failed','expired','refunded','rejected','all'].forEach(v=>opt(f,v,v==='review'?'Needs your attention':v));f.value=r.status;f.onchange=()=>loadCrypto(box,f.value);f.style.marginTop='8px';box.append(f);
+  if(!r.orders.length)box.append(el('div','mut','Nothing to show.'));
+  r.orders.forEach(o=>{
+    const d=el('div');d.style.cssText='border-top:1px solid var(--line);padding:8px 0';
+    d.append(el('div','hd',o.label+' · $'+o.amount_usd),el('div','mut',o.email+' · ref '+o.ref+' · '+when(o.created_at)),
+      el('div',o.status==='approved'?'win':(o.status==='review'||o.status==='failed')?'warn':'mut','Status: '+o.status+(o.provider_status?' (provider: '+o.provider_status+')':'')));
+    if(o.pay_amount!=null)d.append(el('div','mut','Paid '+(o.actually_paid||0)+' of '+o.pay_amount+' USDT · last checked '+when(o.last_polled_at)));
+    if(o.provider_payment_id)d.append(el('div','mut','NOWPayments payment ID '+o.provider_payment_id));
+    if(o.review_reason)d.append(el('div','warn',o.review_reason));
+    const row=el('div','btns');
+    if(o.provider_payment_id&&['pending','confirming','review','expired','failed'].includes(o.status)){
+      const rc=el('button','ghost','Re-check with NOWPayments');rc.onclick=async()=>{rc.disabled=true;try{const x=await api('/pay/crypto/order/'+o.id+'/reconcile','POST');alert('Result: '+x.result+'. Order is now '+x.status+'.');loadCrypto(box,f.value)}catch(e){alert(e.message);rc.disabled=false}};row.append(rc)}
+    if(o.status==='review'){
+      const ap=el('button','','Approve and credit');ap.onclick=async()=>{const n=prompt('Why are you approving this? (required, kept in the record)\n\n'+o.email+' · '+o.label+' · '+o.review_reason);if(!n)return;
+        if(!confirm('Credit '+o.label+' to '+o.email+' now? This cannot be undone.'))return;
+        try{await api('/pay/crypto/order/'+o.id+'/resolve','POST',{action:'approve',note:n});loadCrypto(box,f.value)}catch(e){alert(e.message)}};
+      const rj=el('button','ghost','Reject');rj.onclick=async()=>{const n=prompt('Why are you rejecting this? (required, kept in the record)');if(!n)return;
+        try{await api('/pay/crypto/order/'+o.id+'/resolve','POST',{action:'reject',note:n});loadCrypto(box,f.value)}catch(e){alert(e.message)}};row.append(ap,rj)}
+    const hs=el('button','ghost','History');const hb=el('div','mut');hb.style.fontSize='13px';
+    hs.onclick=async()=>{if(hb.textContent){hb.textContent='';return}try{const x=await api('/pay/crypto/order/'+o.id+'/events');hb.textContent=x.events.map(e=>when(e.created_at)+'  '+e.source+'  '+e.kind+(e.provider_status?' ['+e.provider_status+']':'')+(e.detail?'  '+e.detail:'')).join('\n');hb.style.whiteSpace='pre-wrap'}catch(e){hb.textContent=e.message}};
+    row.append(hs);d.append(row,hb);box.append(d)});
+  if(r.exceptions.length){box.append(el('h2','','Recent exceptions'));
+    r.exceptions.forEach(x=>{const e=el('div','mut',when(x.created_at)+' · '+x.kind+(x.order_id?' · order #'+x.order_id:'')+' · '+(x.detail||''));e.style.fontSize='13px';box.append(e)})}
 }
 let enTimer=null;
 async function loadEngine(box){

@@ -38,7 +38,11 @@ SCHEMA = """
     CREATE TABLE IF NOT EXISTS billing_subs(id {ID}, user_id INTEGER NOT NULL, plan TEXT NOT NULL, starts_at BIGINT NOT NULL,
         ends_at BIGINT NOT NULL, order_id BIGINT);
     CREATE INDEX IF NOT EXISTS ix_subs_user ON billing_subs(user_id);
-    CREATE TABLE IF NOT EXISTS billing_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)"""
+    CREATE TABLE IF NOT EXISTS billing_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS payment_events(id {ID}, order_id BIGINT, provider_payment_id TEXT, source TEXT NOT NULL,
+        kind TEXT NOT NULL, provider_status TEXT, detail TEXT, dedupe_key TEXT UNIQUE, admin_id INTEGER, created_at BIGINT NOT NULL);
+    CREATE INDEX IF NOT EXISTS ix_pevents_order ON payment_events(order_id, id);
+    CREATE INDEX IF NOT EXISTS ix_pevents_kind ON payment_events(kind, id)"""
 
 WELCOME = 5            # one-time welcome signals for a new member
 OPEN_ORDERS_MAX = 3    # unfinished orders one member may hold at a time
@@ -57,11 +61,25 @@ GRANTS = {
 }
 METHODS = {"trc20": "USDT (TRC20)", "bep20": "USDT (BEP20)", "ngn": "Naira bank transfer"}
 SETTING_KEYS = ("pay_trc20", "pay_bep20", "bank_name", "bank_account_name", "bank_account_number", "ngn_rate", "note",
-                "support", "deriv_enabled", "deriv_app_id", "deriv_ib_link", "deriv_cashier_url")
+                "support", "deriv_enabled", "deriv_app_id", "deriv_ib_link", "deriv_cashier_url", "nowpayments_enabled")
+AUTO_METHOD = "nowpayments"      # billing_orders.method of automatic crypto orders. Deliberately NOT in METHODS: the manual
+                                 # order endpoint refuses it, so only nowpay.py can create or settle such an order.
+AUTO_LABEL = "USDT (TRC20), automatic"
 
 
 def _migrate(con):
     con.add_column("billing_orders", "terms_at", "BIGINT")      # when the member accepted the terms for this order
+    # Automatic crypto payments (nowpay.py). Every column is nullable and additive: existing orders are untouched and
+    # the manual flow above ignores these columns. Mirrored by migrations/2026_10_nowpayments.sql.
+    for col, ddl in (("provider", "TEXT"), ("provider_payment_id", "TEXT"), ("provider_status", "TEXT"),
+                     ("pay_address", "TEXT"), ("pay_amount", "DOUBLE PRECISION"), ("pay_currency", "TEXT"),
+                     ("pay_network", "TEXT"), ("actually_paid", "DOUBLE PRECISION"), ("expires_at", "BIGINT"),
+                     ("fulfilled_at", "BIGINT"), ("review_reason", "TEXT"), ("last_polled_at", "BIGINT"),
+                     ("updated_at", "BIGINT")):
+        con.add_column("billing_orders", col, ddl)
+    # One provider payment can belong to one order only: this is the database-level guard against cross-matching.
+    con.raw.cursor().execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_provider_pid ON billing_orders(provider_payment_id) "
+                             "WHERE provider_payment_id IS NOT NULL")
 
 
 def db():
@@ -119,6 +137,23 @@ def _credit(con, uid: int, delta: int, kind: str, ref: str = "", note: str = "",
     con.execute("INSERT INTO credit_balances(user_id,balance) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET "
                 "balance=credit_balances.balance+excluded.balance", (uid, delta))
     return True
+
+
+def grant_product(con, uid: int, product: str, order_id: int, ref: str, admin_id=None) -> bool:
+    """Gives a member what a paid order buys: the signals, and for a plan its notifications / MT5 days. The single place
+    that decides this, used by the manual approval in Admin and by automatic crypto fulfilment (nowpay.py).
+    Does NOT commit. False means the signals for this order were already credited (the ledger refuses a second
+    ("purchase", "order:<id>") row), in which case nothing else is changed either."""
+    p = CATALOG[product]
+    fresh = _credit(con, uid, p["signals"], "purchase", f"order:{order_id}", f"{p['label']} ({ref})", admin_id)
+    if fresh and p["days"]:
+        now = _now()
+        last = con.execute("SELECT MAX(ends_at) AS e FROM billing_subs WHERE user_id=? AND plan=? AND ends_at>?",
+                           (uid, product, now)).fetchone()["e"]
+        start = max(now, last or 0)
+        con.execute("INSERT INTO billing_subs(user_id,plan,starts_at,ends_at,order_id) VALUES(?,?,?,?,?)",
+                    (uid, product, start, start + p["days"] * 86400, order_id))
+    return fresh
 
 
 def balance(uid: int) -> int:
@@ -220,11 +255,24 @@ def _label(product: str) -> str:
     return (CATALOG.get(product) or GRANTS.get(product) or {}).get("label", product)
 
 
+def _col(r, name):
+    """A column that may be NULL (or absent on a row read before the columns existed)."""
+    try:
+        return r[name]
+    except (KeyError, IndexError):
+        return None
+
+
 def _order_public(r) -> dict:
-    return {"id": r["id"], "ref": r["ref"], "product": r["product"], "label": _label(r["product"]),
-            "method": r["method"], "method_label": METHODS.get(r["method"], r["method"]), "amount_usd": r["amount_usd"],
-            "amount_local": r["amount_local"], "currency": r["currency"], "status": r["status"], "txid": r["txid"],
-            "note": r["note"], "created_at": r["created_at"]}
+    out = {"id": r["id"], "ref": r["ref"], "product": r["product"], "label": _label(r["product"]),
+           "method": r["method"],
+           "method_label": AUTO_LABEL if r["method"] == AUTO_METHOD else METHODS.get(r["method"], r["method"]),
+           "amount_usd": r["amount_usd"], "amount_local": r["amount_local"], "currency": r["currency"],
+           "status": r["status"], "txid": r["txid"], "note": r["note"], "created_at": r["created_at"]}
+    if r["method"] == AUTO_METHOD:        # the transaction reference a member can quote to support
+        out.update(provider_payment_id=_col(r, "provider_payment_id"), provider_status=_col(r, "provider_status"),
+                   fulfilled_at=_col(r, "fulfilled_at"), expires_at=_col(r, "expires_at"))
+    return out
 
 
 def _pay_info(s: dict) -> dict:
@@ -261,13 +309,26 @@ async def billing_view(request):
             "SELECT delta, kind, note, created_at FROM credit_ledger WHERE user_id=? ORDER BY id DESC LIMIT 20",
             (user["id"],)).fetchall()]
     plans = active_plans(user["id"])
+    try:
+        from . import nowpay
+        crypto = nowpay.public_info(user)
+    except Exception as e:
+        print(f"[nowpay] public info failed: {type(e).__name__}", flush=True)
+        crypto = {"enabled": False}
+    shop = on or bool(crypto.get("enabled"))        # the admin pilot may open the shop for the admin while billing is closed
+    if on:
+        pay = _pay_info(s)
+    elif shop:
+        pay = _pay_info({k: "" for k in SETTING_KEYS})
+    else:
+        pay = None
     return JSONResponse({
-        "enabled": on, "grandfathered": grandfathered(user), "balance": balance(user["id"]), "welcome": WELCOME,
-        "partner": _partner_view(user),
+        "enabled": shop, "grandfathered": grandfathered(user), "balance": balance(user["id"]), "welcome": WELCOME,
+        "partner": _partner_view(user), "crypto": crypto,
         "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")}, **_price_fields(user, k)}
                     for k, v in CATALOG.items()],
         "plans": [{"plan": p["plan"], "label": _label(p["plan"]), "ends_at": p["ends_at"]} for p in plans],
-        "pay": _pay_info(s) if on else None, "methods": METHODS, "orders": orders, "ledger": ledger})
+        "pay": pay, "methods": METHODS, "orders": orders, "ledger": ledger})
 
 
 async def public_support(request):
@@ -327,7 +388,7 @@ async def order_paid(request):
         raise HTTPException(422, "Enter the transaction ID or the bank transfer reference (at least 6 characters)")
     with closing(db()) as con:
         cur = con.execute("UPDATE billing_orders SET status='submitted', txid=?, submitted_at=? "
-                          "WHERE id=? AND user_id=? AND status='pending'", (txid, _now(), oid, user["id"]))
+                          "WHERE id=? AND user_id=? AND status='pending' AND method<>?", (txid, _now(), oid, user["id"], AUTO_METHOD))
         if cur.rowcount != 1:
             raise HTTPException(409, "This order cannot be submitted (already sent, closed or not yours)")
         con.commit()
@@ -337,8 +398,8 @@ async def order_paid(request):
 async def order_cancel(request):
     user, oid = auth.require_user(request), request.path_params["oid"]
     with closing(db()) as con:
-        cur = con.execute("UPDATE billing_orders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending'",
-                          (oid, user["id"]))
+        cur = con.execute("UPDATE billing_orders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending' AND method<>?",
+                          (oid, user["id"], AUTO_METHOD))
         if cur.rowcount != 1:
             raise HTTPException(409, "Only an order that has not been submitted can be cancelled")
         con.commit()
@@ -360,10 +421,12 @@ async def admin_view(request):
     with closing(db()) as con:
         s = settings(con)
         on = con.execute("SELECT value FROM billing_settings WHERE key='enabled'").fetchone()
-        open_rows = con.execute("SELECT * FROM billing_orders WHERE status IN ('submitted','pending') "
-                                "ORDER BY CASE status WHEN 'submitted' THEN 0 ELSE 1 END, id DESC LIMIT 60").fetchall()
-        done_rows = con.execute("SELECT * FROM billing_orders WHERE status IN ('approved','rejected') "
-                                "ORDER BY id DESC LIMIT 15").fetchall()
+        # Automatic crypto orders have their own panel (nowpay.py): they never wait here for a manual approval.
+        open_rows = con.execute("SELECT * FROM billing_orders WHERE status IN ('submitted','pending') AND method<>? "
+                                "ORDER BY CASE status WHEN 'submitted' THEN 0 ELSE 1 END, id DESC LIMIT 60",
+                                (AUTO_METHOD,)).fetchall()
+        done_rows = con.execute("SELECT * FROM billing_orders WHERE status IN ('approved','rejected') AND method<>? "
+                                "ORDER BY id DESC LIMIT 15", (AUTO_METHOD,)).fetchall()
     names = _emails([r["user_id"] for r in list(open_rows) + list(done_rows)])
     shape = lambda r: {**_order_public(r), "email": names.get(r["user_id"], "?"), "submitted_at": r["submitted_at"]}
     return JSONResponse({"enabled": bool(on and on["value"] == "1"), "settings": s,
@@ -402,20 +465,16 @@ async def admin_approve(request):
         p = CATALOG.get(row["product"])
         if not p:
             raise HTTPException(409, "This order's product no longer exists")
+        if row["method"] == AUTO_METHOD:       # automatic orders are settled by the payment provider, or resolved in the crypto panel
+            raise HTTPException(409, "This is an automatic crypto order. Use the Crypto payments panel")
         cur = con.execute("UPDATE billing_orders SET status='approved', decided_at=?, decided_by=? "
                           "WHERE id=? AND status IN ('pending','submitted')", (now, u["id"], oid))
         if cur.rowcount != 1:
             raise HTTPException(409, "This order has already been decided")
-        fresh = _credit(con, row["user_id"], p["signals"], "purchase", f"order:{oid}", f"{p['label']} ({row['ref']})", u["id"])
-        if not fresh:                      # the credit already exists: keep it, just record the approval
+        if not grant_product(con, row["user_id"], row["product"], oid, row["ref"], u["id"]):
+            # the credit already exists: keep it, just record the approval
             con.execute("UPDATE billing_orders SET status='approved', decided_at=?, decided_by=? WHERE id=?",
                         (now, u["id"], oid))
-        elif p["days"]:
-            last = con.execute("SELECT MAX(ends_at) AS e FROM billing_subs WHERE user_id=? AND plan=? AND ends_at>?",
-                               (row["user_id"], row["product"], now)).fetchone()["e"]
-            start = max(now, last or 0)
-            con.execute("INSERT INTO billing_subs(user_id,plan,starts_at,ends_at,order_id) VALUES(?,?,?,?,?)",
-                        (row["user_id"], row["product"], start, start + p["days"] * 86400, oid))
         con.commit()
     return JSONResponse({"ok": True})
 
@@ -426,7 +485,8 @@ async def admin_reject(request):
     note = str(d.get("note", "")).strip()[:200]
     with closing(db()) as con:
         cur = con.execute("UPDATE billing_orders SET status='rejected', note=?, decided_at=?, decided_by=? "
-                          "WHERE id=? AND status IN ('pending','submitted')", (note or "Payment could not be confirmed", _now(), u["id"], oid))
+                          "WHERE id=? AND status IN ('pending','submitted') AND method<>?",
+                          (note or "Payment could not be confirmed", _now(), u["id"], oid, AUTO_METHOD))
         if cur.rowcount != 1:
             raise HTTPException(409, "This order has already been decided")
         con.commit()

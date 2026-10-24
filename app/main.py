@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat
+from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -145,6 +145,8 @@ async def lifespan(app):
         tasks.append(asyncio.create_task(signal_feed.signal_loop()))
     if engine_signals.enabled():           # shadow signals for validated research models only; off unless DRIVERLINE_ENGINE_SHADOW=1
         tasks.append(asyncio.create_task(engine_signals.engine_loop()))
+    if os.environ.get("NOWPAYMENTS_API_KEY"):   # re-checks open crypto orders with NOWPayments, so a lost notification only delays
+        tasks.append(asyncio.create_task(nowpay.reconcile_loop()))
     yield
     for t in tasks:
         t.cancel()
@@ -166,6 +168,7 @@ routes = [
     *signal_feed.routes,
     *push.routes,
     *credits.routes,
+    *nowpay.routes,
     *deriv_login.routes,
     *deriv_trade.routes,
     *partner.routes,
