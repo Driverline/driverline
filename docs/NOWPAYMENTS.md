@@ -51,7 +51,7 @@ Saving environment variables makes Render restart the service.
 ## Rollout checklist
 1. Deploy the code with no new variables: nothing changes for members. Confirm Billing and a manual order still behave as before.
 2. Add the three variables on Render. In Admin > Crypto payments press **Check connection to NOWPayments**: it must say reachable and that
-   `usdttrc20` is offered. (From a terminal, `python scripts/nowpayments_check.py --create 3` does the same and also shows whether $3 is above NOWPayments' minimum.)
+   `usdttrc20` is offered. (From a terminal, `python scripts/nowpayments_check.py --create 5` does the same and also shows whether $5 is above NOWPayments' minimum.)
 3. Set the mode to **Pilot**. Sign in as admin, Billing, buy the cheapest pack with the automatic button and pay the exact amount.
    Expect: status goes Waiting > Confirming > Signals added, balance rises, and the order shows under *Admin > Crypto payments > approved*.
 4. Press **History** on that order: you should see `created`, `provider_payment`, `ipn`, `fulfilled`. If there is no `ipn` row but it was
@@ -88,6 +88,6 @@ Additive only, applied by the app itself on first use, or by running `migrations
 wrong currency, access control, concurrency, secrets in logs, migration of an old database, and the manual flow.
 
 ## Known limits
-* The exact NOWPayments sandbox behaviour, their minimum amount for USDT TRC20 (a $3 order may be below it), and the byte-exact IPN signature text could not be tested against the real service from the build environment. The signature check accepts the documented form (sorted keys, compact JSON, HMAC-SHA512) in three number formattings and is tested against Node's `JSON.stringify`; the first real test payment confirms it.
+* The exact NOWPayments sandbox behaviour, their minimum amount for USDT TRC20 (a $5 order may be below it), and the byte-exact IPN signature text could not be tested against the real service from the build environment. The signature check accepts the documented form (sorted keys, compact JSON, HMAC-SHA512) in three number formattings and is tested against Node's `JSON.stringify`; the first real test payment confirms it.
 * The PostgreSQL path of the app (psycopg) was not run in the build environment; the migration SQL was run against PostgreSQL 16. The code uses the same helpers and constructs as the existing billing code.
 * Refunds are not automated: refund from the NOWPayments dashboard and reject the order in review.

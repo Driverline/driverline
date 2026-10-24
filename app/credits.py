@@ -48,7 +48,7 @@ WELCOME = 5            # one-time welcome signals for a new member
 OPEN_ORDERS_MAX = 3    # unfinished orders one member may hold at a time
 ORDER_STALE_DAYS = 7   # an unsubmitted order older than this is closed automatically
 CATALOG = {
-    "topup": {"label": "Signal Top-Up", "usd": 3, "signals": 160, "days": 0, "notify": False, "mt5": False},
+    "topup": {"label": "Signal Top-Up", "usd": 5, "signals": 267, "days": 0, "notify": False, "mt5": False},
     "boost": {"label": "Signal Boost", "usd": 10, "signals": 550, "days": 0, "notify": False, "mt5": False},
     "vault": {"label": "Signal Vault", "usd": 100, "signals": 5500, "days": 0, "notify": False, "mt5": False},
     "plus": {"label": "Signals Plus", "usd": 15, "signals": 550, "days": 30, "notify": True, "mt5": False},
