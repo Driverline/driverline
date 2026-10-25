@@ -85,7 +85,17 @@ function choose(p,row){
       box.append(cb)});
     box.append(el('div','mut','Confirmed automatically on the network. No screenshot or transaction ID needed.'+(opts.length>1?' Pick the network your wallet or exchange uses.':'')));
   }
-  box.append(el('div','mut',auto?'Or pay by hand:':'How would you like to pay?'));
+  const ps=D.paystack&&D.paystack.enabled;
+  if(ps){
+    const n=D.paystack.naira&&D.paystack.naira[p.key];
+    const pb=el('button','','Pay \u20a6'+(n!=null?Number(n).toLocaleString():'')+' in Naira \u00b7 card, bank transfer, USSD'+(D.paystack.test?' (TEST MODE)':''));pb.style.marginTop='8px';
+    pb.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}pb.disabled=true;
+      try{const r=await api('/api/pay/paystack/order','POST',{product:p.key,accepted:true});const u=r.order&&r.order.checkout_url;
+        if(u&&u.startsWith('https://')){location.href=u}else{await load();alert('Your order was created, but the payment page could not be opened. Open it from Your orders.');pb.disabled=false}}
+      catch(e){alert(e.message);pb.disabled=false}};
+    box.append(pb,el('div','mut','You pay on Paystack\'s secure page. Your signals are added automatically once Paystack confirms the payment.'+(D.paystack.test?' Test mode: use Paystack test cards only. No real money moves.':'')));
+  }
+  box.append(el('div','mut',(auto||ps)?'Or pay by hand:':'How would you like to pay?'));
   const btns=el('div','btns');btns.style.flexWrap='wrap';
   Object.entries(D.methods).forEach(([m,label])=>{
     const avail=m==='ngn'?(D.pay.ngn_rate&&D.pay.bank):D.pay[m];
@@ -135,7 +145,7 @@ async function openCrypto(id,refresh){
 }
 function renderOpen(){
   const w=$('open');w.textContent='';
-  const o=D.orders.find(x=>x.id===openId&&x.status==='pending'&&x.method!=='nowpayments');if(!o)return;
+  const o=D.orders.find(x=>x.id===openId&&x.status==='pending'&&x.method!=='nowpayments'&&x.method!=='paystack');if(!o)return;
   const c=el('div','card');c.append(el('h2','','Pay for '+o.label));
   c.append(el('div','mut','Order reference '+o.ref+'. Pay exactly the amount shown, then enter your transaction ID below.'));
   if(o.method==='ngn'){
@@ -167,6 +177,10 @@ function renderOrders(){
     if(o.method==='nowpayments'){
       if(o.provider_payment_id)r.append(el('div','mut','Payment ID '+o.provider_payment_id));
       if(o.status==='pending'||o.status==='confirming'){const v=el('button','ghost','View payment');v.style.cssText='width:auto;padding:6px 12px;margin-top:6px';v.onclick=()=>{openCrypto(o.id,true);window.scrollTo({top:0,behavior:'smooth'})};r.append(v)}
+      if(o.status==='review')r.append(el('div','warn','This payment is being checked by our team. Quote the reference above if you contact support.'));
+      b.append(r);return}
+    if(o.method==='paystack'){
+      if(o.status==='pending'){const v=el('a','ghost','Check payment status');v.href='/paystack.html?reference='+encodeURIComponent(o.ref);v.style.cssText='display:inline-block;width:auto;padding:6px 12px;margin-top:6px';r.append(v)}
       if(o.status==='review')r.append(el('div','warn','This payment is being checked by our team. Quote the reference above if you contact support.'));
       b.append(r);return}
     if(o.status==='pending'){const k=el('button','ghost','Continue payment');k.style.cssText='width:auto;padding:6px 12px;margin-top:6px';k.onclick=()=>{openId=o.id;renderOpen();window.scrollTo({top:0,behavior:'smooth'})};r.append(k)}

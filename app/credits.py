@@ -65,6 +65,9 @@ SETTING_KEYS = ("pay_trc20", "pay_bep20", "bank_name", "bank_account_name", "ban
 AUTO_METHOD = "nowpayments"      # billing_orders.method of automatic crypto orders. Deliberately NOT in METHODS: the manual
                                  # order endpoint refuses it, so only nowpay.py can create or settle such an order.
 AUTO_LABEL = "USDT (TRC20), automatic"
+PAYSTACK_METHOD = "paystack"     # billing_orders.method of Naira card / bank payments (paystack.py). Also NOT in METHODS, for the same reason.
+PAYSTACK_LABEL = "Naira (Paystack), automatic"
+PROVIDER_METHODS = (AUTO_METHOD, PAYSTACK_METHOD)   # orders settled by a payment provider, never by the manual flow below
 
 
 def _migrate(con):
@@ -266,10 +269,11 @@ def _col(r, name):
 def _order_public(r) -> dict:
     out = {"id": r["id"], "ref": r["ref"], "product": r["product"], "label": _label(r["product"]),
            "method": r["method"],
-           "method_label": AUTO_LABEL if r["method"] == AUTO_METHOD else METHODS.get(r["method"], r["method"]),
+           "method_label": AUTO_LABEL if r["method"] == AUTO_METHOD else PAYSTACK_LABEL if r["method"] == PAYSTACK_METHOD
+           else METHODS.get(r["method"], r["method"]),
            "amount_usd": r["amount_usd"], "amount_local": r["amount_local"], "currency": r["currency"],
            "status": r["status"], "txid": r["txid"], "note": r["note"], "created_at": r["created_at"]}
-    if r["method"] == AUTO_METHOD:        # the transaction reference a member can quote to support
+    if r["method"] in PROVIDER_METHODS:   # the transaction reference a member can quote to support
         out.update(provider_payment_id=_col(r, "provider_payment_id"), provider_status=_col(r, "provider_status"),
                    fulfilled_at=_col(r, "fulfilled_at"), expires_at=_col(r, "expires_at"))
     return out
@@ -315,7 +319,13 @@ async def billing_view(request):
     except Exception as e:
         print(f"[nowpay] public info failed: {type(e).__name__}", flush=True)
         crypto = {"enabled": False}
-    shop = on or bool(crypto.get("enabled"))        # the admin pilot may open the shop for the admin while billing is closed
+    try:
+        from . import paystack
+        naira = paystack.public_info(user)
+    except Exception as e:
+        print(f"[paystack] public info failed: {type(e).__name__}", flush=True)
+        naira = {"enabled": False}
+    shop = on or bool(crypto.get("enabled")) or bool(naira.get("enabled"))   # the admin pilot may open the shop for the admin while billing is closed
     if on:
         pay = _pay_info(s)
     elif shop:
@@ -324,7 +334,7 @@ async def billing_view(request):
         pay = None
     return JSONResponse({
         "enabled": shop, "grandfathered": grandfathered(user), "balance": balance(user["id"]), "welcome": WELCOME,
-        "partner": _partner_view(user), "crypto": crypto,
+        "partner": _partner_view(user), "crypto": crypto, "paystack": naira,
         "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")}, **_price_fields(user, k)}
                     for k, v in CATALOG.items()],
         "plans": [{"plan": p["plan"], "label": _label(p["plan"]), "ends_at": p["ends_at"]} for p in plans],
@@ -388,7 +398,8 @@ async def order_paid(request):
         raise HTTPException(422, "Enter the transaction ID or the bank transfer reference (at least 6 characters)")
     with closing(db()) as con:
         cur = con.execute("UPDATE billing_orders SET status='submitted', txid=?, submitted_at=? "
-                          "WHERE id=? AND user_id=? AND status='pending' AND method<>?", (txid, _now(), oid, user["id"], AUTO_METHOD))
+                          "WHERE id=? AND user_id=? AND status='pending' AND method NOT IN (?,?)",
+                          (txid, _now(), oid, user["id"], *PROVIDER_METHODS))
         if cur.rowcount != 1:
             raise HTTPException(409, "This order cannot be submitted (already sent, closed or not yours)")
         con.commit()
@@ -398,8 +409,8 @@ async def order_paid(request):
 async def order_cancel(request):
     user, oid = auth.require_user(request), request.path_params["oid"]
     with closing(db()) as con:
-        cur = con.execute("UPDATE billing_orders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending' AND method<>?",
-                          (oid, user["id"], AUTO_METHOD))
+        cur = con.execute("UPDATE billing_orders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending' AND method NOT IN (?,?)",
+                          (oid, user["id"], *PROVIDER_METHODS))
         if cur.rowcount != 1:
             raise HTTPException(409, "Only an order that has not been submitted can be cancelled")
         con.commit()
@@ -422,11 +433,11 @@ async def admin_view(request):
         s = settings(con)
         on = con.execute("SELECT value FROM billing_settings WHERE key='enabled'").fetchone()
         # Automatic crypto orders have their own panel (nowpay.py): they never wait here for a manual approval.
-        open_rows = con.execute("SELECT * FROM billing_orders WHERE status IN ('submitted','pending') AND method<>? "
+        open_rows = con.execute("SELECT * FROM billing_orders WHERE status IN ('submitted','pending') AND method NOT IN (?,?) "
                                 "ORDER BY CASE status WHEN 'submitted' THEN 0 ELSE 1 END, id DESC LIMIT 60",
-                                (AUTO_METHOD,)).fetchall()
-        done_rows = con.execute("SELECT * FROM billing_orders WHERE status IN ('approved','rejected') AND method<>? "
-                                "ORDER BY id DESC LIMIT 15", (AUTO_METHOD,)).fetchall()
+                                PROVIDER_METHODS).fetchall()
+        done_rows = con.execute("SELECT * FROM billing_orders WHERE status IN ('approved','rejected') AND method NOT IN (?,?) "
+                                "ORDER BY id DESC LIMIT 15", PROVIDER_METHODS).fetchall()
     names = _emails([r["user_id"] for r in list(open_rows) + list(done_rows)])
     shape = lambda r: {**_order_public(r), "email": names.get(r["user_id"], "?"), "submitted_at": r["submitted_at"]}
     return JSONResponse({"enabled": bool(on and on["value"] == "1"), "settings": s,
@@ -465,8 +476,8 @@ async def admin_approve(request):
         p = CATALOG.get(row["product"])
         if not p:
             raise HTTPException(409, "This order's product no longer exists")
-        if row["method"] == AUTO_METHOD:       # automatic orders are settled by the payment provider, or resolved in the crypto panel
-            raise HTTPException(409, "This is an automatic crypto order. Use the Crypto payments panel")
+        if row["method"] in PROVIDER_METHODS:  # automatic orders are settled by the payment provider, or resolved in their own panel
+            raise HTTPException(409, "This is an automatic order. Use the Crypto payments or Naira payments panel")
         cur = con.execute("UPDATE billing_orders SET status='approved', decided_at=?, decided_by=? "
                           "WHERE id=? AND status IN ('pending','submitted')", (now, u["id"], oid))
         if cur.rowcount != 1:
@@ -485,8 +496,8 @@ async def admin_reject(request):
     note = str(d.get("note", "")).strip()[:200]
     with closing(db()) as con:
         cur = con.execute("UPDATE billing_orders SET status='rejected', note=?, decided_at=?, decided_by=? "
-                          "WHERE id=? AND status IN ('pending','submitted') AND method<>?",
-                          (note or "Payment could not be confirmed", _now(), u["id"], oid, AUTO_METHOD))
+                          "WHERE id=? AND status IN ('pending','submitted') AND method NOT IN (?,?)",
+                          (note or "Payment could not be confirmed", _now(), u["id"], oid, *PROVIDER_METHODS))
         if cur.rowcount != 1:
             raise HTTPException(409, "This order has already been decided")
         con.commit()
