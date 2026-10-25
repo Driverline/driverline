@@ -249,14 +249,17 @@ def test_place_refusals():
     assert code == 409 and "already waiting" in msg
 
 
-def test_place_respects_members_own_risk_rule():
+def test_lot_size_is_optional_and_risk_is_a_warning_not_a_block():
     setup_member(balance=1000.0)                         # 1% of 1000 = 10; a big lot risks far more
     o = good_order()
-    code, msg = place({"token": o["token"], "lots": 5})
-    assert code == 409 and "own limit" in msg, (code, msg)
-    code, r = place({"token": o["token"], "lots": 0.01})
+    code, r = place({"token": o["token"], "lots": 5})    # like "Open trade in MT5": allowed, but flagged
+    assert code == 200 and r["over_rule"] is True, (code, r)
+    setup_member(balance=1000.0)
+    code, r = place({"token": o["token"]})               # no lot size typed: the EA uses the symbol's minimum lot
     assert code == 200, r
-    assert r["risk_pct"] is not None and r["risk_pct"] <= 1.0
+    with closing(ea.db()) as con:
+        assert json.loads(con.execute("SELECT payload FROM ea_commands WHERE user_id=?", (UID,)).fetchone()["payload"])["lots"] == 0
+    assert r["risk_pct"] is not None
 
 
 def test_cancel_needs_allow_pending_and_a_real_order():

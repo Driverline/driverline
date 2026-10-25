@@ -151,7 +151,17 @@ function pendingSection(p,wbox,name,key){
           try{const r2=await eaApi('/api/ea/command','POST',{kind:'cancel_order',ticket:Number(o.ticket)});await waitCmd(r2.id);await refresh()}catch(e){alert(e.message);b.disabled=false}};
         r.append(b)}
       mine.append(r)})}
-  async function refresh(){try{ea=await eaApi('/api/ea/status')}catch(e){ea=null}eaNote();showMine();if(sel)pick(sel,true)}
+  let specs=[];
+  function specFor(){return specs.find(x=>pNorm(x.symbol)===pNorm(name))||specs.find(x=>x.key===key)||specs.find(x=>pNorm(x.symbol).startsWith(pNorm(name)))}
+  function riskEst(o,lots){
+    const sp=specFor();if(!sp)return null;
+    const unit=(sp.tick_size>0&&sp.tick_value>0)?sp.tick_value/sp.tick_size:(sp.contract_size||0);
+    const l=lots>0?lots:sp.vol_min;if(!(unit>0&&l>0))return null;
+    const money=l*Math.abs(o.entry-o.sl)*unit,bal=ea&&ea.account&&ea.account.balance;
+    return{text:'Estimated risk if the stop loss is hit: about '+money.toFixed(2)+(bal>0?' ('+(money/bal*100).toFixed(2)+'% of your balance)':'')+'. This is an estimate.',
+      pct:bal>0?money/bal*100:null,lots:l}}
+  async function refresh(){try{ea=await eaApi('/api/ea/status')}catch(e){ea=null}
+    if(!specs.length){try{specs=await eaApi('/api/ea/specs')}catch(e){}}eaNote();showMine();if(sel)pick(sel,true)}
   async function waitCmd(id){
     const m=el('div','mut','Sending to your MT5...');msgBox.textContent='';msgBox.append(m);
     for(let i=0;i<20;i++){await new Promise(r=>setTimeout(r,1500));
@@ -171,17 +181,17 @@ function pendingSection(p,wbox,name,key){
     const hl=el('label','','Cancel this order if it has not filled after');const hs=document.createElement('select');
     p.hours.forEach(h=>{const op=document.createElement('option');op.value=h;op.textContent=h+' hours';if(h===p.default_hours)op.selected=true;hs.append(op)});
     const ll=el('label','','Lot size');const lot=document.createElement('input');lot.type='number';lot.step='any';lot.min='0';lot.inputMode='decimal';
-    const L=window.dlLots&&dlLots(key,o.entry,o.sl);if(L)lot.value=String(L.lots);
-    lot.placeholder='Empty = the smallest lot your broker allows';
-    const hint=el('div','mut',L?'Pre-filled from your Risk page (balance and risk %). Change it if you like.':'Set up the Risk page to get a suggested lot size. Empty uses the smallest lot.');
+    const sp=specFor();
+    lot.placeholder='Lot size'+(sp&&sp.vol_min?' (empty = minimum '+sp.vol_min+')':' (empty = minimum lot)');
+    const hint=el('div','mut');const upd=()=>{const r=riskEst(o,Number(lot.value));hint.textContent=r?r.text:''};lot.oninput=upd;upd();
     detail.append(hl,hs,ll,lot,hint);
-    if(L&&L.warn)detail.append(el('div','warn','The minimum lot already risks more than your risk %.'));
     const go=el('button','','Set pending order');go.style.marginTop='10px';
     go.disabled=!(ea&&ea.connected&&ea.can_pending&&ea.mt5_allowed!==false);
     go.onclick=async()=>{
-      const lots=lot.value===''?null:Number(lot.value),h=Number(hs.value);
+      const lots=lot.value===''?null:Number(lot.value),h=Number(hs.value),re=riskEst(o,lots||0);
       if(!confirm('Set this PENDING order in your MT5?\n\n'+name+' '+o.label+'\n'+(o.limit?'Trigger '+wFmt(o.price)+', then limit '+wFmt(o.limit):'Price '+wFmt(o.price))+'\nStop loss '+wFmt(o.sl)+'  ·  Take profit '+wFmt(o.tp)+
-        '\nLot size: '+(lots?lots:'the smallest lot')+'\nCancels itself after '+h+' hours if not filled.\n\nIf price reaches the level, MT5 opens a REAL trade by itself, even if this app is closed. You can cancel it any time while it waits.'))return;
+        '\nLot size: '+(lots?lots:(re&&re.lots?re.lots+' (the minimum lot)':'the minimum lot'))+(re?'\n'+re.text:'')+'\nCancels itself after '+h+' hours if not filled.\n\nIf price reaches the level, MT5 opens a REAL trade by itself, even if this app is closed. You can cancel it any time while it waits.'))return;
+      if(re&&re.pct!==null&&ea.rules&&re.pct>ea.rules.max_risk_pct&&!confirm('WARNING: if the stop loss is hit this risks about '+re.pct.toFixed(2)+'% of your balance, more than the '+ea.rules.max_risk_pct+'% you set as your own limit.\n\nSet it anyway?'))return;
       go.disabled=true;msgBox.textContent='';
       try{const r=await eaApi('/api/pending/place','POST',{token:o.token,lots:lots,hours:h});
         await waitCmd(r.command_id)}catch(e){msgBox.textContent='';msgBox.append(el('div','err',e.message))}

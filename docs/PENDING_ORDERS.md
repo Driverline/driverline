@@ -16,5 +16,7 @@ A NO TRADE card now has a **Pending orders** section under the "What to wait for
   take profit was reached without a fill. Recompile the EA in MetaEditor and re-attach it.
 - Waiting orders are listed on the card and on the MT5 page, each with Cancel.
 
+Lot size works like "Open trade in MT5": type one, or leave it empty for the symbol's smallest lot. Risk above your own rule is a warning, not a block.
+
 Limits: MT5 only (Deriv multiplier contracts cannot wait for a price). Stop orders fire on touch, not on a candle close.
 Run `python tests/test_pending_orders.py`.

@@ -14,6 +14,7 @@ Two halves live here.
    EA. The EA places a real broker-side pending order, so MT5 itself fires it when the price condition is met, even if the app, the
    phone or the EA is offline by then.
 
+Lot size works like "Open trade in MT5": type one, or leave it empty for the symbol's smallest lot.
 Nothing here ever trades by itself: the member taps "Set pending order" and confirms, and the EA must have AllowPending switched on.
 The picture and the orders only describe what WOULD happen if price reaches a level. They never predict.
 """
@@ -339,10 +340,8 @@ async def place(request):
             raise HTTPException(409, f"{name} was not found in your MT5 Market Watch. Add it there first.")
         symbol = spec["symbol"]
         pct = _risk_pct(spec, lots, abs(entry - p["s"]), float(acc.get("balance") or 0))
-        if pct is not None and pct > rules["max_risk_pct"] + 1e-9:
-            raise HTTPException(409, f"This lot size would risk about {pct:.2f}% of your balance if the stop loss is hit, more than the "
-                                     f"{rules['max_risk_pct']:g}% you set as your own limit. Lower the lot size. An order that fires while "
-                                     f"you are away must respect your own rule.")
+        # Like "Open trade in MT5": an empty lot size means the symbol's smallest lot, and the member is WARNED (in the app) when the
+        # risk is above their own rule, never blocked. The risk is returned so the app can say so.
         for r in ec.execute("SELECT payload FROM ea_commands WHERE user_id=? AND kind='pending_order' AND created_at>? "
                             "AND status IN ('pending','sent','done')", (user["id"], now - 90)).fetchall():
             if r["payload"] and json.loads(r["payload"]).get("comment") == cmt:
@@ -351,7 +350,8 @@ async def place(request):
             "symbol": symbol, "ptype": kind, "lots": lots, "price": p["p"], "limit": p.get("l") or 0, "sl": p["s"], "tp": p["x"],
             "exp_min": int(hours * 60), "ref": p["r"], "maxdev": p["m"], "comment": cmt}, kind="pending_order")
     return JSONResponse({"command_id": cid, "symbol": symbol, "comment": cmt,
-                         "risk_pct": round(pct, 2) if pct is not None else None})
+                         "risk_pct": round(pct, 2) if pct is not None else None,
+                         "over_rule": bool(pct is not None and pct > rules["max_risk_pct"] + 1e-9)})
 
 
 routes = [Route("/api/pending/place", place, methods=["POST"])]
