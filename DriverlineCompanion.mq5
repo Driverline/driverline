@@ -10,10 +10,14 @@
 //| InpAllowManage on it can also move a                             |
 //| position's stop and take-profit (breakeven, trailing) using the  |
 //| settings chosen in the app. It never widens a stop.              |
+//| With InpAllowPending on it can also PLACE and CANCEL pending     |
+//| orders (limit, stop, stop limit) that you set from a NO TRADE    |
+//| card. MT5 itself fires them if price reaches the level, even if  |
+//| the app is closed. Each has a stop, target and an expiry.        |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.30"
-#property description "Syncs account state to TradeLens. Opens or closes a trade only when you click a button in the app and allowed it here."
+#property version     "1.40"
+#property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
 
@@ -26,6 +30,7 @@ input int    InpJournalDays = 7;                                 // How many day
 input bool   InpAllowExecute = false;                            // Allow OPENING a trade when you click "Open trade" in the app (stop and target are always attached)
 input double InpMaxLotsPerTrade = 0.0;                           // Extra safety: refuse orders above this lot size (0 = only the broker's own maximum)
 input bool   InpAllowManage = false;                              // Allow auto-manage: breakeven, trailing stop and trailing take-profit chosen in the app (never widens a stop)
+input bool   InpAllowPending = false;                            // Allow PLACING and CANCELLING pending orders (limit, stop, stop limit) that you set in the app. MT5 opens the trade later by itself if price reaches the level
 input bool   InpAllowRemoteClose = false;                        // Allow CLOSING positions from the TradeLens app (never opens trades)
 
 const string PFX        = "DL_";
@@ -52,6 +57,8 @@ bool     g_tsl_on = false;  double g_tsl_start = 1.5;   double g_tsl_dist = 1.0;
 bool     g_ttp_on = false;  double g_ttp_near = 0.3;    double g_ttp_step = 1.0;
 string   g_excl = "";
 CTrade   g_trade;
+
+string BuildOrders();   // defined further down; Sync() uses it
 
 //+------------------------------------------------------------------+
 //| JSON helpers                                                     |
@@ -328,6 +335,8 @@ bool Sync()
            + ",\"risk\":" + DoubleToString(risk, 2) + "}";
    }
 
+   string ord = BuildOrders();
+
    // Local numbers: the panel stays useful even when the server cannot be reached.
    g_l1 = "Open " + (string)total + " | At risk " + DoubleToString(totalRisk, 2);
    g_l2 = "Today " + DoubleToString(closedPnl + floating, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY);
@@ -358,9 +367,11 @@ bool Sync()
       + ",\"remote_close\":" + (InpAllowRemoteClose ? "true" : "false")
       + ",\"manage_allowed\":" + (InpAllowManage ? "true" : "false")
       + ",\"execute_allowed\":" + (InpAllowExecute ? "true" : "false")
+      + ",\"pending_allowed\":" + (InpAllowPending ? "true" : "false")
       + ",\"server_offset\":" + (string)((int)MathRound((double)(TimeCurrent() - TimeGMT()) / 900.0) * 900) + "}"
       + ",\"today\":{\"closed_pnl\":" + DoubleToString(closedPnl, 2) + ",\"trades\":" + (string)closedCnt + "}"
-      + ",\"positions\":[" + pos + "]";
+      + ",\"positions\":[" + pos + "]"
+      + ",\"orders\":[" + ord + "]";
    if(sendSpecs)
       body += ",\"specs\":[" + BuildSpecs() + "]";
    datetime newestClosed = g_jSince;
@@ -627,9 +638,231 @@ string OpenTrade(const string sym, const string dirS, const double reqLots, cons
         + ", stop " + DoubleToString(sl, dg) + ", target " + DoubleToString(tp, dg);
 }
 
+
+//+------------------------------------------------------------------+
+//| Pending orders (only when InpAllowPending is on)                 |
+//+------------------------------------------------------------------+
+bool IsOurs(const string cmt)
+{
+   return StringFind(cmt, "TLP-") == 0;
+}
+
+string OrderTypeText(const long t)
+{
+   switch((int)t)
+   {
+      case ORDER_TYPE_BUY_LIMIT:       return "BUY_LIMIT";
+      case ORDER_TYPE_SELL_LIMIT:      return "SELL_LIMIT";
+      case ORDER_TYPE_BUY_STOP:        return "BUY_STOP";
+      case ORDER_TYPE_SELL_STOP:       return "SELL_STOP";
+      case ORDER_TYPE_BUY_STOP_LIMIT:  return "BUY_STOP_LIMIT";
+      case ORDER_TYPE_SELL_STOP_LIMIT: return "SELL_STOP_LIMIT";
+   }
+   return "";
+}
+
+// The pending orders waiting at the broker, as JSON rows for the app.
+string BuildOrders()
+{
+   string s = "";
+   int    added = 0;
+   int    total = OrdersTotal();
+   for(int i = 0; i < total && added < 50; i++)
+   {
+      ulong tk = OrderGetTicket(i);   // also selects the order
+      if(tk == 0)
+         continue;
+      string tt = OrderTypeText(OrderGetInteger(ORDER_TYPE));
+      if(StringLen(tt) == 0)
+         continue;
+      string sym = OrderGetString(ORDER_SYMBOL);
+      int    dg  = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      long   exp = OrderGetInteger(ORDER_TIME_EXPIRATION);
+      if(exp == 0 && GlobalVariableCheck("TL_X_" + (string)tk))
+         exp = (long)GlobalVariableGet("TL_X_" + (string)tk);
+      long left = (exp > 0) ? (exp - (long)TimeCurrent()) / 60 : -1;   // minutes left, -1 = no expiry
+      if(added > 0)
+         s += ",";
+      s += "{\"ticket\":" + (string)tk
+         + ",\"symbol\":\"" + JsonEscape(sym) + "\""
+         + ",\"type\":\"" + tt + "\""
+         + ",\"volume\":" + DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT), 4)
+         + ",\"price\":" + DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN), dg)
+         + ",\"limit\":" + DoubleToString(OrderGetDouble(ORDER_PRICE_STOPLIMIT), dg)
+         + ",\"sl\":" + DoubleToString(OrderGetDouble(ORDER_SL), dg)
+         + ",\"tp\":" + DoubleToString(OrderGetDouble(ORDER_TP), dg)
+         + ",\"minutes_left\":" + (string)left
+         + ",\"comment\":\"" + JsonEscape(OrderGetString(ORDER_COMMENT)) + "\"}";
+      added++;
+   }
+   return s;
+}
+
+// Places ONE pending order that the member asked for with a click. Returns the message to show; ok tells if it worked.
+string PlacePending(const string sym, const string pt, const double reqLots, const double priceIn, const double limitIn,
+                    const double slIn, const double tpIn, const int expMin, const double ref, const double maxDev,
+                    const string cmt, bool &ok)
+{
+   ok = false;
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return "Turn on Algo Trading in MT5";
+   if(StringLen(sym) == 0 || priceIn <= 0.0 || slIn <= 0.0 || tpIn <= 0.0)
+      return "Incomplete order request";
+   ENUM_ORDER_TYPE ot;
+   if(pt == "BUY_LIMIT")            ot = ORDER_TYPE_BUY_LIMIT;
+   else if(pt == "SELL_LIMIT")      ot = ORDER_TYPE_SELL_LIMIT;
+   else if(pt == "BUY_STOP")        ot = ORDER_TYPE_BUY_STOP;
+   else if(pt == "SELL_STOP")       ot = ORDER_TYPE_SELL_STOP;
+   else if(pt == "BUY_STOP_LIMIT")  ot = ORDER_TYPE_BUY_STOP_LIMIT;
+   else if(pt == "SELL_STOP_LIMIT") ot = ORDER_TYPE_SELL_STOP_LIMIT;
+   else
+      return "Unknown order type";
+   bool buy       = (StringFind(pt, "BUY") == 0);
+   bool stopLimit = (StringFind(pt, "STOP_LIMIT") >= 0);
+   if(!SymbolSelect(sym, true))
+      return sym + " is not available in your MT5";
+   if(SymbolInfoInteger(sym, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_FULL)
+      return "Trading is not allowed on " + sym + " right now";
+   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   if(ask <= 0.0 || bid <= 0.0)
+      return "No price for " + sym + " right now";
+   double mid = (ask + bid) / 2.0;
+   if(maxDev > 0.0 && MathAbs(mid - ref) > maxDev)
+      return "Price has moved a long way since the analysis (or your broker's prices differ). Analyze again.";
+
+   int    dg    = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double pt_   = SymbolInfoDouble(sym, SYMBOL_POINT);
+   double minD  = MathMax((double)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL), (double)SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL)) * pt_ + pt_;
+   double price = NormalizeDouble(priceIn, dg);
+   double lim   = stopLimit ? NormalizeDouble(limitIn, dg) : 0.0;
+   double sl    = NormalizeDouble(slIn, dg);
+   double tp    = NormalizeDouble(tpIn, dg);
+   double entry = stopLimit ? lim : price;
+
+   // The order price must be on the right side of the market, and far enough from it for this broker.
+   if(ot == ORDER_TYPE_BUY_LIMIT && !(price <= ask - minD))
+      return "Price is already at or below the buy limit level. Analyze again.";
+   if(ot == ORDER_TYPE_SELL_LIMIT && !(price >= bid + minD))
+      return "Price is already at or above the sell limit level. Analyze again.";
+   if((ot == ORDER_TYPE_BUY_STOP || ot == ORDER_TYPE_BUY_STOP_LIMIT) && !(price >= ask + minD))
+      return "Price is already at or above the trigger level. Analyze again.";
+   if((ot == ORDER_TYPE_SELL_STOP || ot == ORDER_TYPE_SELL_STOP_LIMIT) && !(price <= bid - minD))
+      return "Price is already at or below the trigger level. Analyze again.";
+   if(stopLimit)
+   {
+      if(lim <= 0.0 || (buy && !(lim <= price - minD)) || (!buy && !(lim >= price + minD)))
+         return "The limit level is too close to the trigger for this broker's rules";
+   }
+   if(buy && !(sl <= entry - minD && tp >= entry + minD))
+      return "The stop or target is too close to the order price for this broker's rules";
+   if(!buy && !(sl >= entry + minD && tp <= entry - minD))
+      return "The stop or target is too close to the order price for this broker's rules";
+
+   double vmin  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double vstep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   double vmax  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   int    ld    = 0;
+   for(double st = vstep; st < 1.0 - 1e-9 && ld < 8; st *= 10.0)
+      ld++;
+   double lots = reqLots;
+   if(lots <= 0.0)
+      lots = vmin;
+   else
+   {
+      if(lots < vmin - 1e-9)
+         return "Lot size is below the minimum of " + DoubleToString(vmin, ld) + " for " + sym;
+      lots = MathFloor(lots / vstep + 1e-9) * vstep;
+   }
+   lots = NormalizeDouble(lots, ld);
+   if(lots > vmax + 1e-9)
+      return "Lot size is above the maximum of " + DoubleToString(vmax, ld);
+   if(InpMaxLotsPerTrade > 0.0 && lots > InpMaxLotsPerTrade + 1e-9)
+      return "Lot size is above the limit you set in the EA (" + DoubleToString(InpMaxLotsPerTrade, ld) + ")";
+   double margin = 0.0;
+   ENUM_ORDER_TYPE mt = buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(OrderCalcMargin(mt, sym, lots, entry, margin) && margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+      return "Not enough free margin for this lot size";
+
+   // Expiry: let the broker cancel it when possible, otherwise this EA cancels it (see ExpirePending).
+   ENUM_ORDER_TYPE_TIME tt = ORDER_TIME_GTC;
+   datetime expiry = 0;
+   if(expMin > 0)
+      expiry = TimeCurrent() + (datetime)(expMin * 60);
+   bool brokerExpiry = false;
+   if(expiry > 0 && (SymbolInfoInteger(sym, SYMBOL_EXPIRATION_MODE) & SYMBOL_EXPIRATION_SPECIFIED) != 0)
+   {
+      tt = ORDER_TIME_SPECIFIED;
+      brokerExpiry = true;
+   }
+
+   g_trade.SetExpertMagicNumber(26101);
+   g_trade.SetTypeFillingBySymbol(sym);
+   bool sent = g_trade.OrderOpen(sym, ot, lots, lim, price, sl, tp, tt, brokerExpiry ? expiry : 0, cmt);
+   uint rc = g_trade.ResultRetcode();
+   if(!sent || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_PLACED))
+      return "Broker refused: " + g_trade.ResultRetcodeDescription();
+   ulong tk = g_trade.ResultOrder();
+   if(expiry > 0 && tk > 0)
+      GlobalVariableSet("TL_X_" + (string)tk, (double)expiry);
+   ok = true;
+   return "Placed " + pt + " " + DoubleToString(lots, ld) + " " + sym + " at " + DoubleToString(price, dg)
+        + (stopLimit ? ", limit " + DoubleToString(lim, dg) : "")
+        + ", stop " + DoubleToString(sl, dg) + ", target " + DoubleToString(tp, dg)
+        + (expiry > 0 ? ", cancels itself in " + (string)(expMin / 60) + "h" + ((expMin % 60) > 0 ? " " + (string)(expMin % 60) + "m" : "") : "");
+}
+
+// Deletes one waiting pending order. Returns "" when it worked, otherwise the reason.
+string CancelPending(const ulong ticket)
+{
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return "Turn on Algo Trading in MT5";
+   if(!OrderSelect(ticket))
+      return "That order is not waiting any more";
+   if(!g_trade.OrderDelete(ticket))
+      return "Broker refused: " + g_trade.ResultRetcodeDescription();
+   GlobalVariableDel("TL_X_" + (string)ticket);
+   return "";
+}
+
+// Housekeeping for orders THIS EA placed (comment starts with TLP-). Runs every timer tick while InpAllowPending is on.
+//  - expired: the broker could not hold an expiry, so the EA removes the order when its time is up
+//  - missed move: a limit order whose price never came, while price already reached the take profit, is no longer a good plan
+void TidyPending()
+{
+   if(!InpAllowPending || !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong tk = OrderGetTicket(i);
+      if(tk == 0 || !IsOurs(OrderGetString(ORDER_COMMENT)))
+         continue;
+      string sym = OrderGetString(ORDER_SYMBOL);
+      long   ty  = OrderGetInteger(ORDER_TYPE);
+      double tp  = OrderGetDouble(ORDER_TP);
+      string why = "";
+      if(OrderGetInteger(ORDER_TIME_EXPIRATION) == 0 && GlobalVariableCheck("TL_X_" + (string)tk)
+         && TimeCurrent() >= (datetime)GlobalVariableGet("TL_X_" + (string)tk))
+         why = "expired";
+      else if(tp > 0.0 && ty == ORDER_TYPE_BUY_LIMIT && SymbolInfoDouble(sym, SYMBOL_BID) >= tp)
+         why = "price reached the target without filling it";
+      else if(tp > 0.0 && ty == ORDER_TYPE_SELL_LIMIT && SymbolInfoDouble(sym, SYMBOL_ASK) <= tp && SymbolInfoDouble(sym, SYMBOL_ASK) > 0.0)
+         why = "price reached the target without filling it";
+      if(StringLen(why) == 0)
+         continue;
+      string name = OrderTypeText(ty) + " " + sym;
+      if(g_trade.OrderDelete(tk))
+      {
+         GlobalVariableDel("TL_X_" + (string)tk);
+         g_cmdMsg = "Cancelled " + name + ": " + why;
+         g_lastFull = 0;
+      }
+   }
+}
+
 void PollCommand()
 {
-   if(!InpAllowRemoteClose && !InpAllowManage && !InpAllowExecute)
+   if(!InpAllowRemoteClose && !InpAllowManage && !InpAllowExecute && !InpAllowPending)
       return;
    char data[];
    char result[];
@@ -660,6 +893,37 @@ void PollCommand()
                                  JsonGet(resp, "cmt"), okOpen);
       g_cmdMsg = (okOpen ? "Opened from app: " : "Open refused: ") + msgOpen;
       ReportResult(id, okOpen, 0, okOpen ? 0 : 1, msgOpen);
+      g_lastFull = 0;
+      return;
+   }
+   if(cmd == "pending_order")
+   {
+      if(!InpAllowPending)
+      {
+         ReportResult(id, false, 0, 1, "AllowPending is switched off in the EA settings");
+         return;
+      }
+      bool   okP = false;
+      string msgP = PlacePending(JsonGet(resp, "sym"), JsonGet(resp, "ptype"), StringToDouble(JsonGet(resp, "lots")),
+                                 StringToDouble(JsonGet(resp, "price")), StringToDouble(JsonGet(resp, "limit")),
+                                 StringToDouble(JsonGet(resp, "sl")), StringToDouble(JsonGet(resp, "tp")),
+                                 (int)StringToInteger(JsonGet(resp, "exp_min")), StringToDouble(JsonGet(resp, "ref")),
+                                 StringToDouble(JsonGet(resp, "maxdev")), JsonGet(resp, "cmt"), okP);
+      g_cmdMsg = (okP ? "Pending order: " : "Pending order refused: ") + msgP;
+      ReportResult(id, okP, 0, okP ? 0 : 1, msgP);
+      g_lastFull = 0;
+      return;
+   }
+   if(cmd == "cancel_order")
+   {
+      if(!InpAllowPending)
+      {
+         ReportResult(id, false, 0, 1, "AllowPending is switched off in the EA settings");
+         return;
+      }
+      string errC = CancelPending((ulong)JsonGetNum(resp, "ticket"));
+      g_cmdMsg = (StringLen(errC) == 0 ? "Pending order cancelled" : "Cancel refused: " + errC);
+      ReportResult(id, StringLen(errC) == 0, 0, StringLen(errC) == 0 ? 0 : 1, StringLen(errC) == 0 ? "Pending order cancelled" : errC);
       g_lastFull = 0;
       return;
    }
@@ -823,7 +1087,7 @@ void DrawPanel()
    Lbl(PFX + "l2", px + 10, py + 82, g_l2, clrWhite, 9);
    Lbl(PFX + "l3", px + 10, py + 102, g_l3, sc, 9);
    Lbl(PFX + "net", px + 10, py + 126, netText, nc, 8);
-   Lbl(PFX + "ex", px + 10, py + 180, (InpAllowExecute ? "Open trade from app: ON" : "Open trade from app: off"), clrSilver, 8);
+   Lbl(PFX + "ex", px + 10, py + 180, (InpAllowExecute ? "Open trade from app: ON" : "Open trade from app: off") + (InpAllowPending ? "  |  Pending: ON" : "  |  Pending: off"), clrSilver, 8);
    Lbl(PFX + "mg", px + 10, py + 162, (StringLen(g_mgMsg) > 0 ? g_mgMsg : (InpAllowManage ? (g_be_on || g_tsl_on || g_ttp_on ? "Auto-manage: ON" : "Auto-manage: allowed, switched off in the app") : "Auto-manage: off")), clrSilver, 8);
    Lbl(PFX + "cmd", px + 10, py + 144, (StringLen(g_cmdMsg) > 0 ? g_cmdMsg : (InpAllowRemoteClose ? "Remote close: ON" : "Remote close: off")), clrSilver, 8);
 }
@@ -833,6 +1097,7 @@ int OnInit()
 {
    g_trade.SetDeviationInPoints(200);
    GlobalVariablesDeleteAll("TL_R_", TimeCurrent() - 30 * 86400);   // forget old positions
+   GlobalVariablesDeleteAll("TL_X_", TimeCurrent() - 7 * 86400);    // forget old pending-order expiry times
    g_jSince = TimeCurrent() - (datetime)(MathMax(1, InpJournalDays) * 86400);
    EventSetMillisecondTimer(3000);
    DrawPanel();
@@ -856,9 +1121,10 @@ void OnTimer()
          g_lastFull = now;
          Sync();
       }
-      else if((InpAllowRemoteClose || InpAllowManage || InpAllowExecute) && g_net == "Connected")
+      else if((InpAllowRemoteClose || InpAllowManage || InpAllowExecute || InpAllowPending) && g_net == "Connected")
          PollCommand();
       ManagePositions();
+      TidyPending();
    }
    DrawPanel();
    ChartRedraw();

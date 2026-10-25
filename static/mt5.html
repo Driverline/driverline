@@ -16,7 +16,7 @@
 <div class="card"><h2>Connection</h2><div id="conn"><span class="mut">Loading...</span></div></div>
 
 <div class="card"><h2>Connect your MT5</h2>
-<div class="mut">1. Create a key. 2. Put the TradeLens EA on a chart in MT5 on a PC or VPS. 3. Paste your TradeLens address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA never opens a trade on its own. It opens, closes or adjusts a trade only when you click a button in the app and have allowed that in its settings.</div>
+<div class="mut">1. Create a key. 2. Put the TradeLens EA on a chart in MT5 on a PC or VPS. 3. Paste your TradeLens address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA never opens a trade on its own. It opens, closes or adjusts a trade, or places a pending order, only when you click a button in the app and have allowed that in its settings (AllowExecute, AllowRemoteClose, AllowManage, AllowPending).</div>
 <div class="btns"><button id="mk">Create or replace key</button><button id="rv" class="ghost">Revoke</button></div>
 <div id="keybox" style="margin-top:10px"></div>
 <div class="mut" style="margin-top:8px">Your TradeLens address: <b id="addr"></b></div></div>
@@ -42,6 +42,9 @@
 <div class="btns"><button id="mgsave">Save auto-manage</button></div><div id="mgmsg" class="mut"></div></div>
 
 <div class="card"><h2>Live from MT5</h2><div id="pos"><span class="mut">Nothing yet.</span></div></div>
+
+<div class="card"><h2>Pending orders</h2><div id="ords"><span class="mut">Nothing waiting.</span></div>
+<div class="mut" style="margin-top:8px" id="ordnote"></div></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -81,9 +84,17 @@ async function load(){
     if(n&&s.can_close){const b=el('button',s.check&&s.check.status!=='OK'?'':'ghost','Close ALL positions');b.style.marginTop='10px';
       b.onclick=()=>closeCmd({kind:'close_all'},'Close ALL '+n+' open positions now?');p.append(b)}
     else if(n&&s.connected)p.append(el('div','mut','Closing from the app is off. Turn on AllowRemoteClose in the EA inputs.'));
+    const od=$('ords');od.textContent='';
+    (s.orders||[]).forEach(o=>{const row=el('div','kv');const ml=Number(o.minutes_left);
+      row.append(el('span','',o.symbol+' '+o.type.replace(/_/g,' ').toLowerCase()+' '+o.volume+' at '+o.price+(Number(o.limit)?' (limit '+o.limit+')':'')+' | SL '+o.sl+' | TP '+o.tp+' | '+(ml>=0?(ml>=60?Math.floor(ml/60)+'h '+(ml%60)+'m':ml+'m')+' left':'no expiry')));
+      if(s.can_pending){const b=el('button','ghost','Cancel');b.style.cssText='width:auto;padding:6px 12px';
+        b.onclick=()=>closeCmd({kind:'cancel_order',ticket:o.ticket},'Cancel this pending order ('+o.symbol+' '+o.type.replace(/_/g,' ').toLowerCase()+')?');row.append(b)}
+      od.append(row)});
+    if(!(s.orders||[]).length)od.append(el('span','mut','Nothing waiting.'));
+    $('ordnote').textContent=s.can_pending?'Pending orders wait at your broker. MT5 opens the trade by itself if price reaches the level, even when this page is closed. Set them from a NO TRADE card.':(s.connected?'Switch on AllowPending in the EA settings in MT5 to set or cancel pending orders from the app.':'');
     const cm=s.command;
     if(cm){const r=cm.result;p.append(el('div',cm.status==='done'?'win':(cm.status==='sent'||cm.status==='pending'?'mut':'warn'),
-      (cm.kind==='close_all'?'Close all':cm.kind==='open'?'Open trade':'Close '+cm.ticket)+': '+cm.status+(r?' ('+r.closed+' closed'+(r.failed?', '+r.failed+' failed':'')+(r.message?': '+r.message:'')+')':'')))}
+      (cm.kind==='close_all'?'Close all':cm.kind==='open'?'Open trade':cm.kind==='pending_order'?'Pending order':cm.kind==='cancel_order'?'Cancel pending order':'Close '+cm.ticket)+': '+cm.status+(r?(['pending_order','cancel_order','open'].includes(cm.kind)?(r.message?' ('+r.message+')':''):' ('+r.closed+' closed'+(r.failed?', '+r.failed+' failed':'')+(r.message?': '+r.message:'')+')'):'')))}
     if(!s.check)p.append(el('span','mut','Nothing yet. It fills in once the EA syncs.'));
     return s;
   }catch(e){$('conn').textContent=e.message}
@@ -97,7 +108,7 @@ $('mgsave').onclick=async()=>{
   }catch(e){$('mgmsg').className='err';$('mgmsg').textContent=e.message}
 };
 async function closeCmd(body,question){
-  if(!confirm(question+'\n\nThis sends a close order to your MT5.'))return;
+  if(!confirm(question+(body.kind==='cancel_order'?'\n\nThis removes the waiting order from your MT5.':'\n\nThis sends a close order to your MT5.')))return;
   try{await api('/command','POST',body)}catch(e){alert(e.message);return}
   for(let i=0;i<30;i++){
     await new Promise(r=>setTimeout(r,2000));

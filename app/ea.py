@@ -129,9 +129,10 @@ async def report(request):
         _last_report[uid] = now
         state = {
             "account": {k: acc.get(k) for k in ("login", "server", "currency", "balance", "equity", "margin_free", "demo",
-                                           "remote_close", "manage_allowed", "execute_allowed", "server_offset")},
+                                           "remote_close", "manage_allowed", "execute_allowed", "pending_allowed", "server_offset")},
             "today": d.get("today") if isinstance(d.get("today"), dict) else {},
             "positions": [p for p in (d.get("positions") or []) if isinstance(p, dict)][:100],
+            "orders": [o for o in (d.get("orders") or []) if isinstance(o, dict)][:100],   # pending orders waiting at the broker
         }
         specs = d.get("specs")
         specs_json = json.dumps([s for s in specs if isinstance(s, dict)][:100]) if isinstance(specs, list) else None
@@ -179,8 +180,8 @@ async def command_create(request):
     u = auth.require_user(request)
     d = await auth._json(request)
     kind = d.get("kind")
-    if kind not in ("close", "close_all"):
-        raise HTTPException(422, "kind must be close or close_all")
+    if kind not in ("close", "close_all", "cancel_order"):
+        raise HTTPException(422, "kind must be close, close_all or cancel_order")
     now = int(time.time())
     with closing(db()) as con:
         k = con.execute("SELECT last_seen FROM ea_keys WHERE user_id=?", (u["id"],)).fetchone()
@@ -188,17 +189,27 @@ async def command_create(request):
         if not (k and k["last_seen"] and now - k["last_seen"] < 120 and s):
             raise HTTPException(409, "Your MT5 is not connected right now")
         st = json.loads(s["state"])
-        if not st["account"].get("remote_close"):
+        if kind == "cancel_order":     # cancelling a waiting pending order is governed by AllowPending, not AllowRemoteClose
+            if not st["account"].get("pending_allowed"):
+                raise HTTPException(409, "Pending orders are switched off in your EA settings (AllowPending)")
+        elif not st["account"].get("remote_close"):
             raise HTTPException(409, "Remote close is switched off in your EA settings (AllowRemoteClose)")
         positions, ticket = st["positions"], None
-        if kind == "close":
+        if kind == "cancel_order":
+            try:
+                ticket = int(d.get("ticket"))
+            except (TypeError, ValueError):
+                raise HTTPException(422, "ticket must be a number")
+            if ticket not in {int(_f(o.get("ticket"))) for o in (st.get("orders") or [])}:
+                raise HTTPException(404, "That pending order is not waiting any more")
+        elif kind == "close":
             try:
                 ticket = int(d.get("ticket"))
             except (TypeError, ValueError):
                 raise HTTPException(422, "ticket must be a number")
             if ticket not in {int(_f(p.get("ticket"))) for p in positions}:
                 raise HTTPException(404, "That position is not open any more")
-        elif not positions:
+        elif kind == "close_all" and not positions:
             raise HTTPException(409, "There are no open positions")
         con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",
                     (u["id"], now - CMD_TTL))
@@ -222,7 +233,7 @@ async def poll(request):
         con.execute("UPDATE ea_keys SET last_seen=? WHERE user_id=?", (int(now), uid))
         con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",
                     (uid, int(now) - CMD_TTL))
-        con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND kind='open' "
+        con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND kind IN ('open','pending_order') "
                     "AND created_at<?", (uid, int(now) - OPEN_TTL))
         r = con.execute("SELECT id,kind,ticket,payload FROM ea_commands WHERE user_id=? AND status='pending' "
                         "ORDER BY id LIMIT 1", (uid,)).fetchone()
@@ -238,6 +249,12 @@ async def poll(request):
         p = json.loads(r["payload"])
         flat.update(sym=p["symbol"], dir=p["dir"], lots=str(p["lots"]), sl_dist=str(p["sl_dist"]),
                     tp_dist=str(p["tp_dist"]), ref=str(p["ref"]), maxdev=str(p["maxdev"]), cmt=p["comment"])
+    if r and r["kind"] == "pending_order" and r["payload"]:
+        p = json.loads(r["payload"])
+        num = lambda x: f"{_f(x):.8f}".rstrip("0").rstrip(".") or "0"
+        flat.update(sym=p["symbol"], ptype=p["ptype"], lots=num(p["lots"]), price=num(p["price"]), limit=num(p["limit"]),
+                    sl=num(p["sl"]), tp=num(p["tp"]), exp_min=str(int(p["exp_min"])), ref=num(p["ref"]),
+                    maxdev=num(p["maxdev"]), cmt=p["comment"])
     return JSONResponse({"cmd": r["kind"] if r else "", "id": r["id"] if r else 0,
                          "ticket": (r["ticket"] or 0) if r else 0, **flat})
 
@@ -323,8 +340,8 @@ async def manage_exclude(request):
     return JSONResponse(s)
 
 
-def queue_open(con, uid: int, payload: dict) -> int:
-    """Queue ONE 'open trade' request for this member's EA. Called only after the member clicked the button."""
+def queue_open(con, uid: int, payload: dict, kind: str = "open") -> int:
+    """Queue ONE 'open trade' (or 'pending_order') request for this member's EA. Called only after the member clicked the button."""
     now = int(time.time())
     con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",
                 (uid, now - CMD_TTL))
@@ -332,7 +349,7 @@ def queue_open(con, uid: int, payload: dict) -> int:
                    (uid, now - CMD_TTL)).fetchone():
         raise HTTPException(409, "Another request is still in progress. Wait a moment and try again.")
     cid = con.insert("INSERT INTO ea_commands(user_id,kind,ticket,created_at,status,payload) VALUES(?,?,?,?,'pending',?)",
-                     (uid, "open", None, now, json.dumps(payload)))
+                     (uid, kind, None, now, json.dumps(payload)))
     con.commit()
     return cid
 
@@ -377,6 +394,8 @@ async def status(request):
         out["can_close"] = bool(out["connected"] and st["account"].get("remote_close"))
         out["can_manage"] = bool(out["connected"] and st["account"].get("manage_allowed"))
         out["can_execute"] = bool(out["connected"] and st["account"].get("execute_allowed"))
+        out["can_pending"] = bool(out["connected"] and st["account"].get("pending_allowed"))
+        out["orders"] = st.get("orders") or []
     if cmd and now - cmd["created_at"] < 600:
         stat = cmd["status"]
         if stat == "pending" and now - cmd["created_at"] > CMD_TTL:

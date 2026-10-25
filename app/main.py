@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, paystack
+from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, paystack, pending_orders
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -113,6 +113,10 @@ async def tradecard(request):
                     out["watch"] = watch_chart.build_watch(facts, out["card"], candles)
                 except Exception as e:
                     print(f"[watch] could not build the picture: {type(e).__name__}", flush=True)
+                try:                       # pending-order options for the same NO TRADE card (pending_orders.py); never blocks the card
+                    out["pending"] = pending_orders.build_pending(facts, out["card"], candles, key)
+                except Exception as e:
+                    print(f"[pending] could not build the orders: {type(e).__name__}: {e}", flush=True)
                 auth.consume_quota(user)
                 if market(key) == "synthetic":
                     radar.record_analysis(key, out["card"])  # feeds Smart Analysis Timing; never raises
@@ -180,6 +184,7 @@ routes = [
     *track.routes,
     *engine_jobs.routes,
     *journal.routes,
+    *pending_orders.routes,
     Mount("/", app=StaticFiles(directory=str(STATIC_DIR), html=True), name="static"),
 ]
 
