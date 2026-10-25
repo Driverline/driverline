@@ -73,6 +73,7 @@ class FakePaystack:
     def __init__(self):
         self.tx, self.calls, self.n = {}, [], 900000
         self.down = False
+        self.unknown_ref_status = 400         # what Paystack really answers for an unknown reference
         self.init_override = {}               # fields to change in the reply to initialize
         self.init_hook = None                 # called with the request body while "Paystack" handles initialize
         self.verify_override = {}             # fields to change in every verify reply: {ref: {...}} or {"*": {...}}
@@ -106,7 +107,7 @@ class FakePaystack:
             ref = path.rsplit("/", 1)[1]
             t = self.tx.get(ref)
             if not t:
-                return httpx.Response(404, json={"status": False, "message": "Transaction reference not found"})
+                return httpx.Response(self.unknown_ref_status, json={"status": False, "message": "Transaction reference not found."})
             t = {**t, **self.verify_override.get("*", {}), **self.verify_override.get(ref, {})}
             return httpx.Response(200, json={"status": True, "message": "Verification successful", "data": t})
         return httpx.Response(404, json={"status": False, "message": "unknown endpoint " + path})
@@ -1160,6 +1161,14 @@ class AccessTests(Base):
         self.assertEqual(r.status_code, 409)
         self.assertIn("rate", r.json()["detail"])
         self.assertEqual(client(admin).post("/api/admin/pay/paystack/toggle", json={"mode": "off"}).status_code, 200)
+
+    def test_admin_check_accepts_the_key_whether_paystack_says_400_or_404_for_the_unknown_reference(self):
+        admin = mk_user("admin")
+        for code in (400, 404):
+            FAKE.unknown_ref_status = code
+            chk = client(admin).post("/api/admin/pay/paystack/check").json()
+            self.assertEqual((chk["key_accepted"], chk["detail"]), (True, ""), code)
+        FAKE.unknown_ref_status = 400
 
     def test_admin_check_reports_a_refused_key(self):
         admin = mk_user("admin")

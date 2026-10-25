@@ -30,7 +30,7 @@ async def main():
         print("Paystack answer  : unexpected success")
         return 0
     except paystack.ProviderError as e:
-        if e.status == 404:
+        if paystack._reference_not_found(e):
             print("Paystack answer  : key accepted (reference not found, as expected)")
             return 0
         print(f"Paystack answer  : key refused or Paystack unreachable ({e} {e.detail})")

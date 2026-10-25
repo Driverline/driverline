@@ -823,6 +823,12 @@ async def admin_toggle(request):
     return JSONResponse({"ok": True})
 
 
+def _reference_not_found(e: "ProviderError") -> bool:
+    """Paystack answers an unknown reference with HTTP 400 and "Transaction reference not found" (some versions 404). Both mean the
+    key was accepted; a wrong key is 401."""
+    return e.status in (400, 404) and "not found" in (e.detail or "").lower()
+
+
 async def admin_check(request):
     """Asks Paystack whether it accepts our key. Looks up a reference that cannot exist: a valid key answers "not found", a wrong key
     is refused. Creates and changes nothing."""
@@ -834,7 +840,7 @@ async def admin_check(request):
         await _request("GET", "/transaction/verify/" + quote("tl-connection-check-" + secrets.token_hex(4), safe=""))
         out["key_accepted"] = True
     except ProviderError as e:
-        out["key_accepted"] = e.status == 404                 # unknown reference: the key itself was accepted
+        out["key_accepted"] = _reference_not_found(e)         # unknown reference: the key itself was accepted
         out["detail"] = "" if out["key_accepted"] else f"{e} {e.detail}".strip()
     return JSONResponse(out)
 
