@@ -10,13 +10,16 @@
 //| InpAllowManage on it can also move a                             |
 //| position's stop and take-profit (breakeven, trailing) using the  |
 //| settings chosen in the app. It never widens a stop.              |
+//| With InpTgEnable on it also posts your trades to your own        |
+//| Telegram channel: entry, stop, take-profit, then breakeven,      |
+//| trailing moves and the close. It only READS positions for this.  |
 //| With InpAllowPending on it can also PLACE and CANCEL pending     |
 //| orders (limit, stop, stop limit) that you set from a NO TRADE    |
 //| card. MT5 itself fires them if price reaches the level, even if  |
 //| the app is closed. Each has a stop, target and an expiry.        |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.40"
+#property version     "1.50"
 #property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
@@ -32,6 +35,26 @@ input double InpMaxLotsPerTrade = 0.0;                           // Extra safety
 input bool   InpAllowManage = false;                              // Allow auto-manage: breakeven, trailing stop and trailing take-profit chosen in the app (never widens a stop)
 input bool   InpAllowPending = false;                            // Allow PLACING and CANCELLING pending orders (limit, stop, stop limit) that you set in the app. MT5 opens the trade later by itself if price reaches the level
 input bool   InpAllowRemoteClose = false;                        // Allow CLOSING positions from the TradeLens app (never opens trades)
+
+// ---- Telegram: post my trades to a channel (off by default)
+input bool   InpTgEnable       = false;                          // Telegram: post my trades to a Telegram channel
+input string InpTgToken        = "";                             // Telegram: bot token from @BotFather (keep it secret)
+input string InpTgChatId       = "";                             // Telegram: channel, like @yourchannel or -100123456789
+input bool   InpTgPostOpen     = true;                           // Telegram: post new trades (entry, SL, TP)
+input bool   InpTgPostBE       = true;                           // Telegram: post when a stop moves to breakeven
+input bool   InpTgPostTrailSL  = true;                           // Telegram: post trailing stop and other SL changes
+input bool   InpTgPostTrailTP  = true;                           // Telegram: post take-profit moves
+input bool   InpTgPostPartial  = true;                           // Telegram: post partial closes
+input bool   InpTgPostClose    = true;                           // Telegram: post when a trade closes (result in R, never money)
+input bool   InpTgShowLots     = false;                          // Telegram: show my lot size (off: members use their own size)
+input bool   InpTgEmoji        = true;                           // Telegram: use emoji in posts
+input int    InpTgTrailSecs    = 30;                             // Telegram: least seconds between trailing posts for one trade
+input int    InpTgTrailStepPct = 10;                             // Telegram: least trailing step to post, in % of the original risk (1R)
+input long   InpTgMagic        = -1;                             // Telegram: only post trades with this magic number (-1 = all trades)
+input bool   InpTgAnnounceExisting = false;                      // Telegram: also announce trades already open when the EA starts
+input bool   InpTgTestOnStart  = false;                          // Telegram: send a test message when the EA starts
+input string InpTgHeader       = "TradeLens";                    // Telegram: name used in the test message
+input string InpTgFooter       = "Educational only, not financial advice. Use your own lot size and risk."; // Telegram: line at the end of every post
 
 const string PFX        = "DL_";
 const color  CLR_BG     = C'8,10,22';
@@ -160,6 +183,23 @@ void TodayClosed(double &pnl, int &count)
    }
 }
 
+// Why a position closed, from MT5's own deal reason: tp, sl, manual (you, from the terminal, phone or web),
+// expert (an EA or the TradeLens Close button), so (stop out by the broker) or other.
+string ReasonName(const long r)
+{
+   if(r == (long)DEAL_REASON_TP)
+      return "tp";
+   if(r == (long)DEAL_REASON_SL)
+      return "sl";
+   if(r == (long)DEAL_REASON_SO)
+      return "so";
+   if(r == (long)DEAL_REASON_CLIENT || r == (long)DEAL_REASON_MOBILE || r == (long)DEAL_REASON_WEB)
+      return "manual";
+   if(r == (long)DEAL_REASON_EXPERT)
+      return "expert";
+   return "other";
+}
+
 // Fully closed positions since g_jSince, as JSON rows. Two passes: HistorySelectByPosition
 // replaces the selected history, so the position ids are collected first.
 string BuildClosed(datetime &newest)
@@ -207,6 +247,7 @@ string BuildClosed(datetime &newest)
       long     dir = -1;
       string   sym = "";
       ulong    inOrder = 0;
+      long     outReason = -1;
       int      m = HistoryDealsTotal();
       for(int j = 0; j < m; j++)
       {
@@ -238,6 +279,7 @@ string BuildClosed(datetime &newest)
             outVol += v;
             outPx  += px * v;
             tClose  = (datetime)HistoryDealGetInteger(d, DEAL_TIME);
+            outReason = HistoryDealGetInteger(d, DEAL_REASON);
          }
       }
       if(inVol <= 0.0 || outVol <= 0.0 || dir < 0 || StringLen(sym) == 0)
@@ -261,7 +303,8 @@ string BuildClosed(datetime &newest)
             + ",\"tp\":" + DoubleToString(tp, dg)
             + ",\"profit\":" + DoubleToString(net, 2)
             + ",\"opened\":" + (string)(long)tOpen
-            + ",\"closed\":" + (string)(long)tClose + "}";
+            + ",\"closed\":" + (string)(long)tClose
+            + ",\"reason\":\"" + ReasonName(outReason) + "\"}";
       added++;
       if(tClose > newest)
          newest = tClose;
@@ -1093,6 +1136,659 @@ void DrawPanel()
 }
 
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Telegram posts (only when InpTgEnable is on)                     |
+//| Posts every position opened on this account to your Telegram     |
+//| channel, then adds replies under that post: breakeven, trailing  |
+//| stop, take-profit moves, partial closes and the final close.     |
+//| It only READS positions. It never opens, closes or changes a    |
+//| trade because of anything that happens in Telegram.              |
+//+------------------------------------------------------------------+
+// ==== TELEGRAM BEGIN
+struct TgPos
+{
+   ulong    id;          // position identifier
+   long     ptype;       // POSITION_TYPE_BUY or POSITION_TYPE_SELL
+   double   popen;       // entry price
+   double   vol;         // last seen volume
+   double   r;           // original risk distance (1R), 0 when the trade never had a stop
+   double   postedSL;    // stop loss as last published
+   double   postedTP;    // take profit as last published
+   datetime trailSLAt;   // when a trailing stop update was last published
+   datetime trailTPAt;   // when a take-profit update was last published
+   long     msgId;       // Telegram message id of the original post (0 = unknown)
+   bool     be;          // breakeven already published
+   bool     silent;      // opened before the EA started: never published
+   bool     seen;        // scratch flag used by every scan
+   int      goneScans;   // scans since the position left the open list
+};
+
+TgPos    g_tgp[];
+string   g_tgSym[];
+string   g_qText[];
+ulong    g_qPid[];
+bool     g_qOpen[];
+datetime g_qNext[];
+int      g_qTries[];
+datetime g_tgWarnAt = 0;
+datetime g_tgBaselineUntil = 0;
+
+bool TgReady()
+{
+   if(!InpTgEnable || MQLInfoInteger(MQL_TESTER))
+      return false;
+   return (StringLen(InpTgToken) > 10 && StringLen(InpTgChatId) > 1);
+}
+
+void TgWarn(const string m)
+{
+   if(TimeLocal() - g_tgWarnAt < 60)
+      return;
+   g_tgWarnAt = TimeLocal();
+   Print("[TradeLens Telegram] ", m);
+}
+
+string TgEm(const string k)
+{
+   if(!InpTgEmoji)
+      return "";
+   if(k == "buy")
+      return ShortToString(0xD83D) + ShortToString(0xDFE2) + " ";
+   if(k == "sell")
+      return ShortToString(0xD83D) + ShortToString(0xDD34) + " ";
+   if(k == "tp")
+      return ShortToString(0xD83C) + ShortToString(0xDFAF) + " ";
+   if(k == "lock")
+      return ShortToString(0xD83D) + ShortToString(0xDD12) + " ";
+   if(k == "up")
+      return ShortToString(0xD83D) + ShortToString(0xDCC8) + " ";
+   if(k == "ok")
+      return ShortToString(0x2705) + " ";
+   if(k == "bad")
+      return ShortToString(0x274C) + " ";
+   if(k == "warn")
+      return ShortToString(0x26A0) + " ";
+   if(k == "flat")
+      return ShortToString(0x26AA) + " ";
+   if(k == "cut")
+      return ShortToString(0x2702) + " ";
+   return "";
+}
+
+string TgHtml(string s)
+{
+   StringReplace(s, "&", "&amp;");
+   StringReplace(s, "<", "&lt;");
+   StringReplace(s, ">", "&gt;");
+   return s;
+}
+
+string TgPx(const string sym, const double p)
+{
+   int dg = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   return DoubleToString(p, dg);
+}
+
+// A price the reader can tap to copy.
+string TgCode(const string sym, const double p)
+{
+   return "<code>" + TgPx(sym, p) + "</code>";
+}
+
+string TgUrlEnc(const string s)
+{
+   uchar b[];
+   int n = StringToCharArray(s, b, 0, WHOLE_ARRAY, CP_UTF8);
+   string out = "";
+   for(int i = 0; i < n - 1; i++)
+   {
+      uchar c = b[i];
+      if((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' || c == '_' || c == '.' || c == '~')
+         out += CharToString(c);
+      else
+         out += StringFormat("%%%02X", c);
+   }
+   return out;
+}
+
+string TgDirName(const long ptype)
+{
+   return (ptype == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+}
+
+int TgFind(const ulong id)
+{
+   for(int k = 0; k < ArraySize(g_tgp); k++)
+      if(g_tgp[k].id == id)
+         return k;
+   return -1;
+}
+
+void TgRemove(const int k)
+{
+   int n = ArraySize(g_tgp);
+   for(int j = k; j < n - 1; j++)
+   {
+      g_tgp[j]   = g_tgp[j + 1];
+      g_tgSym[j] = g_tgSym[j + 1];
+   }
+   ArrayResize(g_tgp, n - 1);
+   ArrayResize(g_tgSym, n - 1);
+}
+
+long TgMsgOf(const ulong pid)
+{
+   int k = TgFind(pid);
+   if(k >= 0 && g_tgp[k].msgId > 0)
+      return g_tgp[k].msgId;
+   string name = "TL_TGM_" + (string)pid;
+   if(GlobalVariableCheck(name))
+      return (long)GlobalVariableGet(name);
+   return 0;
+}
+
+void TgEnqueue(const string text, const ulong pid, const bool isOpen)
+{
+   int n = ArraySize(g_qText);
+   if(n >= 60)
+      return;                       // a long outage must not pile up messages forever
+   ArrayResize(g_qText, n + 1);
+   ArrayResize(g_qPid, n + 1);
+   ArrayResize(g_qOpen, n + 1);
+   ArrayResize(g_qNext, n + 1);
+   ArrayResize(g_qTries, n + 1);
+   g_qText[n]  = text;
+   g_qPid[n]   = pid;
+   g_qOpen[n]  = isOpen;
+   g_qNext[n]  = 0;
+   g_qTries[n] = 0;
+}
+
+void TgDequeue(const int k)
+{
+   int n = ArraySize(g_qText);
+   for(int j = k; j < n - 1; j++)
+   {
+      g_qText[j]  = g_qText[j + 1];
+      g_qPid[j]   = g_qPid[j + 1];
+      g_qOpen[j]  = g_qOpen[j + 1];
+      g_qNext[j]  = g_qNext[j + 1];
+      g_qTries[j] = g_qTries[j + 1];
+   }
+   ArrayResize(g_qText, n - 1);
+   ArrayResize(g_qPid, n - 1);
+   ArrayResize(g_qOpen, n - 1);
+   ArrayResize(g_qNext, n - 1);
+   ArrayResize(g_qTries, n - 1);
+}
+
+// One call to Telegram's sendMessage. Returns the HTTP code (200 = sent) or -1 when the request could not be made.
+int TgHttp(const string text, const long replyTo, long &msgId, int &retry)
+{
+   msgId = 0;
+   retry = 0;
+   string body = "chat_id=" + TgUrlEnc(InpTgChatId) + "&text=" + TgUrlEnc(text) + "&parse_mode=HTML&disable_web_page_preview=true";
+   if(replyTo > 0)
+      body += "&reply_to_message_id=" + (string)replyTo + "&allow_sending_without_reply=true";
+   char data[];
+   char result[];
+   int n = StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(n > 0)
+      ArrayResize(data, n - 1);
+   string rh;
+   ResetLastError();
+   int code = WebRequest("POST", "https://api.telegram.org/bot" + InpTgToken + "/sendMessage",
+                         "Content-Type: application/x-www-form-urlencoded\r\n", 6000, data, result, rh);
+   if(code == -1)
+   {
+      int err = GetLastError();
+      if(err == 4014)
+         TgWarn("Allow https://api.telegram.org in Tools > Options > Expert Advisors > Allow WebRequest for listed URL");
+      else
+         TgWarn("network error " + (string)err);
+      return -1;
+   }
+   string resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   if(code == 200)
+   {
+      msgId = JsonGetNum(resp, "message_id");
+      return 200;
+   }
+   retry = (int)JsonGetNum(resp, "retry_after");
+   TgWarn("Telegram replied " + (string)code + ": " + JsonGet(resp, "description"));
+   return code;
+}
+
+// Sends what is waiting, oldest first, at most 3 per call. A failed message is retried later; a wrong token or channel is dropped.
+void TgFlush()
+{
+   if(!TgReady())
+      return;
+   int sent = 0;
+   while(ArraySize(g_qText) > 0 && sent < 3)
+   {
+      if(g_qNext[0] > TimeLocal())
+         return;
+      long reply = g_qOpen[0] ? 0 : TgMsgOf(g_qPid[0]);
+      long mid   = 0;
+      int  retry = 0;
+      int  code  = TgHttp(g_qText[0], reply, mid, retry);
+      sent++;
+      if(code == 200)
+      {
+         if(g_qOpen[0] && mid > 0)
+         {
+            GlobalVariableSet("TL_TGM_" + (string)g_qPid[0], (double)mid);
+            int k = TgFind(g_qPid[0]);
+            if(k >= 0)
+               g_tgp[k].msgId = mid;
+         }
+         TgDequeue(0);
+         continue;
+      }
+      g_qTries[0]++;
+      if(code == 400 || code == 401 || code == 403 || code == 404 || g_qTries[0] >= 6)
+      {
+         TgDequeue(0);
+         continue;
+      }
+      g_qNext[0] = TimeLocal() + (retry > 0 ? retry + 1 : 5 * g_qTries[0]);
+      return;
+   }
+}
+
+// The deal that last reduced or closed this position.
+bool TgLastOut(const ulong pid, double &px, long &reason)
+{
+   if(!HistorySelectByPosition(pid))
+      return false;
+   bool found = false;
+   int n = HistoryDealsTotal();
+   for(int i = 0; i < n; i++)
+   {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0)
+         continue;
+      long en = HistoryDealGetInteger(d, DEAL_ENTRY);
+      if(en == DEAL_ENTRY_OUT || en == DEAL_ENTRY_OUT_BY || en == DEAL_ENTRY_INOUT)
+      {
+         px     = HistoryDealGetDouble(d, DEAL_PRICE);
+         reason = HistoryDealGetInteger(d, DEAL_REASON);
+         found  = true;
+      }
+   }
+   return found;
+}
+
+string TgTrimNl(string s)
+{
+   while(StringLen(s) > 0 && StringGetCharacter(s, StringLen(s) - 1) == '\n')
+      s = StringSubstr(s, 0, StringLen(s) - 1);
+   return s;
+}
+
+string TgFooter()
+{
+   return "\n\n" + TgHtml(InpTgFooter);
+}
+
+void TgPostOpen(const int k, const double sl, const double tp)
+{
+   string sym = g_tgSym[k];
+   double open = g_tgp[k].popen;
+   string d = TgDirName(g_tgp[k].ptype);
+   string t = TgEm(g_tgp[k].ptype == POSITION_TYPE_BUY ? "buy" : "sell") + "<b>NEW TRADE - " + d + "</b>\n";
+   t += "<b>" + TgHtml(sym) + "</b>\n\n";
+   t += "Order: Market " + d + "\n";
+   t += "Entry: " + TgCode(sym, open) + "\n";
+   t += "SL: " + (sl > 0.0 ? TgCode(sym, sl) : "none yet") + "\n";
+   t += "TP: " + (tp > 0.0 ? TgCode(sym, tp) : "none yet") + "\n";
+   if(sl > 0.0 && tp > 0.0 && MathAbs(open - sl) > 0.0)
+      t += "Reward:risk: 1 : " + StringFormat("%.2f", MathAbs(tp - open) / MathAbs(open - sl)) + "\n";
+   if(InpTgShowLots)
+      t += "Lots: <code>" + DoubleToString(g_tgp[k].vol, 2) + "</code>\n";
+   t += "\nTap a number to copy it. If price has already moved far from the entry, skip this one. Updates follow as replies.";
+   t += TgFooter();
+   TgEnqueue(t, g_tgp[k].id, true);
+}
+
+void TgTrackNew(const ulong id, const string sym, const long type, const double open, const double vol, const double sl, const double tp)
+{
+   int k = ArraySize(g_tgp);
+   ArrayResize(g_tgp, k + 1);
+   ArrayResize(g_tgSym, k + 1);
+   g_tgSym[k]           = sym;
+   g_tgp[k].id          = id;
+   g_tgp[k].ptype       = type;
+   g_tgp[k].popen       = open;
+   g_tgp[k].vol         = vol;
+   g_tgp[k].r           = InitialRisk(id, open, sl);
+   g_tgp[k].postedSL    = sl;
+   g_tgp[k].postedTP    = tp;
+   g_tgp[k].trailSLAt   = 0;
+   g_tgp[k].trailTPAt   = 0;
+   g_tgp[k].msgId       = 0;
+   g_tgp[k].be          = false;
+   g_tgp[k].silent      = false;
+   g_tgp[k].seen        = true;
+   g_tgp[k].goneScans   = 0;
+
+   double dir = (type == POSITION_TYPE_BUY) ? 1.0 : -1.0;
+   double pt  = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(pt <= 0.0)
+      pt = 0.00001;
+   double tol = MathMax(2.0 * pt, 0.03 * g_tgp[k].r);
+   if(sl > 0.0 && dir * (sl - open) >= -tol)
+      g_tgp[k].be = true;                 // the stop is already at or past the entry: breakeven would be old news
+
+   string marker = "TL_TGA_" + (string)id;
+   if(GlobalVariableCheck(marker))
+   {
+      // known from an earlier run of the EA: pick up where it left off without announcing again
+      g_tgp[k].silent = (GlobalVariableGet(marker) == 2.0);
+      g_tgp[k].msgId  = TgMsgOf(id);
+      return;
+   }
+   bool baseline = (TimeLocal() < g_tgBaselineUntil) && !InpTgAnnounceExisting;
+   if(baseline)
+   {
+      g_tgp[k].silent = true;             // already open when the EA started: its first post would be misleading
+      GlobalVariableSet(marker, 2.0);
+      return;
+   }
+   GlobalVariableSet(marker, 1.0);
+   if(InpTgPostOpen)
+      TgPostOpen(k, sl, tp);
+   else
+      g_tgp[k].silent = false;
+}
+
+void TgPostUpdate(const int k, const string title, const string emo, const string body)
+{
+   string sym = g_tgSym[k];
+   string t = TgEm(emo) + "<b>" + title + "</b> - " + TgHtml(sym) + " " + TgDirName(g_tgp[k].ptype) + "\n" + body;
+   TgEnqueue(TgTrimNl(t), g_tgp[k].id, false);
+}
+
+void TgCheckUpdates(const int k, const double vol, const double sl, const double tp)
+{
+   string sym = g_tgSym[k];
+   double pt  = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(pt <= 0.0)
+      pt = 0.00001;
+   double dir  = (g_tgp[k].ptype == POSITION_TYPE_BUY) ? 1.0 : -1.0;
+   double open = g_tgp[k].popen;
+   if(g_tgp[k].r <= 0.0 && sl > 0.0)
+      g_tgp[k].r = InitialRisk(g_tgp[k].id, open, sl);   // a stop added later defines 1R
+   double R    = g_tgp[k].r;
+   double tol  = MathMax(2.0 * pt, 0.03 * R);
+   double step = (R > 0.0) ? InpTgTrailStepPct / 100.0 * R : 10.0 * pt;
+   datetime now = TimeLocal();
+   bool post = !g_tgp[k].silent;
+
+   // partial close: the volume went down but the position is still open
+   if(vol < g_tgp[k].vol - 0.0000001)
+   {
+      double px = 0.0;
+      long rs = 0;
+      if(post && InpTgPostPartial)
+      {
+         double pct = (g_tgp[k].vol > 0.0) ? 100.0 * (g_tgp[k].vol - vol) / g_tgp[k].vol : 0.0;
+         string b = "Closed about " + StringFormat("%.0f", pct) + "% of the position";
+         if(TgLastOut(g_tgp[k].id, px, rs))
+            b += " at " + TgCode(sym, px);
+         b += ".\nThe rest stays open.";
+         TgPostUpdate(k, "PARTIAL CLOSE", "cut", b);
+      }
+   }
+   g_tgp[k].vol = vol;
+
+   string title = "";
+   string emo   = "up";
+   string body  = "";
+   bool beNow   = false;
+   bool slTrail = false;
+   bool tpMove  = false;
+
+   // ---- stop loss
+   if(MathAbs(sl - g_tgp[k].postedSL) > pt * 0.5)
+   {
+      double was = g_tgp[k].postedSL;
+      bool wasBelow   = (was <= 0.0) || (dir * (was - open) < -tol);
+      bool nowAtEntry = (sl > 0.0) && (dir * (sl - open) >= -tol);
+      if(!g_tgp[k].be && wasBelow && nowAtEntry && (R <= 0.0 || dir * (sl - open) <= 0.5 * R))
+      {
+         g_tgp[k].be = true;
+         if(InpTgPostBE)
+         {
+            beNow = true;
+            body += "Move your SL to: " + TgCode(sym, sl) + "\n";
+            body += "(entry was " + TgCode(sym, open) + ")\n";
+            g_tgp[k].postedSL = sl;
+         }
+         else
+            g_tgp[k].postedSL = sl;
+      }
+      else if(sl > 0.0 && was > 0.0 && dir * (sl - was) > 0.0)
+      {
+         if(dir * (sl - open) >= -tol)
+            g_tgp[k].be = true;
+         bool bigStep  = (dir * (sl - was) >= step);
+         bool waited   = (now - g_tgp[k].trailSLAt >= InpTgTrailSecs);
+         if(bigStep && waited)
+         {
+            g_tgp[k].trailSLAt = now;
+            g_tgp[k].postedSL  = sl;
+            if(InpTgPostTrailSL)
+            {
+               slTrail = true;
+               body += "New SL: " + TgCode(sym, sl) + " (was " + TgCode(sym, was) + ")\n";
+            }
+         }
+      }
+      else if(sl > 0.0 && was > 0.0)
+      {
+         g_tgp[k].postedSL = sl;
+         if(InpTgPostTrailSL)
+         {
+            slTrail = true;
+            emo = "warn";
+            body += "SL moved back: " + TgCode(sym, sl) + " (was " + TgCode(sym, was) + ")\n";
+         }
+      }
+      else if(sl > 0.0)
+      {
+         g_tgp[k].postedSL = sl;
+         if(InpTgPostTrailSL)
+         {
+            slTrail = true;
+            body += "SL set: " + TgCode(sym, sl) + "\n";
+         }
+      }
+      else
+      {
+         g_tgp[k].postedSL = 0.0;
+         if(InpTgPostTrailSL)
+         {
+            slTrail = true;
+            emo = "warn";
+            body += "SL removed.\n";
+         }
+      }
+   }
+
+   // ---- take profit
+   if(MathAbs(tp - g_tgp[k].postedTP) > pt * 0.5)
+   {
+      double wasTP = g_tgp[k].postedTP;
+      bool further = (tp > 0.0 && wasTP > 0.0 && dir * (tp - wasTP) > 0.0);
+      bool waitedTP  = (now - g_tgp[k].trailTPAt >= InpTgTrailSecs);
+      bool bigStepTP = (dir * (tp - wasTP) >= step);
+      if(!further || (bigStepTP && waitedTP))
+      {
+         g_tgp[k].trailTPAt = now;
+         g_tgp[k].postedTP  = tp;
+         if(InpTgPostTrailTP)
+         {
+            tpMove = true;
+            if(tp <= 0.0)
+               body += "TP removed.\n";
+            else if(wasTP <= 0.0)
+               body += "TP set: " + TgCode(sym, tp) + "\n";
+            else
+               body += "New TP: " + TgCode(sym, tp) + " (was " + TgCode(sym, wasTP) + ")\n";
+         }
+      }
+   }
+
+   if(StringLen(body) == 0 || !post)
+      return;
+   if(beNow)
+   {
+      title = "BREAKEVEN";
+      emo   = "lock";
+   }
+   else if(slTrail && tpMove)
+      title = "TRAILING STOP AND TARGET";
+   else if(slTrail)
+      title = (emo == "warn") ? "STOP CHANGED" : "TRAILING STOP";
+   else
+   {
+      title = "TAKE PROFIT MOVED";
+      emo   = "tp";
+   }
+   TgPostUpdate(k, title, emo, body);
+}
+
+void TgPostClose(const int k, const bool have, const double px, const long reason)
+{
+   string sym  = g_tgSym[k];
+   double dir  = (g_tgp[k].ptype == POSITION_TYPE_BUY) ? 1.0 : -1.0;
+   double open = g_tgp[k].popen;
+   double R    = g_tgp[k].r;
+   double pt   = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(pt <= 0.0)
+      pt = 0.00001;
+   bool   haveR = (have && R > 0.0);
+   double rr    = haveR ? dir * (px - open) / R : 0.0;
+   string rs    = ReasonName(reason);
+   string label = "Closed";
+   string emo   = "flat";
+   if(haveR && MathAbs(rr) <= 0.05 && g_tgp[k].be)
+   {
+      label = "Closed at breakeven";
+      emo   = "flat";
+   }
+   else if(rs == "tp")
+   {
+      label = "Take profit hit";
+      emo   = "ok";
+   }
+   else if(rs == "sl")
+   {
+      if(haveR && rr > 0.05)
+      {
+         label = "Trailing stop hit";
+         emo   = "ok";
+      }
+      else
+      {
+         label = "Stop loss hit";
+         emo   = "bad";
+      }
+   }
+   else if(rs == "so")
+   {
+      label = "Stopped out by the broker";
+      emo   = "bad";
+   }
+   else if(rs == "manual")
+   {
+      label = "Closed manually";
+      emo   = (haveR && rr > 0.05) ? "ok" : ((haveR && rr < -0.05) ? "bad" : "flat");
+   }
+   string t = TgEm(emo) + "<b>TRADE CLOSED - " + label + "</b>\n";
+   t += "<b>" + TgHtml(sym) + "</b> - " + TgDirName(g_tgp[k].ptype) + "\n\n";
+   if(have)
+   {
+      t += "Entry: " + TgCode(sym, open) + "  Exit: " + TgCode(sym, px) + "\n";
+      string r = "Result: ";
+      if(haveR)
+         r += "<b>" + (rr >= 0.0 ? "+" : "") + StringFormat("%.2f", rr) + "R</b> ";
+      double pts = dir * (px - open) / pt;
+      r += "(" + (pts >= 0.0 ? "+" : "") + StringFormat("%.0f", pts) + " points)";
+      t += r + "\n";
+   }
+   else
+      t += "Entry: " + TgCode(sym, open) + "\nThe exit details were not available yet.\n";
+   t = TgTrimNl(t) + TgFooter();
+   TgEnqueue(t, g_tgp[k].id, false);
+}
+
+void TgScan()
+{
+   if(!TgReady())
+      return;
+   int k;
+   for(k = 0; k < ArraySize(g_tgp); k++)
+      g_tgp[k].seen = false;
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0)
+         continue;
+      if(InpTgMagic >= 0 && PositionGetInteger(POSITION_MAGIC) != InpTgMagic)
+         continue;
+      ulong  id   = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      string sym  = PositionGetString(POSITION_SYMBOL);
+      long   type = PositionGetInteger(POSITION_TYPE);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double vol  = PositionGetDouble(POSITION_VOLUME);
+      double sl   = PositionGetDouble(POSITION_SL);
+      double tp   = PositionGetDouble(POSITION_TP);
+      k = TgFind(id);
+      if(k < 0)
+      {
+         TgTrackNew(id, sym, type, open, vol, sl, tp);
+         continue;
+      }
+      g_tgp[k].seen = true;
+      TgCheckUpdates(k, vol, sl, tp);
+   }
+   for(k = ArraySize(g_tgp) - 1; k >= 0; k--)
+   {
+      if(g_tgp[k].seen)
+      {
+         g_tgp[k].goneScans = 0;
+         continue;
+      }
+      double px = 0.0;
+      long   rs = 0;
+      bool have = TgLastOut(g_tgp[k].id, px, rs);
+      g_tgp[k].goneScans++;
+      if(!have && g_tgp[k].goneScans < 5)
+         continue;                    // the history can lag a moment behind the position
+      if(!g_tgp[k].silent && InpTgPostClose)
+         TgPostClose(k, have, px, rs);
+      TgRemove(k);
+   }
+}
+
+void TgInit()
+{
+   GlobalVariablesDeleteAll("TL_TG", TimeCurrent() - 30 * 86400);   // forget old posts
+   if(!TgReady())
+      return;
+   g_tgBaselineUntil = TimeLocal() + 20;      // trades already open when the EA starts are not announced
+   if(InpTgTestOnStart)
+      TgEnqueue(TgEm("ok") + "<b>Telegram is connected.</b>\nTrade posts from " + TgHtml(InpTgHeader) + " will appear in this channel.", 0, false);
+   TgScan();
+   TgFlush();
+}
+// ==== TELEGRAM END
+
+
 int OnInit()
 {
    g_trade.SetDeviationInPoints(200);
@@ -1100,6 +1796,7 @@ int OnInit()
    GlobalVariablesDeleteAll("TL_X_", TimeCurrent() - 7 * 86400);    // forget old pending-order expiry times
    g_jSince = TimeCurrent() - (datetime)(MathMax(1, InpJournalDays) * 86400);
    EventSetMillisecondTimer(3000);
+   TgInit();
    DrawPanel();
    OnTimer();
    return INIT_SUCCEEDED;
@@ -1113,6 +1810,8 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   TgScan();
+   TgFlush();
    if(!g_paused)
    {
       datetime now = TimeLocal();
@@ -1128,6 +1827,17 @@ void OnTimer()
    }
    DrawPanel();
    ChartRedraw();
+}
+
+void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+{
+   if(!InpTgEnable)
+      return;
+   if(trans.type == TRADE_TRANSACTION_DEAL_ADD || trans.type == TRADE_TRANSACTION_POSITION)
+   {
+      TgScan();
+      TgFlush();
+   }
 }
 
 void OnTick()
