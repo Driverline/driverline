@@ -19,7 +19,7 @@
 //| the app is closed. Each has a stop, target and an expiry.        |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.50"
+#property version     "1.51"
 #property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
@@ -82,6 +82,7 @@ string   g_excl = "";
 CTrade   g_trade;
 
 string BuildOrders();   // defined further down; Sync() uses it
+string OrderStateText(const long st);   // defined further down; PlacePending() uses it
 
 //+------------------------------------------------------------------+
 //| JSON helpers                                                     |
@@ -846,13 +847,54 @@ string PlacePending(const string sym, const string pt, const double reqLots, con
    if(!sent || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_PLACED))
       return "Broker refused: " + g_trade.ResultRetcodeDescription();
    ulong tk = g_trade.ResultOrder();
-   if(expiry > 0 && tk > 0)
+   // Do not trust "done" alone: confirm the order really is waiting at the broker, and say why if it is not.
+   Sleep(400);
+   bool live = (tk > 0 && OrderSelect(tk));
+   if(!live)
+   {
+      string why = "the broker returned no order number";
+      bool   filled = false;
+      if(tk > 0 && HistoryOrderSelect(tk))
+      {
+         long stt = HistoryOrderGetInteger(tk, ORDER_STATE);
+         filled = (stt == ORDER_STATE_FILLED || stt == ORDER_STATE_PARTIAL);
+         why = "the broker's state for it is " + OrderStateText(stt);
+      }
+      PrintFormat("[TradeLens] %s %s ticket %I64u retcode %u: not waiting after placing (%s)", pt, sym, tk, rc, why);
+      if(filled)
+      {
+         ok = true;
+         return pt + " on " + sym + " filled straight away, so it is now an open trade (" + why + ")";
+      }
+      return "The broker answered OK but the order is not waiting at your broker (" + why + "). Nothing was placed. See the Experts tab in MT5.";
+   }
+   if(expiry > 0)
       GlobalVariableSet("TL_X_" + (string)tk, (double)expiry);
+   PrintFormat("[TradeLens] placed %s %s ticket %I64u at %s", pt, sym, tk, DoubleToString(price, dg));
    ok = true;
    return "Placed " + pt + " " + DoubleToString(lots, ld) + " " + sym + " at " + DoubleToString(price, dg)
         + (stopLimit ? ", limit " + DoubleToString(lim, dg) : "")
         + ", stop " + DoubleToString(sl, dg) + ", target " + DoubleToString(tp, dg)
+        + ", ticket " + (string)tk
         + (expiry > 0 ? ", cancels itself in " + (string)(expMin / 60) + "h" + ((expMin % 60) > 0 ? " " + (string)(expMin % 60) + "m" : "") : "");
+}
+
+string OrderStateText(const long st)
+{
+   switch((int)st)
+   {
+      case ORDER_STATE_STARTED:         return "started";
+      case ORDER_STATE_PLACED:          return "placed";
+      case ORDER_STATE_CANCELED:        return "cancelled";
+      case ORDER_STATE_PARTIAL:         return "partly filled";
+      case ORDER_STATE_FILLED:          return "filled";
+      case ORDER_STATE_REJECTED:        return "rejected";
+      case ORDER_STATE_EXPIRED:         return "expired";
+      case ORDER_STATE_REQUEST_ADD:     return "being registered";
+      case ORDER_STATE_REQUEST_MODIFY:  return "being modified";
+      case ORDER_STATE_REQUEST_CANCEL:  return "being cancelled";
+   }
+   return "unknown (" + (string)st + ")";
 }
 
 // Deletes one waiting pending order. Returns "" when it worked, otherwise the reason.
@@ -894,6 +936,7 @@ void TidyPending()
       if(StringLen(why) == 0)
          continue;
       string name = OrderTypeText(ty) + " " + sym;
+      PrintFormat("[TradeLens] cancelling %s ticket %I64u: %s", name, tk, why);
       if(g_trade.OrderDelete(tk))
       {
          GlobalVariableDel("TL_X_" + (string)tk);
