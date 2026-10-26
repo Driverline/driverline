@@ -19,7 +19,7 @@
 //| the app is closed. Each has a stop, target and an expiry.        |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.51"
+#property version     "1.52"
 #property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
@@ -798,6 +798,11 @@ string PlacePending(const string sym, const string pt, const double reqLots, con
       if(lim <= 0.0 || (buy && !(lim <= price - minD)) || (!buy && !(lim >= price + minD)))
          return "The limit level is too close to the trigger for this broker's rules";
    }
+   // A limit order whose target is already behind price can never work (and would be dropped as a missed move).
+   if(ot == ORDER_TYPE_BUY_LIMIT && !(bid < tp - minD))
+      return "Price is already at or past the take profit, so there is nothing left to wait for. Analyze again.";
+   if(ot == ORDER_TYPE_SELL_LIMIT && !(ask > tp + minD))
+      return "Price is already at or past the take profit, so there is nothing left to wait for. Analyze again.";
    if(buy && !(sl <= entry - minD && tp >= entry + minD))
       return "The stop or target is too close to the order price for this broker's rules";
    if(!buy && !(sl >= entry + minD && tp <= entry - minD))
@@ -926,6 +931,8 @@ void TidyPending()
       long   ty  = OrderGetInteger(ORDER_TYPE);
       double tp  = OrderGetDouble(ORDER_TP);
       string why = "";
+      if(TimeCurrent() - (datetime)OrderGetInteger(ORDER_TIME_SETUP) < 120)
+         continue;   // a brand-new order is never tidied away in its first two minutes
       if(OrderGetInteger(ORDER_TIME_EXPIRATION) == 0 && GlobalVariableCheck("TL_X_" + (string)tk)
          && TimeCurrent() >= (datetime)GlobalVariableGet("TL_X_" + (string)tk))
          why = "expired";

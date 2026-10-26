@@ -95,6 +95,7 @@ def test_orders_are_valid_mt5_orders():
                 entry = o["limit"]
             elif kind.endswith("LIMIT"):
                 assert (o["price"] < P) if buy else (o["price"] > P)
+                assert (o["tp"] > P) if buy else (o["tp"] < P)          # the target must still be ahead of price, or the EA would drop the order
                 assert o["limit"] is None
                 entry = o["price"]
             else:

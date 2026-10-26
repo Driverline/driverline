@@ -172,6 +172,8 @@ def _one(kind: str, c: dict):
         sl = level - risk_gap if buy else level + risk_gap
         reach = min(abs(far - level) - PAD_ATR * atr, MAX_LIMIT_R * risk_gap)    # a far-away line is not a realistic target
         tp = level + reach if buy else level - reach
+        if (buy and tp <= P + away) or (not buy and tp >= P - away):     # price is already at or past the target: nothing left to wait for
+            return None, "Price is already at or past the realistic target for this order, so there is no room left to wait for."
         return {"price": level, "limit": None, "entry": level, "sl": sl, "tp": tp, "name": name}, None
 
     if stretched:
