@@ -12,6 +12,11 @@
 <script src="/track.js"></script>
 <script src="/auth.js"></script>
 <script src="/ticket.js"></script>
+<style>
+@keyframes dlspin{to{transform:rotate(360deg)}}
+button.spin::before{content:"";display:inline-block;width:14px;height:14px;margin-right:8px;vertical-align:-2px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:dlspin .8s linear infinite}
+#radar .busy{margin:8px 0;padding:8px 10px;border:1px solid var(--gold);border-radius:10px;color:var(--gold2)}
+</style>
 </head>
 <body class="chat">
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a><select class="chip" id="sym"></select></header>
@@ -34,7 +39,7 @@ function renderFallback(d){
   const tfs=el('div');for(const [k,v] of Object.entries(s.timeframes||{})){const r=el('div','tf');r.append(el('b','',k),el('span','',v));tfs.append(r)}
   box.append(section('Timeframes',tfs));
   const lv=el('div');for(const [k,v] of Object.entries(s.levels||{})){const r=el('div','tf');r.append(el('b','',k),el('span','','price '+v.price+', swing high '+v.swing_high+', swing low '+v.swing_low));lv.append(r)}
-  box.append(section('Key levels',lv),factsBlock(d));feed.append(box);box.scrollIntoView({behavior:'smooth'});
+  box.append(section('Key levels',lv),factsBlock(d));feed.append(box);showResult(box);
 }
 function trow(k,v,copy){
   const r=el('div','kv'),sp=el('span','',v);r.append(el('span','',k));
@@ -211,6 +216,8 @@ function pendingSection(p,wbox,name,key){
   const eaNeed=el('div','mut','Pending orders are placed through your own MT5 and wait at your broker. They cannot be used with Deriv multiplier trades.');eaNeed.style.marginTop='8px';box.append(eaNeed);
   refresh();return section('Pending orders',box)
 }
+let lastBox=null,busyKey=null,lastRadar=null;
+function showResult(box){lastBox=box;box.scrollIntoView({behavior:'smooth',block:'start'})}
 function render(d){
   if(!d.card){renderFallback(d);return}
   const c=d.card,box=el('div','msg');
@@ -242,17 +249,20 @@ function render(d){
   if(d.pending&&wbox)box.append(pendingSection(d.pending,wbox,sym.selectedOptions[0].text,sym.value));   // NO TRADE only: orders that wait for the picture to change
   if(c.status==='TRADE')box.append(ticketSection(c));
   box.append(factsBlock(d));
-  feed.append(box);box.scrollIntoView({behavior:'smooth'});
+  feed.append(box);showResult(box);
 }
 btn.onclick=async()=>{
   btn.disabled=true;btn.textContent='Analyzing...';
+  busyKey=sym.value;if(lastRadar)renderRadar(lastRadar);     // the matching Analyse button shows "Analysing..." at once
   try{
     const r=await fetch('/api/tradecard/'+sym.value);
     const d=await r.json();
     if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
     render(d);
-  }catch(e){const m=el('div','msg err','Error: '+e.message);feed.append(m);m.scrollIntoView()}
-  btn.disabled=false;label();window.dlMe&&dlMe();loadRadar();
+  }catch(e){const m=el('div','msg err','Error: '+e.message);feed.append(m);showResult(m)}
+  btn.disabled=false;label();window.dlMe&&dlMe();
+  busyKey=null;await loadRadar();                            // the radar card above changes height, so scroll to the result again afterwards
+  if(lastBox)lastBox.scrollIntoView({behavior:'smooth',block:'start'});
 };
 (async()=>{
   try{
@@ -267,17 +277,24 @@ btn.onclick=async()=>{
 })();
 sym.onchange=()=>{label();try{localStorage.setItem('dl_sym',sym.value)}catch(e){}};
 const radarBox=document.getElementById('radar');
+function markBusy(b,key){
+  if(!busyKey)return;
+  b.disabled=true;
+  if(key===busyKey){b.textContent='Analysing\u2026';b.classList.add('spin')}
+}
 function radarItem(s){
   const d=el('div');d.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)';
   const l=el('div'),t=el('div','',s.name+' \u00b7 '+s.score+'/100');t.style.fontWeight='600';
   l.append(t,el('div','mut',s.condition+(s.preferred?' \u00b7 your usual symbol':'')));
   if(s.cached)l.append(el('div','mut','A recent analysis is available, which uses no credit.'));
-  const b=el('button','ghost','Analyse');b.style.cssText='width:auto;padding:8px 12px';b.onclick=()=>analyse(s.key);
+  const b=el('button','ghost','Analyse');b.style.cssText='width:auto;padding:8px 12px';b.onclick=()=>analyse(s.key);markBusy(b,s.key);
   d.append(l,b);return d;
 }
 function renderRadar(r){
-  radarBox.textContent='';
+  lastRadar=r;radarBox.textContent='';
   const c=el('div','card');c.append(el('h2','','Smart Analysis Timing'));
+  if(busyKey){const o=[...sym.options].find(x=>x.value===busyKey);
+    c.append(el('div','busy','Analysing '+(o?o.text:'')+'\u2026 this takes a few seconds. The result opens by itself at the bottom of the page.'))}
   if(r.status!=='ok'){c.append(el('div','mut',r.message||'Not available right now. You can still analyse manually.'));radarBox.append(c);return}
   const left=Math.max(0,r.credits.limit-r.credits.used);
   c.append(el('div','mut','You have '+left+' of '+r.credits.limit+' analyses left today. An analysis is used only when you press Analyse and Claude runs a new one. Looking at this panel is free.'));
@@ -287,7 +304,7 @@ function renderRadar(r){
       el('div','mut','Current conditions: '+b.condition),el('h2','','Why this is recommended'));
     const ul=el('ul');b.reasons.forEach(x=>ul.append(el('li','',x)));c.append(ul);
     c.append(el('div','mut',b.time_note+' '+(b.notes||[]).join(' ')));
-    const go=el('button','','Analyse '+b.name);go.style.marginTop='10px';go.onclick=()=>analyse(b.key);c.append(go);
+    const go=el('button','','Analyse '+b.name);go.style.marginTop='10px';go.onclick=()=>analyse(b.key);markBusy(go,b.key);c.append(go);
     if(b.cached)c.append(el('div','mut','A recent analysis is available, so opening it uses no credit.'));
   }else if(r.wait){
     c.append(el('div','status NOTRADE',r.wait.title),el('div','',r.wait.message));
