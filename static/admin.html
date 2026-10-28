@@ -77,7 +77,7 @@ function render(d){
   const bt=el('div','card');bt.append(el('h2','','Signal backtest'));const bb=el('div');bt.append(bb);root.append(bt);loadBacktest(bb);
   const bl=el('div','card');bl.append(el('h2','','Billing and signal credits'));const blb=el('div');bl.append(blb);root.append(bl);loadBilling(blb);
   const cx=el('div','card');cx.append(el('h2','','Crypto payments (NOWPayments)'));const cxb=el('div');cx.append(cxb);root.append(cx);loadCrypto(cxb,'open');
-  const px=el('div','card');px.append(el('h2','','Naira payments (Paystack)'));const pxb=el('div');px.append(pxb);root.append(px);loadPaystack(pxb,'open');
+  const nx=el('div','card');nx.append(el('h2','','Naira payments (Moniepoint)'));const nxb=el('div');nx.append(nxb);root.append(nx);loadNaira(nxb);
   const rs=el('div','card');rs.append(el('h2','','Forex and gold research'));const rsb=el('div');rs.append(rsb);root.append(rs);loadResearch(rsb);
   const en=el('div','card');en.append(el('h2','','AI signal engine research (Step and Range Break)'));const enb=el('div');en.append(enb);root.append(en);loadEngine(enb);
   const ri=el('div','card');ri.append(el('h2','','Smart Analysis Timing insights'));const rb=el('div');rb.append(el('span','mut','Loading...'));ri.append(rb);root.append(ri);loadRadarInfo(rb);
@@ -294,55 +294,83 @@ async function loadCrypto(box,filter){
   if(r.exceptions.length){box.append(el('h2','','Recent exceptions'));
     r.exceptions.forEach(x=>{const e=el('div','mut',when(x.created_at)+' · '+x.kind+(x.order_id?' · order #'+x.order_id:'')+' · '+(x.detail||''));e.style.fontSize='13px';box.append(e)})}
 }
-async function loadPaystack(box,filter){
+async function loadNaira(box,st){
+  st=st||{status:'open',q:'',from:'',to:'',offset:0};
   box.textContent='';
-  let r;try{r=await api('/pay/paystack?status='+encodeURIComponent(filter||'open'))}catch(e){box.append(el('div','err',e.message));return}
+  let r;try{r=await api('/pay/naira?'+new URLSearchParams({status:st.status,q:st.q,from:st.from,to:st.to,offset:st.offset||0}))}catch(e){box.append(el('div','err',e.message));return}
   const when=t=>t?new Date(t*1000).toLocaleString():'-';
-  box.append(el('div','mut','Naira payments (card, bank transfer, USSD) confirmed automatically by Paystack. Successful payments credit the member by themselves; you only step in for the exceptions listed here. Naira prices are the USD price times the Naira rate in Billing.'));
-  if(r.key_mode==='test')box.append(el('div','warn','TEST KEY in use: only admin accounts can pay, and no real money moves. Test purchases still add signals to the admin account, so remove them afterwards with "Add or remove signals by hand" (Billing).'));
-  if(r.key_mode==='live')box.append(el('div','win','LIVE key in use: real money.'));
-  r.problems.forEach(p=>box.append(el('div','warn','Not ready: '+p)));
-  if(!r.ngn_rate)box.append(el('div','warn','The Naira rate (ngn_rate) is not set in Billing settings: Naira prices cannot be calculated.'));
-  const sel=document.createElement('select');[['off','Off: nobody can start a Naira payment'],['admin','Pilot: admin accounts only'],['public','Public: every member (live key only)']].forEach(([v,t])=>opt(sel,v,t));sel.value=r.mode;
+  const money=n=>n==null?'-':'₦'+Number(n).toLocaleString(undefined,{maximumFractionDigits:2});
+  const reload=()=>loadNaira(box,st);
+  box.append(el('div','mut','Members pay by bank transfer to the Moniepoint business account. Nothing is automatic: a bank alert or a customer\'s claim never approves an order. Check the credit in the Moniepoint account yourself, then match it to the order and press Approve Payment. Only an exact amount is approved; any other amount waits for your decision.'));
+  r.problems.forEach(p=>box.append(el('div','warn','Not ready: '+p+'.')));
+  const sel=document.createElement('select');[['off','Off: nobody can start a Naira order'],['admin','Pilot: admin accounts only'],['public','Public: every member']].forEach(([v,t])=>opt(sel,v,t));sel.value=r.mode;
   const mb=el('button','','Save mode');mb.style.marginTop='8px';const mm=el('div','mut');
-  mb.onclick=async()=>{if(sel.value==='public'&&r.mode!=='public'&&!confirm('Make Naira payments available to every member now?'))return;
-    try{await api('/pay/paystack/toggle','POST',{mode:sel.value});loadPaystack(box,filter)}catch(e){mm.className='err';mm.textContent=e.message}};
-  box.append(el('label','','Who can pay in Naira'),sel,mb,mm);
-  box.append(el('div','mut','Switching to Off only stops new payments. A payment already started is still detected and credited.'));
-  [['Webhook URL for Paystack',r.webhook_url],['Callback URL for Paystack',r.callback_url]].forEach(([k,v])=>{if(!v)return;const l=el('div','kv');l.append(el('span','',k));const x=el('span','',v);x.style.wordBreak='break-all';l.append(x);box.append(l);
-    const cp=el('button','ghost','Copy');cp.style.cssText='width:auto;padding:6px 12px;margin-top:4px';cp.onclick=async()=>{try{await navigator.clipboard.writeText(v);cp.textContent='Copied'}catch(e){prompt('Copy this:',v)}};box.append(cp)});
-  box.append(kv('Key mode',r.key_mode||'none'),kv('Naira rate',r.ngn_rate?('1 USD = ₦'+r.ngn_rate):'not set'));
-  const ck=el('button','ghost','Check connection to Paystack');ck.style.cssText='width:auto;padding:6px 12px;margin:8px 0';const cm=el('div','mut');
-  ck.onclick=async()=>{ck.disabled=true;cm.className='mut';cm.textContent='Checking...';
-    try{const x=await api('/pay/paystack/check','POST');
-      cm.className=x.key_accepted?'win':'warn';
-      cm.textContent=(x.problems.length?'Missing: '+x.problems.join('; '):'')+(x.key_accepted===null?'':(x.key_accepted?'Paystack accepted the key ('+x.key_mode+').':'Paystack refused the key or could not be reached ('+x.detail+').'))}
-    catch(e){cm.className='err';cm.textContent=e.message}ck.disabled=false};
-  box.append(ck,cm);
+  mb.onclick=async()=>{if(sel.value==='public'&&r.mode!=='public'&&!confirm('Make Pay with Naira available to every member now?'))return;
+    try{await api('/pay/naira/toggle','POST',{mode:sel.value});reload()}catch(e){mm.className='err';mm.textContent=e.message}};
+  box.append(el('label','','Who can pay with Naira'),sel,mb,mm);
+  box.append(el('div','mut','Switching to Off only stops new orders. Orders that already exist stay visible and can still be approved here.'));
+  box.append(kv('Bank',r.bank.bank_name||'not set'),kv('Account name',r.bank.account_name||'not set'),kv('Account number',r.bank.account_number||'not set'),kv('Naira rate',r.rate?('1 USD = ₦'+r.rate):'not set'));
+  box.append(el('div','mut','The bank details and the rate are edited above under Billing and signal credits.'));
   const cs=Object.entries(r.counts).map(([k,v])=>k+' '+v).join(' · ');box.append(el('div','mut',cs?'Orders: '+cs:'No Naira orders yet.'));
-  const f=document.createElement('select');['open','review','approved','failed','expired','cancelled','refunded','rejected','all'].forEach(v=>opt(f,v,v==='review'?'Needs your attention':v));f.value=r.status;f.onchange=()=>loadPaystack(box,f.value);f.style.marginTop='8px';box.append(f);
+  // filters
+  const f=el('div');f.style.marginTop='10px';
+  const fs=document.createElement('select');['open','pending','review','approved','rejected','expired','cancelled','all'].forEach(v=>opt(fs,v,v==='open'?'Open (pending and in review)':v));fs.value=r.status;
+  const fq=document.createElement('input');fq.placeholder='Search: reference, narration, email, amount, bank reference';fq.value=r.q||'';
+  const fd=document.createElement('input');fd.type='date';fd.value=st.from||'';const ft=document.createElement('input');ft.type='date';ft.value=st.to||'';
+  const go=el('button','ghost','Search');go.style.cssText='width:auto;padding:6px 12px;margin-top:6px';
+  go.onclick=()=>{st={status:fs.value,q:fq.value,from:fd.value,to:ft.value,offset:0};reload()};
+  fq.onkeydown=e=>{if(e.key==='Enter')go.onclick()};
+  f.append(fs,fq,el('label','','From'),fd,el('label','','To'),ft,go);box.append(f);
+  box.append(el('div','mut','Showing '+r.orders.length+' of '+r.total+' matching orders.'));
   if(!r.orders.length)box.append(el('div','mut','Nothing to show.'));
   r.orders.forEach(o=>{
-    const d=el('div');d.style.cssText='border-top:1px solid var(--line);padding:8px 0';
-    d.append(el('div','hd',o.label+' · $'+o.amount_usd+' · ₦'+Math.round(o.amount_local).toLocaleString()+(o.test?' · TEST':'')),el('div','mut',o.email+' · ref '+o.ref+' · '+when(o.created_at)),
-      el('div',o.status==='approved'?'win':(o.status==='review'||o.status==='failed')?'warn':'mut','Status: '+o.status+(o.provider_status?' (Paystack: '+o.provider_status+')':'')));
-    if(o.actually_paid!=null)d.append(el('div','mut','Paid ₦'+Number(o.actually_paid).toLocaleString()+' of ₦'+Number(o.pay_amount).toLocaleString()+' · last checked '+when(o.last_polled_at)));
-    if(o.provider_payment_id)d.append(el('div','mut','Paystack transaction '+o.provider_payment_id));
+    const d=el('div');d.style.cssText='border-top:1px solid var(--line);padding:10px 0';
+    d.append(el('div','hd',o.label+' · '+money(o.expected)+' (US$'+o.amount_usd+')'),
+      el('div','mut',o.email+' · ref '+o.ref+' · narration '+o.narration+' · '+when(o.created_at)),
+      el('div',o.status==='approved'?'win':o.status==='review'?'warn':(o.status==='rejected'?'loss':'mut'),'Status: '+o.status+(o.decided_by?' · by '+o.decided_by+' on '+when(o.decided_at):'')));
+    if(o.bank_ref)d.append(el('div','mut','Bank reference '+o.bank_ref+(o.received!=null?' · received '+money(o.received):'')));
     if(o.review_reason)d.append(el('div','warn',o.review_reason));
-    const row=el('div','btns');
-    if(['pending','review','expired','failed','cancelled'].includes(o.status)){
-      const rc=el('button','ghost','Re-check with Paystack');rc.onclick=async()=>{rc.disabled=true;try{const x=await api('/pay/paystack/order/'+o.id+'/reconcile','POST');alert('Result: '+x.result+'. Order is now '+x.status+'.');loadPaystack(box,f.value)}catch(e){alert(e.message);rc.disabled=false}};row.append(rc)}
-    if(o.status==='review'){
-      const ap=el('button','','Approve and credit');ap.onclick=async()=>{const n=prompt('Why are you approving this? (required, kept in the record)\n\n'+o.email+' · '+o.label+' · '+o.review_reason);if(!n)return;
-        if(!confirm('Credit '+o.label+' to '+o.email+' now? This cannot be undone.'))return;
-        try{await api('/pay/paystack/order/'+o.id+'/resolve','POST',{action:'approve',note:n});loadPaystack(box,f.value)}catch(e){alert(e.message)}};
-      const rj=el('button','ghost','Reject');rj.onclick=async()=>{const n=prompt('Why are you rejecting this? (required, kept in the record)');if(!n)return;
-        try{await api('/pay/paystack/order/'+o.id+'/resolve','POST',{action:'reject',note:n});loadPaystack(box,f.value)}catch(e){alert(e.message)}};row.append(ap,rj)}
+    if(o.claim)d.append(el('div','mut','Customer note (not proof): '+o.claim));
+    if(o.status==='approved'&&o.fulfilled_at)d.append(el('div','mut','Fulfilled '+when(o.fulfilled_at)+(o.signals?' · '+o.signals+' signals':'')+(o.days?' · '+o.days+' days':'')));
+    const row=el('div','btns');const form=el('div');form.hidden=true;
+    if(['pending','review','expired','cancelled'].includes(o.status)){
+      const vb=el('button','','Verify and approve');vb.onclick=()=>{form.hidden=!form.hidden};row.append(vb);
+      const br=document.createElement('input');br.placeholder='Bank transaction reference (from the Moniepoint account)';
+      const am=document.createElement('input');am.type='number';am.step='0.01';am.inputMode='decimal';am.placeholder='Amount actually received (₦)';am.value=o.received!=null?o.received:o.expected;
+      const nt=document.createElement('input');nt.placeholder='Note (required for a difference, or if the order is not pending)';
+      const ac=document.createElement('input');ac.type='checkbox';ac.style.width='auto';const al=el('label','sw');al.append(ac,document.createTextNode(' Accept an amount that differs from the order'));
+      const msg=el('div','mut');
+      const ap=el('button','','Approve Payment');ap.style.marginTop='8px';
+      ap.onclick=async()=>{
+        if(!br.value.trim()){msg.className='err';msg.textContent='Enter the bank transaction reference.';return}
+        if(!confirm('Approve '+o.label+' for '+o.email+'?\n\nExpected '+money(o.expected)+', you entered '+money(Number(am.value))+'.\nOnly approve after you have seen this credit in the Moniepoint account.'))return;
+        ap.disabled=true;
+        try{const x=await api('/pay/naira/order/'+o.id+'/approve','POST',{bank_ref:br.value,amount_received:am.value,note:nt.value,accept_difference:ac.checked});
+          if(x.result==='review')alert('The amount differs from the order ('+x.reason+'). The order is now in review and nothing was credited. Decide below: approve with "Accept an amount that differs" and a note, or reject.');
+          else if(x.result==='already_approved')alert('This order was already approved. Nothing was credited a second time.');
+          reload()}catch(e){msg.className='err';msg.textContent=e.message;ap.disabled=false}};
+      form.append(br,am,nt,al,ap,msg);
+      const fl=el('button','ghost','Flag for investigation');fl.onclick=async()=>{const n=prompt('Why is this order being investigated? (required, kept in the record)');if(!n)return;try{await api('/pay/naira/order/'+o.id+'/flag','POST',{note:n});reload()}catch(e){alert(e.message)}};
+      const rj=el('button','ghost','Reject');rj.onclick=async()=>{const n=prompt('Internal reason for rejecting (required, kept in the record, never shown to the member):');if(!n)return;if(!confirm('Reject this order?'))return;try{await api('/pay/naira/order/'+o.id+'/reject','POST',{reason:n});reload()}catch(e){alert(e.message)}};
+      row.append(fl,rj);
+    }
     const hs=el('button','ghost','History');const hb=el('div','mut');hb.style.fontSize='13px';
-    hs.onclick=async()=>{if(hb.textContent){hb.textContent='';return}try{const x=await api('/pay/paystack/order/'+o.id+'/events');hb.textContent=x.events.map(e=>when(e.created_at)+'  '+e.source+'  '+e.kind+(e.provider_status?' ['+e.provider_status+']':'')+(e.detail?'  '+e.detail:'')).join('\n');hb.style.whiteSpace='pre-wrap'}catch(e){hb.textContent=e.message}};
-    row.append(hs);d.append(row,hb);box.append(d)});
-  if(r.exceptions.length){box.append(el('h2','','Recent exceptions'));
-    r.exceptions.forEach(x=>{const e=el('div','mut',when(x.created_at)+' · '+x.kind+(x.order_id?' · order #'+x.order_id:'')+' · '+(x.detail||''));e.style.fontSize='13px';box.append(e)})}
+    hs.onclick=async()=>{if(hb.textContent){hb.textContent='';return}try{const x=await api('/pay/naira/order/'+o.id+'/events');hb.textContent=x.events.map(e=>when(e.created_at)+'  '+e.source+(e.admin_email?' ('+e.admin_email+')':'')+'  '+e.kind+(e.detail?'  '+e.detail:'')).join('\n');hb.style.whiteSpace='pre-wrap'}catch(e){hb.textContent=e.message}};
+    row.append(hs);d.append(row,form,hb);box.append(d)});
+  const pg=el('div','btns');
+  if((st.offset||0)>0){const pv=el('button','ghost','Previous');pv.onclick=()=>{st={...st,offset:Math.max(0,(st.offset||0)-40)};reload()};pg.append(pv)}
+  if((st.offset||0)+r.orders.length<r.total){const nx2=el('button','ghost','Next');nx2.onclick=()=>{st={...st,offset:(st.offset||0)+40};reload()};pg.append(nx2)}
+  box.append(pg);
+  // unmatched bank credits
+  box.append(el('h2','','Unmatched bank credits'));
+  box.append(el('div','mut','A credit in the Moniepoint account that you cannot match to an order (wrong or missing narration, odd amount). Record it so it is not forgotten. It leaves this list when an order is approved with the same bank reference.'));
+  const ub=document.createElement('input');ub.placeholder='Bank transaction reference';const ua=document.createElement('input');ua.type='number';ua.step='0.01';ua.placeholder='Amount (₦, optional)';
+  const un=document.createElement('input');un.placeholder='Narration you saw (optional)';const ut=document.createElement('input');ut.placeholder='Note: what you know about it (required)';
+  const um=el('div','mut');const ug=el('button','ghost','Flag unmatched transfer');ug.style.marginTop='8px';
+  ug.onclick=async()=>{try{await api('/pay/naira/unmatched','POST',{bank_ref:ub.value,amount:ua.value,narration_seen:un.value,note:ut.value});reload()}catch(e){um.className='err';um.textContent=e.message}};
+  box.append(ub,ua,un,ut,ug,um);
+  if(!r.unmatched.length)box.append(el('div','mut','No unmatched credits recorded.'));
+  r.unmatched.forEach(x=>{const e=el('div','mut',when(x.created_at)+' · '+x.bank_ref+' · '+(x.detail||''));e.style.fontSize='13px';box.append(e)});
 }
 let enTimer=null;
 async function loadEngine(box){

@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, paystack, pending_orders
+from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, pending_orders
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -151,8 +151,6 @@ async def lifespan(app):
         tasks.append(asyncio.create_task(engine_signals.engine_loop()))
     if os.environ.get("NOWPAYMENTS_API_KEY"):   # re-checks open crypto orders with NOWPayments, so a lost notification only delays
         tasks.append(asyncio.create_task(nowpay.reconcile_loop()))
-    if os.environ.get("PAYSTACK_SECRET_KEY"):   # re-checks open Naira orders with Paystack, so a lost webhook only delays
-        tasks.append(asyncio.create_task(paystack.reconcile_loop()))
     yield
     for t in tasks:
         t.cancel()
@@ -175,7 +173,7 @@ routes = [
     *push.routes,
     *credits.routes,
     *nowpay.routes,
-    *paystack.routes,
+    *naira.routes,
     *deriv_login.routes,
     *deriv_trade.routes,
     *partner.routes,

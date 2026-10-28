@@ -16,6 +16,7 @@
 <main>
 <div class="card" id="bal"><span class="mut">Loading...</span></div>
 <div id="crypto"></div>
+<div id="naira"></div>
 <div id="open"></div>
 <div id="shop"></div>
 <div class="card" id="fund" hidden><h2>Fund your Deriv account</h2><div class="mut">Deposits are made on Deriv's own secure site. TradeLens never handles your Deriv payments or funds.</div><a id="fundgo" href="#" target="_blank" rel="noopener" style="display:block;margin-top:8px;color:var(--gold2)">Open Deriv</a></div>
@@ -37,7 +38,7 @@ const date=t=>new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month
 const usd=x=>'$'+(Number.isInteger(x)?x:x.toFixed(2));
 const per=p=>'$'+(p.usd/p.signals).toFixed(5).replace(/0+$/,'')+' per signal';
 function copyBtn(text){const b=el('button','ghost','Copy');b.style.cssText='width:auto;padding:6px 12px';b.onclick=async()=>{try{await navigator.clipboard.writeText(text);b.textContent='Copied'}catch(e){prompt('Copy this:',text)}};return b}
-function line(k,v,copy){const d=el('div','kv');const s=el('span','',v);s.style.wordBreak='break-all';d.append(el('span','',k));if(copy){const w=el('span');w.style.cssText='display:flex;gap:8px;align-items:center;justify-content:flex-end;text-align:right';w.append(s,copyBtn(v));d.append(w)}else d.append(s);return d}
+function line(k,v,copy,ctext){const d=el('div','kv');const s=el('span','',v);s.style.wordBreak='break-all';d.append(el('span','',k));if(copy){const w=el('span');w.style.cssText='display:flex;gap:8px;align-items:center;justify-content:flex-end;text-align:right';w.append(s,copyBtn(ctext!==undefined?ctext:v));d.append(w)}else d.append(s);return d}
 
 function renderBalance(){
   const c=$('bal');c.textContent='';
@@ -85,21 +86,20 @@ function choose(p,row){
       box.append(cb)});
     box.append(el('div','mut','Confirmed automatically on the network. No screenshot or transaction ID needed.'+(opts.length>1?' Pick the network your wallet or exchange uses.':'')));
   }
-  const ps=D.paystack&&D.paystack.enabled;
-  if(ps){
-    const n=D.paystack.naira&&D.paystack.naira[p.key];
-    const pb=el('button','','Pay \u20a6'+(n!=null?Number(n).toLocaleString():'')+' in Naira \u00b7 card, bank transfer, USSD'+(D.paystack.test?' (TEST MODE)':''));pb.style.marginTop='8px';
-    pb.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}pb.disabled=true;
-      try{const r=await api('/api/pay/paystack/order','POST',{product:p.key,accepted:true});const u=r.order&&r.order.checkout_url;
-        if(u&&u.startsWith('https://')){location.href=u}else{await load();alert('Your order was created, but the payment page could not be opened. Open it from Your orders.');pb.disabled=false}}
-      catch(e){alert(e.message);pb.disabled=false}};
-    box.append(pb,el('div','mut','You pay on Paystack\'s secure page. Your signals are added automatically once Paystack confirms the payment.'+(D.paystack.test?' Test mode: use Paystack test cards only. No real money moves.':'')));
+  const nr=D.naira&&D.naira.enabled;
+  if(nr){
+    const n=D.naira.naira&&D.naira.naira[p.key];
+    const nb=el('button','','Pay with Naira'+(n!=null?' \u00b7 \u20a6'+Number(n).toLocaleString():'')+' \u00b7 bank transfer');nb.style.marginTop='8px';
+    nb.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}nb.disabled=true;
+      try{const r=await api('/api/pay/naira/order','POST',{product:p.key,accepted:true});await load();openNaira(r.order.id);window.scrollTo({top:0,behavior:'smooth'})}
+      catch(e){alert(e.message);nb.disabled=false}};
+    box.append(nb,el('div','mut','Send a bank transfer to our Moniepoint account. Our team confirms the money and adds your signals. No screenshot needed.'+(D.naira.pilot?' (Pilot: only admin accounts see this.)':'')));
   }
-  box.append(el('div','mut',(auto||ps)?'Or pay by hand:':'How would you like to pay?'));
+  box.append(el('div','mut',(auto||nr)?'Or pay by hand (USDT):':'How would you like to pay?'));
   const btns=el('div','btns');btns.style.flexWrap='wrap';
   Object.entries(D.methods).forEach(([m,label])=>{
-    const avail=m==='ngn'?(D.pay.ngn_rate&&D.pay.bank):D.pay[m];
-    const b=el('button','ghost',label+(m==='ngn'&&avail?' \u20a6'+Math.round(p.usd*D.pay.ngn_rate).toLocaleString():''));b.disabled=!avail;
+    const avail=D.pay[m];
+    const b=el('button','ghost',label);b.disabled=!avail;
     b.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m,accepted:true});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
   box.append(btns);row.append(box);
 }
@@ -143,15 +143,64 @@ async function openCrypto(id,refresh){
     else if(o.status==='pending'||o.status==='confirming')pollT=setTimeout(()=>{if(cryptoId===id&&!document.hidden)openCrypto(id,true);else if(cryptoId===id)pollT=setTimeout(()=>openCrypto(id,true),8000)},8000);
   }catch(e){const w=$('crypto');w.textContent='';const c=el('div','card');c.append(el('div','err',e.message));w.append(c)}
 }
+/* ---- Pay with Naira: a bank transfer to our Moniepoint account that our team verifies by hand.
+   Nothing here decides that a payment arrived: only an administrator, after checking the bank account, can approve an order. */
+const NSTATUS={pending:'Waiting for your transfer',review:'Being checked by our team',approved:'Payment confirmed',rejected:'Not confirmed',expired:'Expired',cancelled:'Cancelled'};
+let nairaId=null,nairaT=null;
+function stopNaira(){clearTimeout(nairaT);nairaT=null}
+function closeNaira(){nairaId=null;stopNaira();$('naira').textContent=''}
+function renderNaira(o,note){
+  const w=$('naira');w.textContent='';
+  const c=el('div','card');c.append(el('h2','','Pay for '+o.label+' with Naira'));
+  const cls=o.status==='approved'?'win':(o.status==='rejected'||o.status==='expired')?'loss':o.status==='review'?'warn':'mut';
+  const st=el('div',cls,NSTATUS[o.status]||o.status);st.style.fontWeight='600';c.append(st);
+  if(o.message)c.append(el('div',o.status==='approved'?'win':'mut',o.message));
+  c.append(line('Order reference',o.ref,true));
+  if(o.status==='pending'||o.status==='review'){
+    const a=o.account||{};
+    const amt=Number(o.amount_naira);
+    c.append(line('Bank',a.bank_name||''),line('Account name',a.account_name||''),line('Account number',a.account_number||'',true),
+             line('Amount','\u20a6'+amt.toLocaleString(undefined,{maximumFractionDigits:2}),true,String(amt)),
+             line('Narration',o.narration||'',true));
+    const how=el('div','warn');how.textContent='Send exactly \u20a6'+amt.toLocaleString(undefined,{maximumFractionDigits:2})+' and type the narration exactly as shown ('+(o.narration||'')+') in the transfer description. Do not change the amount and do not pay twice. A different amount has to be checked by hand and takes longer.';
+    c.append(how);
+    c.append(el('div','mut','When your bank confirms the transfer, our team checks the credit in our account and adds your '+(o.signals?o.signals.toLocaleString()+' signals':'purchase')+(o.days?' and your '+o.days+'-day plan':'')+'. This page updates by itself. You do not need to send a screenshot.'));
+    if(o.status==='pending'){
+      const i=document.createElement('input');i.placeholder='Optional: the name on the account you paid from, or your bank\'s reference';i.maxLength=200;i.style.marginTop='10px';
+      const m=el('div','mut');
+      const sent=el('button','ghost','I have sent it');sent.style.marginTop='8px';
+      sent.onclick=async()=>{if(!i.value.trim()){m.className='err';m.textContent='Write the name on the account you paid from, or the bank reference, so we can find your transfer.';return}
+        sent.disabled=true;try{await api('/api/pay/naira/order/'+o.id+'/claim','POST',{note:i.value});m.className='win';m.textContent='Thank you, this is noted. It only helps us find your transfer: your signals are added once we confirm the money.';i.value=''}
+        catch(e){m.className='err';m.textContent=e.message}sent.disabled=false};
+      c.append(i,sent,m);
+    }
+    c.append(el('div','mut','Paid but not matched, or something looks wrong? Contact support and quote '+o.ref+(o.narration?' and '+o.narration:'')+'.'+(o.support?' Support: '+o.support:'')));
+  }
+  if(o.status==='approved'&&o.balance!=null)c.append(line('Your signals now',String(o.balance)));
+  if(o.status==='rejected'||o.status==='expired'){c.append(el('div','mut','Contact support with the reference above if you paid. You can also start a new order.'));if(o.support)c.append(el('div','mut','Support: '+o.support))}
+  if(note)c.append(el('div','mut',note));
+  const row=el('div','btns');
+  if(o.status==='pending'||o.status==='review'){const rf=el('button','ghost','Refresh status');rf.onclick=()=>openNaira(o.id,'Checked just now.');row.append(rf)}
+  if(o.status==='pending'){const cx=el('button','ghost','Cancel this order');cx.onclick=async()=>{if(!confirm('Cancel this order? Do not cancel if you have already sent the money.'))return;try{await api('/api/pay/naira/order/'+o.id+'/cancel','POST');await load();openNaira(o.id)}catch(e){alert(e.message)}};row.append(cx)}
+  const cl=el('button','ghost',o.status==='approved'?'Done':'Close');cl.onclick=closeNaira;row.append(cl);c.append(row);
+  w.append(c);
+}
+async function openNaira(id,note){
+  nairaId=id;stopNaira();
+  try{
+    const r=await api('/api/pay/naira/order/'+id);
+    if(nairaId!==id)return;
+    const o=r.order;renderNaira(o,note);
+    if(o.status==='approved')await load();
+    else if(o.status==='pending'||o.status==='review')nairaT=setTimeout(()=>{if(nairaId===id&&!document.hidden)openNaira(id);else if(nairaId===id)nairaT=setTimeout(()=>openNaira(id),20000)},20000);
+  }catch(e){const w=$('naira');w.textContent='';const c=el('div','card');c.append(el('div','err',e.message));w.append(c)}
+}
 function renderOpen(){
   const w=$('open');w.textContent='';
-  const o=D.orders.find(x=>x.id===openId&&x.status==='pending'&&x.method!=='nowpayments'&&x.method!=='paystack');if(!o)return;
+  const o=D.orders.find(x=>x.id===openId&&x.status==='pending'&&x.method!=='nowpayments'&&x.method!=='moniepoint');if(!o)return;
   const c=el('div','card');c.append(el('h2','','Pay for '+o.label));
   c.append(el('div','mut','Order reference '+o.ref+'. Pay exactly the amount shown, then enter your transaction ID below.'));
-  if(o.method==='ngn'){
-    const b=D.pay.bank;c.append(line('Amount','\u20a6'+Math.round(o.amount_local).toLocaleString(),true),line('Bank',b.name),line('Account name',b.account_name,true),line('Account number',b.account_number,true));
-    c.append(el('div','mut','Put '+o.ref+' in the transfer narration if your bank allows it.'));
-  }else{
+  {
     const net=o.method==='trc20'?'TRON (TRC20)':'BNB Smart Chain (BEP20)';
     c.append(line('Amount',o.amount_usd+' USDT',true),line('Network',net),line('Address',D.pay[o.method],true));
     c.append(el('div','warn','Send only USDT, on the '+net+' network. Funds sent on the wrong network can be lost.'));
@@ -179,8 +228,8 @@ function renderOrders(){
       if(o.status==='pending'||o.status==='confirming'){const v=el('button','ghost','View payment');v.style.cssText='width:auto;padding:6px 12px;margin-top:6px';v.onclick=()=>{openCrypto(o.id,true);window.scrollTo({top:0,behavior:'smooth'})};r.append(v)}
       if(o.status==='review')r.append(el('div','warn','This payment is being checked by our team. Quote the reference above if you contact support.'));
       b.append(r);return}
-    if(o.method==='paystack'){
-      if(o.status==='pending'){const v=el('a','ghost','Check payment status');v.href='/paystack.html?reference='+encodeURIComponent(o.ref);v.style.cssText='display:inline-block;width:auto;padding:6px 12px;margin-top:6px';r.append(v)}
+    if(o.method==='moniepoint'){
+      if(o.status==='pending'||o.status==='review'){const v=el('button','ghost','View payment details');v.style.cssText='width:auto;padding:6px 12px;margin-top:6px';v.onclick=()=>{openNaira(o.id);window.scrollTo({top:0,behavior:'smooth'})};r.append(v)}
       if(o.status==='review')r.append(el('div','warn','This payment is being checked by our team. Quote the reference above if you contact support.'));
       b.append(r);return}
     if(o.status==='pending'){const k=el('button','ghost','Continue payment');k.style.cssText='width:auto;padding:6px 12px;margin-top:6px';k.onclick=()=>{openId=o.id;renderOpen();window.scrollTo({top:0,behavior:'smooth'})};r.append(k)}

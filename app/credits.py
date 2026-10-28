@@ -59,15 +59,17 @@ GRANTS = {
     "partner_notify": {"label": "Partner notifications (free)", "notify": True, "mt5": False},
     "founder_mt5": {"label": "Founding member: MT5 connection (free)", "notify": True, "mt5": True},
 }
-METHODS = {"trc20": "USDT (TRC20)", "bep20": "USDT (BEP20)", "ngn": "Naira bank transfer"}
+METHODS = {"trc20": "USDT (TRC20)", "bep20": "USDT (BEP20)"}
+LEGACY_LABELS = {"ngn": "Naira bank transfer (old form)"}   # only to label old orders; the manual flow no longer creates them
 SETTING_KEYS = ("pay_trc20", "pay_bep20", "bank_name", "bank_account_name", "bank_account_number", "ngn_rate", "note",
                 "support", "deriv_enabled", "deriv_app_id", "deriv_ib_link", "deriv_cashier_url", "nowpayments_enabled")
 AUTO_METHOD = "nowpayments"      # billing_orders.method of automatic crypto orders. Deliberately NOT in METHODS: the manual
                                  # order endpoint refuses it, so only nowpay.py can create or settle such an order.
 AUTO_LABEL = "USDT (TRC20), automatic"
-PAYSTACK_METHOD = "paystack"     # billing_orders.method of Naira card / bank payments (paystack.py). Also NOT in METHODS, for the same reason.
-PAYSTACK_LABEL = "Naira (Paystack), automatic"
-PROVIDER_METHODS = (AUTO_METHOD, PAYSTACK_METHOD)   # orders settled by a payment provider, never by the manual flow below
+NAIRA_METHOD = "moniepoint"      # billing_orders.method of "Pay with Naira" orders (naira.py): a bank transfer to the Moniepoint business
+                                 # account that an administrator verifies. Also NOT in METHODS: only naira.py can create or settle one.
+NAIRA_LABEL = "Naira bank transfer (Moniepoint)"
+PROVIDER_METHODS = (AUTO_METHOD, NAIRA_METHOD)      # orders with their own module and admin panel, never touched by the manual flow below
 
 
 def _migrate(con):
@@ -83,6 +85,12 @@ def _migrate(con):
     # One provider payment can belong to one order only: this is the database-level guard against cross-matching.
     con.raw.cursor().execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_provider_pid ON billing_orders(provider_payment_id) "
                              "WHERE provider_payment_id IS NOT NULL")
+    # Manual Naira payments (naira.py). Additive and nullable: the payment narration of an order, unique across orders, and a guard that
+    # one verified bank transaction (billing_orders.txid) can settle one Naira order only. Mirrored by migrations/2026_10_naira.sql.
+    con.add_column("billing_orders", "narration", "TEXT")
+    con.raw.cursor().execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_narration ON billing_orders(narration) WHERE narration IS NOT NULL")
+    con.raw.cursor().execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_bank_txid ON billing_orders(txid) "
+                             "WHERE method='moniepoint' AND txid IS NOT NULL")
 
 
 def db():
@@ -269,10 +277,11 @@ def _col(r, name):
 def _order_public(r) -> dict:
     out = {"id": r["id"], "ref": r["ref"], "product": r["product"], "label": _label(r["product"]),
            "method": r["method"],
-           "method_label": AUTO_LABEL if r["method"] == AUTO_METHOD else PAYSTACK_LABEL if r["method"] == PAYSTACK_METHOD
-           else METHODS.get(r["method"], r["method"]),
+           "method_label": AUTO_LABEL if r["method"] == AUTO_METHOD else NAIRA_LABEL if r["method"] == NAIRA_METHOD
+           else METHODS.get(r["method"]) or LEGACY_LABELS.get(r["method"], r["method"]),
            "amount_usd": r["amount_usd"], "amount_local": r["amount_local"], "currency": r["currency"],
-           "status": r["status"], "txid": r["txid"], "note": r["note"], "created_at": r["created_at"]}
+           "status": r["status"], "txid": None if r["method"] == NAIRA_METHOD else r["txid"],   # a Naira order's txid is the admin's bank reference
+           "note": None if r["method"] == NAIRA_METHOD else r["note"], "created_at": r["created_at"]}
     if r["method"] in PROVIDER_METHODS:   # the transaction reference a member can quote to support
         out.update(provider_payment_id=_col(r, "provider_payment_id"), provider_status=_col(r, "provider_status"),
                    fulfilled_at=_col(r, "fulfilled_at"), expires_at=_col(r, "expires_at"))
@@ -320,10 +329,10 @@ async def billing_view(request):
         print(f"[nowpay] public info failed: {type(e).__name__}", flush=True)
         crypto = {"enabled": False}
     try:
-        from . import paystack
-        naira = paystack.public_info(user)
+        from . import naira as naira_pay
+        naira = naira_pay.public_info(user)
     except Exception as e:
-        print(f"[paystack] public info failed: {type(e).__name__}", flush=True)
+        print(f"[naira] public info failed: {type(e).__name__}", flush=True)
         naira = {"enabled": False}
     shop = on or bool(crypto.get("enabled")) or bool(naira.get("enabled"))   # the admin pilot may open the shop for the admin while billing is closed
     if on:
@@ -334,7 +343,7 @@ async def billing_view(request):
         pay = None
     return JSONResponse({
         "enabled": shop, "grandfathered": grandfathered(user), "balance": balance(user["id"]), "welcome": WELCOME,
-        "partner": _partner_view(user), "crypto": crypto, "paystack": naira,
+        "partner": _partner_view(user), "crypto": crypto, "naira": naira,
         "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")}, **_price_fields(user, k)}
                     for k, v in CATALOG.items()],
         "plans": [{"plan": p["plan"], "label": _label(p["plan"]), "ends_at": p["ends_at"]} for p in plans],
@@ -371,11 +380,6 @@ async def order_create(request):
         if method == "trc20" and not s["pay_trc20"] or method == "bep20" and not s["pay_bep20"]:
             raise HTTPException(409, "This payment method is not available yet")
         local, cur = usd, "USDT"
-        if method == "ngn":
-            rate = _num(s["ngn_rate"])
-            if not (rate and s["bank_account_number"]):
-                raise HTTPException(409, "Naira payments are not available yet")
-            local, cur = round(usd * rate), "NGN"
         open_n = con.execute("SELECT COUNT(*) AS c FROM billing_orders WHERE user_id=? AND status IN ('pending','submitted')",
                              (user["id"],)).fetchone()["c"]
         if open_n >= OPEN_ORDERS_MAX:
@@ -477,7 +481,7 @@ async def admin_approve(request):
         if not p:
             raise HTTPException(409, "This order's product no longer exists")
         if row["method"] in PROVIDER_METHODS:  # automatic orders are settled by the payment provider, or resolved in their own panel
-            raise HTTPException(409, "This is an automatic order. Use the Crypto payments or Naira payments panel")
+            raise HTTPException(409, "This order has its own payment panel (Crypto payments or Naira payments)")
         cur = con.execute("UPDATE billing_orders SET status='approved', decided_at=?, decided_by=? "
                           "WHERE id=? AND status IN ('pending','submitted')", (now, u["id"], oid))
         if cur.rowcount != 1:
