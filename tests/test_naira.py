@@ -915,5 +915,19 @@ class TermsPopupTests(unittest.TestCase):
         self.assertEqual(sql("SELECT * FROM billing_orders WHERE user_id=?", u), [])
 
 
+class TermsPageTests(unittest.TestCase):
+    def test_terms_describe_the_current_payment_flow_and_link_back_to_payment(self):
+        terms = (ROOT / "static" / "terms.html").read_text()
+        self.assertNotIn("then send us the transaction ID or transfer reference", terms)
+        for needle in ("do not need to send a screenshot", "we may ask you for the transfer reference", "narration", "Back to payment", "/billing.html"):
+            self.assertIn(needle, terms)
+        for needle in ("exact amount", "non-refundable", "exchange rate"):
+            self.assertIn(needle, terms)                                        # the unchanged clauses are still there
+        page = (ROOT / "static" / "billing.html").read_text()
+        self.assertNotIn("target='_blank'", page.split("function askTerms")[1].split("function choose")[0])    # same tab: Back stays inside the app
+        self.assertEqual(page.count("/terms.html?from=billing"), 2)
+        self.assertIn("Hide payment options", page)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

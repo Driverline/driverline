@@ -22,7 +22,7 @@
 <div class="card" id="fund" hidden><h2>Fund your Deriv account</h2><div class="mut">Deposits are made on Deriv's own secure site. TradeLens never handles your Deriv payments or funds.</div><a id="fundgo" href="#" target="_blank" rel="noopener" style="display:block;margin-top:8px;color:var(--gold2)">Open Deriv</a></div>
 <div class="card"><h2>Your orders</h2><div id="orders"><span class="mut">Loading...</span></div></div>
 <div class="card"><h2>Signal history</h2><div id="ledger"><span class="mut">Loading...</span></div></div>
-<small class="dis">Signals are rule-based setups for education and risk analysis, not financial advice. Past results do not guarantee future results. Signals are added after your payment is confirmed. Payments are non-refundable. <a href="/terms.html" style="color:var(--gold2)">Terms, Refunds and Support</a></small>
+<small class="dis">Signals are rule-based setups for education and risk analysis, not financial advice. Past results do not guarantee future results. Signals are added after your payment is confirmed. Payments are non-refundable. <a href="/terms.html?from=billing" style="color:var(--gold2)">Terms, Refunds and Support</a></small>
 <div class="mut" id="sup" style="text-align:center;margin:6px 0"></div>
 </main>
 <script>
@@ -64,14 +64,14 @@ function renderShop(){
       const h=el('div','hd');h.append(el('span','',p.label),el('span','',usd(p.usd)+(p.list_usd?' (was '+usd(p.list_usd)+')':'')+(p.days?' / '+p.days+' days':'')));
       row.append(h,el('div','mut',p.signals.toLocaleString()+' signals \u00b7 '+per(p)+(p.notify?' \u00b7 notifications':'')+(p.mt5?' \u00b7 MT5 connection':'')));
       if(p.key==='pro')row.append(el('div','mut','MT5 connection does not by itself guarantee automatic trade execution.'));
-      const b=el('button','','Buy '+p.label);b.style.marginTop='8px';b.onclick=()=>choose(p,row);row.append(b);c.append(row)});
+      const b=el('button','','Buy '+p.label);b.style.marginTop='8px';b.onclick=()=>choose(p,row,b);row.append(b);c.append(row)});
     s.append(c)});
 }
 function askTerms(){
   return new Promise(res=>{
     const ov=el('div');ov.style.cssText='position:fixed;inset:0;z-index:1000;background:rgba(2,8,22,.78);display:flex;align-items:center;justify-content:center;padding:16px';
     const bx=el('div','card');bx.setAttribute('role','dialog');bx.setAttribute('aria-modal','true');bx.tabIndex=-1;bx.style.cssText='max-width:420px;width:100%;margin:0;outline:none';
-    const ta=el('a','','Terms, Refunds and Support');ta.href='/terms.html';ta.target='_blank';ta.rel='noopener';ta.style.color='var(--gold2)';
+    const ta=el('a','','Terms, Refunds and Support');ta.href='/terms.html?from=billing';ta.style.color='var(--gold2)';
     const tx=el('p');tx.style.cssText='font-size:15px;color:var(--tx);margin:6px 0 14px';tx.append(document.createTextNode('I accept the '),ta,document.createTextNode('. Payments are non-refundable.'));
     const row=el('div','btns');const no=el('button','ghost','Reject'),yes=el('button','','Accept');row.append(no,yes);
     bx.append(el('h2','','Before you pay'),tx,row);ov.append(bx);document.body.append(ov);bx.focus();
@@ -80,9 +80,11 @@ function askTerms(){
     yes.onclick=()=>done(true);no.onclick=()=>done(false);ov.onclick=e=>{if(e.target===ov)done(false)};
   });
 }
-function choose(p,row){
-  const old=row.querySelector('.pick');if(old){old.remove();return}
-  const box=el('div','pick');box.style.marginTop='8px';
+function choose(p,row,btn){
+  const label='Buy '+p.label;
+  const old=row.querySelector('.pick');if(old){old.remove();if(btn){btn.className='';btn.textContent=label}return}
+  if(btn){btn.className='ghost open';btn.textContent='\u25B2 Hide payment options'}
+  const box=el('div','pick');box.style.marginTop='8px';box.append(el('div','mut','Choose how you want to pay:'));
   const auto=D.crypto&&D.crypto.enabled;
   if(auto){
     const opts=D.crypto.options&&D.crypto.options.length?D.crypto.options:[{code:null,short:D.crypto.network.replace(/.*\((.*)\)/,'$1')}];

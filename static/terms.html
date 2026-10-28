@@ -17,7 +17,7 @@
 </style>
 </head>
 <body>
-<div class="top"><a href="/">TradeLens</a></div>
+<div class="top"><a href="/">TradeLens</a><a id="back" href="/billing.html" hidden style="float:right;font:700 14px system-ui,sans-serif;letter-spacing:0;text-transform:none">&larr; Back to payment</a></div>
 <main>
 <h1>Terms, Refunds and Support</h1>
 <div class="eff">TradeLens, operated by Driverline. Effective 13 October 2026.</div>
@@ -38,8 +38,9 @@
 
 <div class="card"><h2>3. How payment works</h2>
 <ul>
-<li>You choose a pack or plan, pay by USDT (TRC20 or BEP20) or by Naira bank transfer, then send us the transaction ID or transfer reference. We check the payment by hand and add your signals once it is confirmed. We cannot promise how long that takes.</li>
-<li>Pay the exact amount, to the exact address or account shown for your order, on the exact network shown. Funds sent on the wrong network, to the wrong address, or for a different amount may be lost or delayed, and we are not responsible for that.</li>
+<li>You choose a pack or plan and pay by automatic USDT (TRC20 or BEP20), by Naira bank transfer, or, where offered, by manual USDT. Automatic USDT payments are confirmed on the network and your signals are added on their own. For a Naira transfer, our team checks the credit in our bank account and adds your signals once it is confirmed. You do not need to send a screenshot, receipt or transaction ID for a normal payment.</li>
+<li>If we cannot match a payment to your order, or something does not add up, we may ask you for the transfer reference, a receipt or other proof. Quote your order reference when you contact us. For manual USDT, send us the transaction ID as the order page asks. We cannot promise how long a check takes.</li>
+<li>Pay the exact amount, to the exact address or account shown for your order, on the exact network shown, and for a Naira transfer type the narration shown for your order exactly as given. A payment of a different amount is not added automatically; it is checked by hand and may be delayed. Funds sent on the wrong network, to the wrong address, or for a different amount may be lost or delayed, and we are not responsible for that.</li>
 <li>Any network, exchange or bank fees are yours. If a fee leaves us with less than the price, we may ask for the difference before adding your signals.</li>
 <li>Naira prices follow the exchange rate shown when you start your order.</li>
 </ul></div>
@@ -73,8 +74,12 @@
 <div class="card"><h2>7. Changes</h2>
 <p>We may update these terms. The date at the top shows the latest version, and continued use means you accept the current version.</p></div>
 <small class="dis">Education and risk analysis only, not financial advice.</small>
+<p style="text-align:center;margin:18px 0"><a id="back2" href="/billing.html" hidden style="color:var(--gold2);font-weight:700">&larr; Back to payment</a></p>
 </main>
 <script>
+(function(){const q=new URLSearchParams(location.search).get('from');
+  if(q==='billing'){['back','back2'].forEach(id=>{const a=document.getElementById(id);a.hidden=false;
+    a.onclick=e=>{if(history.length>1&&document.referrer&&new URL(document.referrer).origin===location.origin){e.preventDefault();history.back()}}})}})();
 fetch('/api/public/support').then(r=>r.json()).then(d=>{if(d.support)document.getElementById('sup').textContent='Support: '+d.support}).catch(()=>{});
 </script>
 </body>
