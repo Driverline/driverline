@@ -25,6 +25,8 @@
     const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-admin]'))return;
     const a=document.createElement('a');a.href='/admin.html';a.textContent='Admin';a.dataset.admin='1';
     if(location.pathname==='/admin.html')a.className='on';n.append(a);
+    const p=document.createElement('a');p.href='/admin-payments.html';p.textContent='Payments';p.dataset.admin='1';
+    if(location.pathname==='/admin-payments.html')p.className='on';n.append(p);
   }
   document.addEventListener('DOMContentLoaded',()=>{
     tabs();

@@ -882,5 +882,24 @@ class MigrationTests(unittest.TestCase):
             self.assertNotIn(bad, mod)
 
 
+# ---------------------------------------------------------------- 12. the separate Payments admin page
+class PaymentsPageTests(unittest.TestCase):
+    def test_payment_tools_live_on_their_own_page_and_the_admin_page_links_to_it(self):
+        admin = (ROOT / "static" / "admin.html").read_text()
+        pay = (ROOT / "static" / "admin-payments.html").read_text()
+        for fn in ("loadNaira", "loadCrypto", "loadBilling"):
+            self.assertIn("async function " + fn, pay)
+            self.assertNotIn(fn, admin)
+        self.assertIn("/admin-payments.html", admin)
+        self.assertIn("/admin.html", pay)                                   # and back
+        self.assertIn("/admin-payments.html", (ROOT / "static" / "auth.js").read_text())
+        for other in ("loadEngine", "loadResearch", "loadBacktest", "loadPartner"):
+            self.assertIn(other, admin)                                     # the rest of the admin page is untouched
+
+    def test_the_page_calls_only_admin_protected_endpoints(self):
+        pay = (ROOT / "static" / "admin-payments.html").read_text()
+        self.assertIn("api('/overview')", pay)                              # a non-admin gets the "admins only" message
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
