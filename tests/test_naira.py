@@ -901,5 +901,19 @@ class PaymentsPageTests(unittest.TestCase):
         self.assertIn("api('/overview')", pay)                              # a non-admin gets the "admins only" message
 
 
+class TermsPopupTests(unittest.TestCase):
+    def test_terms_are_accepted_in_a_popup_before_every_order_and_the_server_still_insists(self):
+        page = (ROOT / "static" / "billing.html").read_text()
+        self.assertNotIn("type='checkbox'", page)
+        self.assertEqual(page.count("if(!await askTerms())return;"), 3)       # Naira, automatic crypto, manual USDT
+        for needle in ("function askTerms", "Reject", "Accept", "/terms.html", "Payments are non-refundable"):
+            self.assertIn(needle, page)
+        u = mk_user()
+        for body in ({"product": "boost"}, {"product": "boost", "accepted": False}):
+            self.assertEqual(client(u).post("/api/pay/naira/order", json=body).status_code, 422)
+            self.assertEqual(client(u).post("/api/billing/order", json={**body, "method": "trc20"}).status_code, 422)
+        self.assertEqual(sql("SELECT * FROM billing_orders WHERE user_id=?", u), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

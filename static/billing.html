@@ -67,20 +67,28 @@ function renderShop(){
       const b=el('button','','Buy '+p.label);b.style.marginTop='8px';b.onclick=()=>choose(p,row);row.append(b);c.append(row)});
     s.append(c)});
 }
+function askTerms(){
+  return new Promise(res=>{
+    const ov=el('div');ov.style.cssText='position:fixed;inset:0;z-index:1000;background:rgba(2,8,22,.78);display:flex;align-items:center;justify-content:center;padding:16px';
+    const bx=el('div','card');bx.setAttribute('role','dialog');bx.setAttribute('aria-modal','true');bx.tabIndex=-1;bx.style.cssText='max-width:420px;width:100%;margin:0;outline:none';
+    const ta=el('a','','Terms, Refunds and Support');ta.href='/terms.html';ta.target='_blank';ta.rel='noopener';ta.style.color='var(--gold2)';
+    const tx=el('p');tx.style.cssText='font-size:15px;color:var(--tx);margin:6px 0 14px';tx.append(document.createTextNode('I accept the '),ta,document.createTextNode('. Payments are non-refundable.'));
+    const row=el('div','btns');const no=el('button','ghost','Reject'),yes=el('button','','Accept');row.append(no,yes);
+    bx.append(el('h2','','Before you pay'),tx,row);ov.append(bx);document.body.append(ov);bx.focus();
+    const done=v=>{document.removeEventListener('keydown',key);ov.remove();res(v)};
+    const key=e=>{if(e.key==='Escape')done(false)};document.addEventListener('keydown',key);
+    yes.onclick=()=>done(true);no.onclick=()=>done(false);ov.onclick=e=>{if(e.target===ov)done(false)};
+  });
+}
 function choose(p,row){
   const old=row.querySelector('.pick');if(old){old.remove();return}
   const box=el('div','pick');box.style.marginTop='8px';
-  const agree=document.createElement('input');agree.type='checkbox';agree.style.cssText='width:auto;margin-right:8px';
-  const tl=el('label','');tl.style.cssText='display:flex;align-items:flex-start;gap:6px;font-size:14px;color:var(--tx)';
-  const ta=el('a','','Terms, Refunds and Support');ta.href='/terms.html';ta.target='_blank';ta.style.color='var(--gold2)';
-  const tx=el('span');tx.append(document.createTextNode('I accept the '),ta,document.createTextNode('. Payments are non-refundable.'));tl.append(agree,tx);
-  box.append(tl);
   const auto=D.crypto&&D.crypto.enabled;
   if(auto){
     const opts=D.crypto.options&&D.crypto.options.length?D.crypto.options:[{code:null,short:D.crypto.network.replace(/.*\((.*)\)/,'$1')}];
     opts.forEach(op=>{
       const cb=el('button','','Pay with USDT ('+op.short+') \u00b7 automatic');cb.style.marginTop='8px';
-      cb.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}cb.disabled=true;
+      cb.onclick=async()=>{if(!await askTerms())return;cb.disabled=true;
         try{const r=await api('/api/pay/crypto/order','POST',{product:p.key,accepted:true,currency:op.code||undefined});await load();openCrypto(r.order.id);window.scrollTo({top:0,behavior:'smooth'})}
         catch(e){alert(e.message);cb.disabled=false}};
       box.append(cb)});
@@ -90,7 +98,7 @@ function choose(p,row){
   if(nr){
     const n=D.naira.naira&&D.naira.naira[p.key];
     const nb=el('button','','Pay with Naira'+(n!=null?' \u00b7 \u20a6'+Number(n).toLocaleString():'')+' \u00b7 bank transfer');nb.style.marginTop='8px';
-    nb.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}nb.disabled=true;
+    nb.onclick=async()=>{if(!await askTerms())return;nb.disabled=true;
       try{const r=await api('/api/pay/naira/order','POST',{product:p.key,accepted:true});await load();openNaira(r.order.id);window.scrollTo({top:0,behavior:'smooth'})}
       catch(e){alert(e.message);nb.disabled=false}};
     box.append(nb,el('div','mut','Send a bank transfer to our Moniepoint account. Our team confirms the money and adds your signals. No screenshot needed.'+(D.naira.pilot?' (Pilot: only admin accounts see this.)':'')));
@@ -100,7 +108,7 @@ function choose(p,row){
   Object.entries(D.methods).forEach(([m,label])=>{
     const avail=D.pay[m];
     const b=el('button','ghost',label);b.disabled=!avail;
-    b.onclick=async()=>{if(!agree.checked){alert('Please tick the box to accept the Terms first.');return}b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m,accepted:true});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
+    b.onclick=async()=>{if(!await askTerms())return;b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m,accepted:true});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
   box.append(btns);row.append(box);
 }
 /* ---- automatic USDT payment: the page shows what NOWPayments returned and asks the server for the live status.
