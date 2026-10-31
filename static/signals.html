@@ -44,6 +44,9 @@ function btText(b){return(!b||!b.n)?'No historical test is available for this se
 
 function renderBudget(b,paid){
   const c=$('budget');c.textContent='';
+  if(state&&state.copy_mode){const w=el('div','warn','Signals are paused while Copy trading is on.');w.style.marginBottom='8px';c.append(w);
+    const sb=el('button','ghost','Switch back to Signals');sb.onclick=async()=>{if(!confirm('Switch back to Signals? Copy trading turns off, and the signals used while it was on are deducted now.'))return;
+      try{await api('/api/copy/me/mode','POST',{mode:'signals'});load()}catch(e){alert(e.message)}};c.append(sb);return}
   if(b.kind==='limit'||b.kind==='credits'){
     if(b.kind==='credits'){
       c.append(el('h2','','Your signals'),el('div','big',String(b.balance)),el('div','',b.used+' of '+b.limit+' opened today'+(b.paused?(b.balance<=0?'. You have no signals left.':'. You have reached your daily limit, so new signals are paused until tomorrow (00:00 UTC).'):'.')));
@@ -78,7 +81,7 @@ function card(s){
   else if(!s.opened){
     const cost=state.budget.kind==='credits'?'Uses 1 signal from your balance.':state.budget.kind==='limit'?'Counts towards your daily limit.':'Uses one of your daily analyses.';
     c.append(el('div','mut',left(s.expires_at)+(left(s.expires_at)?'. ':'')+cost));
-    const b=el('button','','Open setup');b.style.marginTop='8px';b.disabled=state.budget.paused;
+    const b=el('button','','Open setup');b.style.marginTop='8px';b.disabled=state.budget.paused||!!state.copy_mode;
     b.onclick=async()=>{b.disabled=true;try{await api('/api/signals/'+s.id+'/open','POST');load()}catch(e){alert(e.message);load()}};c.append(b);
     if(state.budget.paused)c.append(el('div','warn',state.budget.kind==='credits'?(state.budget.balance<=0?'You have no signals left.':'You have reached your daily limit.'):state.budget.kind==='limit'?'You have reached your daily limit.':'You have used your daily analyses.'));
     return c;

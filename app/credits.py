@@ -38,6 +38,7 @@ SCHEMA = """
     CREATE TABLE IF NOT EXISTS billing_subs(id {ID}, user_id INTEGER NOT NULL, plan TEXT NOT NULL, starts_at BIGINT NOT NULL,
         ends_at BIGINT NOT NULL, order_id BIGINT);
     CREATE INDEX IF NOT EXISTS ix_subs_user ON billing_subs(user_id);
+    CREATE TABLE IF NOT EXISTS plan_mode(user_id INTEGER PRIMARY KEY, mode TEXT NOT NULL, since BIGINT, carry DOUBLE PRECISION NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL);
     CREATE TABLE IF NOT EXISTS billing_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS payment_events(id {ID}, order_id BIGINT, provider_payment_id TEXT, source TEXT NOT NULL,
         kind TEXT NOT NULL, provider_status TEXT, detail TEXT, dedupe_key TEXT UNIQUE, admin_id INTEGER, created_at BIGINT NOT NULL);
@@ -51,8 +52,10 @@ CATALOG = {
     "topup": {"label": "Signal Top-Up", "usd": 5, "signals": 267, "days": 0, "notify": False, "mt5": False},
     "boost": {"label": "Signal Boost", "usd": 10, "signals": 550, "days": 0, "notify": False, "mt5": False},
     "vault": {"label": "Signal Vault", "usd": 100, "signals": 5500, "days": 0, "notify": False, "mt5": False},
-    "plus": {"label": "Signals Plus", "usd": 15, "signals": 550, "days": 30, "notify": True, "mt5": False},
-    "pro": {"label": "Signals Pro", "usd": 30, "signals": 550, "days": 30, "notify": True, "mt5": True},
+    "plus": {"label": "Signals Plus", "usd": 15, "signals": 550, "days": 30, "notify": True, "mt5": False, "copy_ib": True},
+    "pro": {"label": "Signals Pro", "usd": 30, "signals": 550, "days": 30, "notify": True, "mt5": True, "copy": True},
+    # Copy trading on its own: MT5 connection + copy trading, no signals and no notifications (see copy_plan.py)
+    "copy": {"label": "Copy Trading", "usd": 15, "signals": 0, "days": 30, "notify": False, "mt5": True, "copy": True},
 }
 # Free plans given by perks.py. They are not products: they cannot be bought and do not appear in the shop.
 GRANTS = {
@@ -218,12 +221,27 @@ def active_plans(uid: int) -> list:
 
 
 def entitled(user: dict, feature: str) -> bool:
-    """feature is "notify" or "mt5". Strict: free accounts only have it through an active plan while billing is on."""
+    """feature is "notify", "mt5" or "copy". Strict: free accounts only have it through an active plan while billing is on.
+    Copy trading is never free for anyone (copy_plan.py). A Signals Plus member linked to our IB who switched to copy mode has the MT5
+    connection but their signals and notifications are paused."""
+    if feature == "copy":
+        from . import copy_plan
+        return copy_plan.copy_active(user)
     if grandfathered(user):
         return True
     if not billing_on():
         return False
-    return any((CATALOG.get(p["plan"]) or GRANTS.get(p["plan"]) or {}).get(feature) for p in active_plans(user["id"]))
+    keys = {p["plan"] for p in active_plans(user["id"])}
+    if "plus" in keys:
+        try:
+            from . import copy_plan
+            if copy_plan.swap(user, keys) == "copy":
+                if feature == "mt5":
+                    return True
+                keys.discard("plus")
+        except Exception as e:
+            print(f"[copy-plan] entitlement check failed: {type(e).__name__}", flush=True)
+    return any((CATALOG.get(k) or GRANTS.get(k) or {}).get(feature) for k in keys)
 
 
 def mt5_allowed(user: dict) -> bool:
@@ -235,6 +253,12 @@ def mt5_can_report(user: dict) -> bool:
     """mt5_allowed, plus a founding member whose funding is still to be verified: they must connect so the EA can report it."""
     if mt5_allowed(user):
         return True
+    try:
+        from . import copy_plan
+        if copy_plan.state(user)["swap"]:        # Signals Plus linked to our IB: may connect so Copy trading can be switched on (copy_plan.py)
+            return True
+    except Exception as e:
+        print(f"[copy-plan] connect check failed: {type(e).__name__}", flush=True)
     try:
         from . import perks
         return perks.founder_pending(user["id"])
@@ -251,6 +275,15 @@ def _price_fields(user: dict, product: str) -> dict:
     except Exception:
         price = base
     return {"usd": price, **({"list_usd": base} if price != base else {})}
+
+
+def _copy_view(user: dict):
+    try:
+        from . import copy_plan
+        return copy_plan.view(user)
+    except Exception as e:
+        print(f"[copy-plan] view failed: {type(e).__name__}", flush=True)
+        return None
 
 
 def _partner_view(user: dict):
@@ -314,6 +347,7 @@ async def billing_view(request):
             perks.sync(user["id"])          # partner perks, if Deriv has confirmed this member
         except Exception as e:
             print(f"[perks] sync failed: {type(e).__name__}", flush=True)
+    cp = _copy_view(user)                   # also charges the signals used while in copy mode, so the balance below is current
     with closing(db()) as con:
         s = settings(con)
         orders = [_order_public(r) for r in con.execute(
@@ -344,7 +378,9 @@ async def billing_view(request):
     return JSONResponse({
         "enabled": shop, "grandfathered": grandfathered(user), "balance": balance(user["id"]), "welcome": WELCOME,
         "partner": _partner_view(user), "crypto": crypto, "naira": naira,
-        "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")}, **_price_fields(user, k)}
+        "copy_plan": cp,
+        "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")},
+                     "copy": bool(v.get("copy")), "copy_ib": bool(v.get("copy_ib")), **_price_fields(user, k)}
                     for k, v in CATALOG.items()],
         "plans": [{"plan": p["plan"], "label": _label(p["plan"]), "ends_at": p["ends_at"]} for p in plans],
         "pay": pay, "methods": METHODS, "orders": orders, "ledger": ledger})

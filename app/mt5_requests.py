@@ -128,8 +128,8 @@ def on_report(con, aid: int):
 # ---------------------------------------------------------------- member
 async def create(request):
     u = auth.require_user(request)
-    if not credits.mt5_allowed(u):
-        raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
+    if not credits.mt5_can_report(u):
+        raise HTTPException(403, "The MT5 connection is part of Signals Pro and the Copy Trading plan. Buy one in the Billing tab.")
     d = await auth._json(request)
     if d.get("consent") is not True:
         raise HTTPException(422, "Please tick the box to confirm you agree to share these details with TradeLens support")

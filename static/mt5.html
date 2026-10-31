@@ -160,8 +160,20 @@ async function loadCopy(sel){
     if(!a){box.append(el('div','mut','Add an MT5 account first.'));return}
     box.append(el('div','mut','Trades the TradeLens admin flags are copied to this MT5 account while copy trading is on. Each copy is placed with its own stop loss and take profit, only if trading from the app is enabled on your account, and never if the lot would risk more than your limit.'));
     if(a.is_master){box.append(el('div','warn','This is the master account. It cannot copy itself.'));return}
-    box.append(kv('Subscription',d.subscribed?'Active until '+new Date(d.ends_at*1000).toISOString().slice(0,10):'Not active',d.subscribed?'win':'warn'));
-    if(!d.subscribed)box.append(el('div','mut','Copy trading is a subscription. Contact TradeLens support to activate it.'));
+    const P=d.plan||{};
+    box.append(kv('Copy trading',d.subscribed?'Active until '+new Date(d.ends_at*1000).toISOString().slice(0,10):(P.swap?'Available instead of signals':'Not active'),d.subscribed?'win':'warn'));
+    if(!d.subscribed&&!P.swap){
+      box.append(el('div','mut','Copy trading comes with Signals Pro, or on its own with the Copy Trading plan ($15 for 30 days, MT5 connection included, no signals).'+(P.plus_active&&!P.ib?' Your Signals Plus includes it only when your Deriv account is linked to TradeLens.':'')));
+      const bl=el('a','','See plans in Billing');bl.href='/billing.html';bl.style.cssText='display:block;margin:8px 0;color:var(--gold2)';box.append(bl);return}
+    if(P.swap){
+      const w=el('div','card');w.style.margin='10px 0';w.append(el('h2','','Signals or Copy trading'),
+        el('div','mut','With Signals Plus linked to your Deriv account you use one at a time. You are on: '+(P.mode==='copy'?'Copy trading (signals and notifications are paused; about '+P.per_day+' signals a day are used from your balance).':'Signals.')));
+      const sw=el('button','ghost',P.mode==='copy'?'Switch back to Signals':'Switch to Copy trading');sw.style.marginTop='8px';
+      sw.onclick=async()=>{const to=P.mode==='copy'?'signals':'copy';
+        if(!confirm(to==='copy'?'Switch to Copy trading? Your signals and notifications pause, and about '+P.per_day+' signals a day are used from your balance while it is on.':'Switch back to Signals? Copy trading turns off, and the signals used while it was on are deducted now.'))return;
+        try{const r=await fetch('/api/copy/me/mode',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:to})});const dd=await r.json().catch(()=>({}));
+          if(!r.ok)throw new Error(typeof dd.detail==='string'?dd.detail:'HTTP '+r.status);loadCopy(sel)}catch(e){alert(e.message)}};
+      w.append(sw);box.append(w)}
     const en=document.createElement('input');en.type='checkbox';en.checked=a.enabled;
     const lb=el('label','sw');lb.append(en,document.createTextNode(' Copy flagged trades to this account'));box.append(lb);
     const md=document.createElement('select');[['fixed','Fixed lot'],['risk','Percentage risk']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;md.append(o)});md.value=a.mode;
@@ -173,7 +185,9 @@ async function loadCopy(sel){
     box.append(el('label','','Sizing'),md,w1,w2,el('label','','Never risk more than (% of balance)'),cp,
       el('div','mut','If the lot would risk more than this, the trade is not placed. Safe by default: the smallest lot, and your own risk rule as the limit.'));
     const sv=el('button','','Save copy settings');sv.style.marginTop='10px';const mg=el('div','mut');
-    sv.onclick=async()=>{try{const rr=await fetch('/api/copy/me/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(dlAcct.body({enabled:en.checked,mode:md.value,fixed_lots:fl.value,risk_pct:md.value==='risk'?rk.value:(rk.value||null),max_risk_pct:cp.value}))});const dd=await rr.json().catch(()=>({}));if(!rr.ok)throw new Error(typeof dd.detail==='string'?dd.detail:'HTTP '+rr.status);
+    sv.onclick=async()=>{try{const send=async sm=>{const rr=await fetch('/api/copy/me/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(dlAcct.body({enabled:en.checked,mode:md.value,fixed_lots:fl.value,risk_pct:md.value==='risk'?rk.value:(rk.value||null),max_risk_pct:cp.value,switch_mode:sm}))});return[rr,await rr.json().catch(()=>({}))]};
+      let [rr,dd]=await send(false);if(rr.status===409&&dd.need_switch){if(!confirm(dd.detail))return;[rr,dd]=await send(true)}
+      if(!rr.ok)throw new Error(typeof dd.detail==='string'?dd.detail:'HTTP '+rr.status);
       mg.className='win';mg.textContent='Saved.';loadCopy(sel)}catch(e){mg.className='err';mg.textContent=e.message}};
     box.append(sv,mg);
     const mine=(d.recent||[]).filter(j=>j.account_id===sel).slice(0,8);

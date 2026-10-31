@@ -46,6 +46,7 @@ function renderBalance(){
   if(D.grandfathered)c.append(el('div','mut','Your member access is unchanged. Signals you buy here are added on top.'));
   else c.append(el('div','mut','Opening a setup uses 1 signal. Signals never expire. New members get '+D.welcome+' free signals once.'));
   D.plans.forEach(p=>c.append(el('div','win',p.label+' is active until '+date(p.ends_at)+'.')));
+  if(D.copy_plan&&D.copy_plan.swap)c.append(el('div','mut','Signals Plus with your linked Deriv account: you are on '+(D.copy_plan.mode==='copy'?'Copy trading (signals paused, about '+D.copy_plan.per_day+' signals a day used)':'Signals')+'. Switch on the MT5 page, Copy trading card.'));
   if(D.partner&&D.partner.partner){const P=D.partner;
     c.append(el('div','win','Partner member: notifications are free until '+(P.notify_until?date(P.notify_until):'soon')+', you received '+P.bonus+' bonus signals, and Signals Pro costs $'+P.pro_usd+'.'));
     if(P.founder&&P.founder.status==='pending')c.append(el('div','warn','Founding member: connect a live Deriv MT5 account with at least $'+P.founder.min_balance+' in it and your MT5 connection is free for 30 days.'+(P.founder.last_balance!=null?' Last balance we saw: $'+Number(P.founder.last_balance).toFixed(2)+'.':'')));
@@ -56,13 +57,14 @@ function renderShop(){
   const s=$('shop');s.textContent='';
   if(!D.enabled){const c=el('div','card');c.append(el('h2','','Buying signals'),el('div','mut','Purchases are not open yet. They will appear here soon.'));s.append(c);return}
   const groups=[['Signal packs','Buy what you need. No subscription, and the signals never expire.',D.catalog.filter(p=>!p.days)],
-                ['Plans for 30 days','Signals plus notifications, and MT5 connection with Pro.',D.catalog.filter(p=>p.days)]];
+                ['Plans for 30 days','Signals and notifications. Pro adds the MT5 connection and Copy trading. The Copy Trading plan is the MT5 connection and copy trading only.',D.catalog.filter(p=>p.days)]];
   groups.forEach(([title,sub,items])=>{
     const c=el('div','card');c.append(el('h2','',title),el('div','mut',sub));
     items.forEach(p=>{
       const row=el('div');row.style.cssText='border-top:1px solid var(--line);margin-top:10px;padding-top:10px';
       const h=el('div','hd');h.append(el('span','',p.label),el('span','',usd(p.usd)+(p.list_usd?' (was '+usd(p.list_usd)+')':'')+(p.days?' / '+p.days+' days':'')));
-      row.append(h,el('div','mut',p.signals.toLocaleString()+' signals \u00b7 '+per(p)+(p.notify?' \u00b7 notifications':'')+(p.mt5?' \u00b7 MT5 connection':'')));
+      row.append(h,el('div','mut',(p.signals?p.signals.toLocaleString()+' signals \u00b7 '+per(p):'No signals or notifications')+(p.notify?' \u00b7 notifications':'')+(p.mt5?' \u00b7 MT5 connection':'')+(p.copy?' \u00b7 Copy trading':'')));
+      if(p.copy_ib)row.append(el('div','mut','If your Deriv account is linked to TradeLens you can use Copy trading instead of signals (see Copy trading on the MT5 page). About '+((p.signals/p.days).toFixed(1))+' signals a day are used while it is on.'));
       if(p.key==='pro')row.append(el('div','mut','MT5 connection does not by itself guarantee automatic trade execution.'));
       const b=el('button','','Buy '+p.label);b.style.marginTop='8px';b.onclick=()=>choose(p,row,b);row.append(b);c.append(row)});
     s.append(c)});

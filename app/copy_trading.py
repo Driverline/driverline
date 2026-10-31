@@ -22,7 +22,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import auth, ea, journal, signal_feed
+from . import auth, copy_plan, ea, journal, signal_feed
 
 JOB_TTL = 120            # seconds a copy job may wait for the follower's EA to collect it, then it is skipped
 TICKET_WAIT = 60         # seconds to look for the follower's new position before giving up on finding its ticket
@@ -81,9 +81,14 @@ def master_id(con):
 
 
 def subscribed(con, uid) -> int:
-    """Seconds-since-epoch the member's copy subscription ends, or 0 when it is not active."""
-    r = con.execute("SELECT ends_at FROM copy_subs WHERE user_id=?", (uid,)).fetchone()
-    return int(r["ends_at"]) if r and r["ends_at"] > _now() else 0
+    """Seconds-since-epoch until which the member may copy (Copy Trading plan, Signals Pro, Signals Plus in copy mode for IB-linked members,
+    or an admin grant), or 0 when they may not. See copy_plan.py."""
+    from . import copy_plan
+    try:
+        return copy_plan.copy_until(uid, con)
+    except Exception as e:
+        print(f"[copy] entitlement check failed: {type(e).__name__}", flush=True)
+        return 0
 
 
 def _state(con, aid):
@@ -313,7 +318,8 @@ async def me_get(request):
                           "risk_pct": m["risk_pct"] if m else 1.0, "max_risk_pct": (m["max_risk_pct"] if m and m["max_risk_pct"] else None),
                           "own_limit_pct": rules["max_risk_pct"]})
         jobs = [_job_out(dict(r)) for r in con.execute("SELECT * FROM copy_jobs WHERE user_id=? ORDER BY id DESC LIMIT 20", (u["id"],)).fetchall()]
-    return JSONResponse({"subscribed": bool(ends), "ends_at": ends or None, "now": now, "accounts": accts, "recent": jobs})
+    return JSONResponse({"subscribed": bool(ends), "ends_at": ends or None, "now": now, "accounts": accts, "recent": jobs,
+                         "plan": copy_plan.view(u)})
 
 
 async def me_settings(request):
@@ -332,8 +338,16 @@ async def me_settings(request):
         a = ea.resolve(con, u["id"], ea._acct_param(request, d), explicit=True)
         if a["id"] == master_id(con):
             raise HTTPException(409, "This is the master account, it cannot copy itself")
+        if enabled and copy_plan.state(u, con)["swap"] and copy_plan.state(u, con)["mode"] == "signals":
+            # Signals Plus linked to our IB: copy trading replaces signals while it is on. The member must agree to that.
+            if d.get("switch_mode") is not True:
+                return JSONResponse({"detail": f"On Signals Plus, Copy trading replaces your signals while it is on. Your signals and notifications pause, and about "
+                                               f"{copy_plan.view(u)['per_day']:g} signals a day are used from your balance. Switch to Copy trading?", "need_switch": True},
+                                    status_code=409)
+            copy_plan.set_mode(u, "copy")
         if enabled and not subscribed(con, u["id"]):
-            raise HTTPException(403, "Copy trading is a subscription. Ask TradeLens support to activate it for you.")
+            raise HTTPException(403, "Copy trading needs the Copy Trading plan or Signals Pro (or Signals Plus if your Deriv account is linked to TradeLens). "
+                                     "See the Billing tab.")
         con.execute("INSERT INTO copy_members(account_id,user_id,enabled,mode,fixed_lots,risk_pct,max_risk_pct,updated_at) VALUES(?,?,?,?,?,?,?,?) "
                     "ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled, mode=excluded.mode, fixed_lots=excluded.fixed_lots, "
                     "risk_pct=excluded.risk_pct, max_risk_pct=excluded.max_risk_pct, updated_at=excluded.updated_at",
@@ -366,8 +380,7 @@ async def admin_get(request):
         for f in con.execute("SELECT * FROM copy_flags ORDER BY id DESC LIMIT 15").fetchall():
             counts = {r["status"]: r["c"] for r in con.execute("SELECT status, COUNT(*) AS c FROM copy_jobs WHERE flag_id=? GROUP BY status", (f["id"],)).fetchall()}
             flags.append({**{k: f[k] for k in ("id", "symbol", "dir", "open_price", "sl", "tp", "status", "created_at", "closed_at")}, "counts": counts})
-        followers = con.execute("SELECT COUNT(*) AS c FROM copy_members m JOIN copy_subs s ON s.user_id=m.user_id WHERE m.enabled=1 AND s.ends_at>?",
-                                (now,)).fetchone()["c"]
+        followers = sum(1 for m in con.execute("SELECT user_id FROM copy_members WHERE enabled=1").fetchall() if subscribed(con, m["user_id"]))
         subs = [{"user_id": r["user_id"], "email": r["email"], "ends_at": r["ends_at"], "note": r["note"], "active": r["ends_at"] > now}
                 for r in con.execute("SELECT s.user_id, s.ends_at, s.note, u.email FROM copy_subs s JOIN users u ON u.id=s.user_id ORDER BY s.ends_at DESC LIMIT 200").fetchall()]
     return JSONResponse({"master": master, "my_accounts": [{"id": a["id"], "label": a["label"]} for a in mine], "positions": positions,

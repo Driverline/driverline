@@ -3,6 +3,23 @@
 The admin **flags** a trade on a master MT5 account. It is copied to every member who has a copy-trading subscription and has switched copying
 on for their MT5 account. Only flagged trades are copied.
 
+## Who can use it
+| Plan | Copy trading | Signals / notifications |
+|---|---|---|
+| **Copy Trading** ($15 / 30 days) | yes, MT5 connection included | no |
+| **Signals Pro** ($30) | yes | yes, at the same time |
+| **Signals Plus** ($15), Deriv account **linked to our IB** (confirmed partner tag) | yes, **instead of** signals | switch: one at a time |
+| Signals Plus, not linked | no | yes |
+| Admin grant (Admin > Copy trading) | yes | unchanged |
+Existing members and admins get no free copy trading: it always needs one of the above (billing must be open for plans to count).
+
+**Signals Plus + IB switch.** The member is either on *Signals* (default) or *Copy trading* (MT5 page > Copy trading card, or by switching copying on, which asks first).
+- Copy mode pauses signals (opening a setup is refused) and notifications, and turns the MT5 connection on.
+- Every second in copy mode costs the Plus allocation pro rata: 550 signals / 30 days = **about 18.3 signals a day**, deducted from the signal balance (never below zero, exact with fractional carry, only for time the Plus plan was active). It is charged when they switch back and whenever they open Billing or the Copy trading card.
+- Switching back to Signals deducts what has accrued, switches copying off and cancels waiting copies. Copies already open still close with the master trade.
+- Plus + the Copy Trading plan (or Pro) together = no switch, both active, no deduction (they paid for both).
+- Database: one new table `plan_mode` (in `migrations/2026_10_copy_plan.sql`, also created by the app).
+
 ## Rules
 - **Flag needs SL and TP.** The master position must have a stop loss and a take profit (on the correct sides of the entry), otherwise it cannot be flagged. Copies are never unprotected.
 - **Sizing (per member, per account).** Default: fixed lot = the symbol's smallest lot. Option: percentage risk (lot sized so the stop loss risks X% of balance).
@@ -14,7 +31,7 @@ on for their MT5 account. Only flagged trades are copied.
 - Members' EAs are unchanged: nothing runs unless AllowExecute (and AllowRemoteClose) are on.
 
 ## Admin
-Admin > Copy trading (`/admin-copy.html`): choose the master account (one of your own MT5 accounts), flag trades, see each flag's per-member results, activate or revoke members' subscriptions (days stack). Subscriptions are granted by the admin after you confirm payment; there is no shop product yet.
+Admin > Copy trading (`/admin-copy.html`): choose the master account (one of your own MT5 accounts), flag trades, see each flag's per-member results, activate or revoke members' subscriptions (days stack). Admin grants (days) are for gifts and corrections. Members normally subscribe in Billing (Copy Trading product, or Pro, or Plus with IB link).
 
 ## Members
 MT5 page > Copy trading (per account): switch on, choose Fixed lot or Percentage risk, optional limit, recent copies with status and reasons.

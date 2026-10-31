@@ -80,6 +80,14 @@ def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _copy_mode(user: dict) -> bool:
+    try:
+        from . import copy_plan
+        return copy_plan.signals_paused(user)
+    except Exception:
+        return False
+
+
 def paid(user: dict) -> bool:
     return user["tier"] in ("member", "admin")
 
@@ -382,7 +390,7 @@ async def view(request):
                                                        (user["id"],)).fetchall()}
         b = budget(con, user)
     return JSONResponse({"signals": [_public(dict(r), r["id"] in opened, now) for r in rows], "budget": b,
-                         "paid": credits.entitled(user, "notify"), "ts": now})
+                         "paid": credits.entitled(user, "notify"), "ts": now, "copy_mode": _copy_mode(user)})
 
 
 async def open_signal(request):
@@ -398,6 +406,9 @@ async def open_signal(request):
         actionable = row["status"] == "open" and now <= row["expires_at"]
         if not already:
             if actionable:
+                from . import copy_plan
+                if copy_plan.signals_paused(user):
+                    raise HTTPException(409, "Signals are paused while Copy trading is on. Switch back to Signals in the Copy trading card on the MT5 page.")
                 b = budget(con, user)
                 if b["paused"]:
                     if b["kind"] == "credits" and b["balance"] <= 0:
