@@ -59,10 +59,15 @@ async function api(path,method,body){
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
 let first=true,mgFirst=true,shown=null;
 function switched(){first=true;mgFirst=true;load()}
-function showKey(title,key){const b=$('keybox');b.textContent='';
-  b.append(el('div','mut',title+' Copy this key now. It is shown only once.'));
+let keyTimer=null;
+function hideKey(){clearTimeout(keyTimer);const b=$('keybox');b.textContent=''}
+function showKey(title,key){const b=$('keybox');hideKey();
+  b.append(el('div','mut',title+' Copy this key now. It is shown only once and hides itself after 2 minutes.'));
   const i=document.createElement('input');i.readOnly=true;i.value=key;i.onfocus=()=>i.select();b.append(i);
-  const c=el('button','','Copy key');c.style.marginTop='8px';c.onclick=async()=>{try{await navigator.clipboard.writeText(key);c.textContent='Copied'}catch(e){i.select()}};b.append(c)}
+  const row=el('div','btns');row.style.marginTop='8px';
+  const c=el('button','','Copy key');c.onclick=async()=>{try{await navigator.clipboard.writeText(key);c.textContent='Copied';clearTimeout(keyTimer);keyTimer=setTimeout(hideKey,20000)}catch(e){i.select()}};
+  const d=el('button','ghost','Done, hide key');d.onclick=hideKey;row.append(c,d);b.append(row);
+  keyTimer=setTimeout(hideKey,120000)}
 function renderAccounts(s){
   const box=$('acctlist');box.textContent='';
   (s.accounts||[]).forEach(a=>{
@@ -78,7 +83,7 @@ function renderAccounts(s){
     mk('Rename',async()=>{const n=prompt('New name',a.label);if(!n)return;
       try{await api('/accounts/'+a.id+'/rename','POST',{label:n});load()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
     mk('Remove',async()=>{if(!confirm('Remove "'+a.label+'"? Its EA is disconnected and its saved rules and auto-manage settings are deleted. Trades already open in MT5 are not touched.'))return;
-      try{await api('/accounts/'+a.id,'DELETE');if(dlAcct.id()===a.id)dlAcct.set(null);$('keybox').textContent='';switched()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
+      try{await api('/accounts/'+a.id,'DELETE');if(dlAcct.id()===a.id)dlAcct.set(null);hideKey();switched()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
     box.append(act)});
   if(!(s.accounts||[]).length)box.append(el('div','mut','No MT5 account yet. Add one below.'));
   const full=(s.accounts||[]).length>=(s.max_accounts||3);
