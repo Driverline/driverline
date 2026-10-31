@@ -9,6 +9,7 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/theme.css">
 <script src="/auth.js"></script>
+<script src="/acct.js"></script>
 </head>
 <body>
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
@@ -16,8 +17,11 @@
 <div class="card"><h2>Connection</h2><div id="conn"><span class="mut">Loading...</span></div></div>
 
 <div class="card"><h2>Connect your MT5</h2>
-<div class="mut">1. Create a key. 2. Put the TradeLens EA on a chart in MT5 on a PC or VPS. 3. Paste your TradeLens address and the key into the EA inputs. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA never opens a trade on its own. It opens, closes or adjusts a trade, or places a pending order, only when you click a button in the app and have allowed that in its settings (AllowExecute, AllowRemoteClose, AllowManage, AllowPending).</div>
-<div class="btns"><button id="mk">Create or replace key</button><button id="rv" class="ghost">Revoke</button></div>
+<div class="mut">1. Add an account here (for example Demo, Live or Swap Free) to get its key. 2. Put the TradeLens EA on a chart in that MT5 terminal on a PC or VPS. 3. Paste your TradeLens address and that account's key into the EA inputs. Each MT5 account needs its own key, so a Demo and a Live account are two accounts with two keys. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA never opens a trade on its own. It opens, closes or adjusts a trade, or places a pending order, only when you click a button in the app and have allowed that in its settings (AllowExecute, AllowRemoteClose, AllowManage, AllowPending).</div>
+<div id="acctlist" style="margin-top:10px"></div>
+<label>Add an account</label><input id="newlabel" maxlength="30" placeholder="Name, e.g. Demo or Live">
+<div class="btns"><button id="addacct">Add account and get key</button></div>
+<div id="acctmsg" class="mut"></div>
 <div id="keybox" style="margin-top:10px"></div>
 <div class="mut" style="margin-top:8px">Your TradeLens address: <b id="addr"></b></div></div>
 
@@ -53,15 +57,47 @@ function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||
 async function api(path,method,body){
   const r=await fetch('/api/ea'+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
-let first=true,mgFirst=true;
+let first=true,mgFirst=true,shown=null;
+function switched(){first=true;mgFirst=true;load()}
+function showKey(title,key){const b=$('keybox');b.textContent='';
+  b.append(el('div','mut',title+' Copy this key now. It is shown only once.'));
+  const i=document.createElement('input');i.readOnly=true;i.value=key;i.onfocus=()=>i.select();b.append(i);
+  const c=el('button','','Copy key');c.style.marginTop='8px';c.onclick=async()=>{try{await navigator.clipboard.writeText(key);c.textContent='Copied'}catch(e){i.select()}};b.append(c)}
+function renderAccounts(s){
+  const box=$('acctlist');box.textContent='';
+  (s.accounts||[]).forEach(a=>{
+    const row=el('div','kv');
+    const nm=el('span','',a.label+(a.login?' | '+a.login:'')+(a.demo===true?' | DEMO':a.demo===false?' | LIVE':''));
+    const st=el('span',a.connected?'win':'mut',a.connected?'Connected':(a.login?'Offline':'Waiting for EA'));
+    row.append(nm,st);box.append(row);
+    const act=el('div','btns');act.style.cssText='margin-bottom:8px;flex-wrap:wrap';
+    const mk=(t,f,c)=>{const b=el('button',c||'ghost',t);b.style.cssText='width:auto;padding:6px 10px;white-space:nowrap';b.onclick=f;act.append(b)};
+    if((s.accounts||[]).length>1&&a.id!==s.account_id)mk('Use this',()=>{dlAcct.set(a.id);switched()},'');
+    mk('New key',async()=>{if(!confirm('Make a new key for "'+a.label+'"? The EA using the old key stops until you paste the new one.'))return;
+      try{const r=await api('/accounts/'+a.id+'/key','POST');showKey('New key for "'+a.label+'".',r.key);load()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
+    mk('Rename',async()=>{const n=prompt('New name',a.label);if(!n)return;
+      try{await api('/accounts/'+a.id+'/rename','POST',{label:n});load()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
+    mk('Remove',async()=>{if(!confirm('Remove "'+a.label+'"? Its EA is disconnected and its saved rules and auto-manage settings are deleted. Trades already open in MT5 are not touched.'))return;
+      try{await api('/accounts/'+a.id,'DELETE');if(dlAcct.id()===a.id)dlAcct.set(null);$('keybox').textContent='';switched()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
+    box.append(act)});
+  if(!(s.accounts||[]).length)box.append(el('div','mut','No MT5 account yet. Add one below.'));
+  const full=(s.accounts||[]).length>=(s.max_accounts||3);
+  $('addacct').disabled=full;$('newlabel').disabled=full;
+  if(full){$('acctmsg').className='mut';$('acctmsg').textContent='You have the maximum of '+s.max_accounts+' accounts. Remove one to add another.'}
+}
 async function load(){
   try{
-    const s=await api('/status');
+    const s=await dlAcct.status();
+    if(shown!==s.account_id){shown=s.account_id;first=true;mgFirst=true}
+    renderAccounts(s);
+    const old=$('pickhere');if(old)old.remove();
+    const pk=dlAcct.picker(s,()=>switched());if(pk){pk.id='pickhere';$('conn').parentNode.insertBefore(pk,$('conn'))}
     const mg=s.manage||{};
     if(mgFirst){['be_on','tsl_on','ttp_on'].forEach(k=>{$(k).checked=!!mg[k]});['be_trigger','be_offset','tsl_start','tsl_dist','ttp_near','ttp_step'].forEach(k=>{$(k).value=mg[k]});mgFirst=false}
     $('mgnote').textContent=s.can_manage?'Auto-manage is allowed in your EA and ready.':(s.connected?'Switch on AllowManage in the EA settings in MT5 to use this.':'Connect your MT5 first, using the steps above.');
     const c=$('conn');c.textContent='';
     if(s.mt5_allowed===false){const w=el('div','warn','The MT5 connection is part of Signals Pro. Buy or renew it in the Billing tab.');w.style.marginBottom='8px';c.append(w)}
+    if(s.label&&(s.accounts||[]).length>1)c.append(kv('Showing',s.label));
     c.append(kv('Status',s.connected?'Connected':(s.has_key?'Key created, EA not connected':'Not set up'),s.connected?'win':'mut'));
     if(s.last_seen_ago!==null)c.append(kv('Last sync',s.last_seen_ago+' seconds ago'));
     if(s.account){const a=s.account;
@@ -99,34 +135,31 @@ async function load(){
     return s;
   }catch(e){$('conn').textContent=e.message}
 }
-async function toggleAuto(ticket,excluded){try{await api('/manage/exclude','POST',{ticket:Number(ticket),excluded});load()}catch(e){alert(e.message)}}
+async function toggleAuto(ticket,excluded){try{await api('/manage/exclude','POST',dlAcct.body({ticket:Number(ticket),excluded}));load()}catch(e){alert(e.message)}}
 $('mgsave').onclick=async()=>{
   const num=k=>Number($(k).value);
   try{
-    await api('/manage','POST',{be_on:$('be_on').checked,be_trigger:num('be_trigger'),be_offset:num('be_offset'),tsl_on:$('tsl_on').checked,tsl_start:num('tsl_start'),tsl_dist:num('tsl_dist'),ttp_on:$('ttp_on').checked,ttp_near:num('ttp_near'),ttp_step:num('ttp_step')});
+    await api('/manage','POST',dlAcct.body({be_on:$('be_on').checked,be_trigger:num('be_trigger'),be_offset:num('be_offset'),tsl_on:$('tsl_on').checked,tsl_start:num('tsl_start'),tsl_dist:num('tsl_dist'),ttp_on:$('ttp_on').checked,ttp_near:num('ttp_near'),ttp_step:num('ttp_step')}));
     $('mgmsg').className='win';$('mgmsg').textContent='Saved. Your EA applies it within a few seconds.';load();
   }catch(e){$('mgmsg').className='err';$('mgmsg').textContent=e.message}
 };
 async function closeCmd(body,question){
   if(!confirm(question+(body.kind==='cancel_order'?'\n\nThis removes the waiting order from your MT5.':'\n\nThis sends a close order to your MT5.')))return;
-  try{await api('/command','POST',body)}catch(e){alert(e.message);return}
+  try{await api('/command','POST',dlAcct.body(body))}catch(e){alert(e.message);return}
   for(let i=0;i<30;i++){
     await new Promise(r=>setTimeout(r,2000));
     const s=await load();
     if(s&&s.command&&!['pending','sent'].includes(s.command.status))break;
   }
 }
-$('mk').onclick=async()=>{
-  if(!confirm('This replaces any key an EA is already using. Continue?'))return;
-  try{const r=await api('/key','POST');const b=$('keybox');b.textContent='';
-    b.append(el('div','mut','Copy this key now. It is shown only once.'));
-    const i=document.createElement('input');i.readOnly=true;i.value=r.key;i.onfocus=()=>i.select();b.append(i);
-    const c=el('button','','Copy key');c.style.marginTop='8px';c.onclick=async()=>{try{await navigator.clipboard.writeText(r.key);c.textContent='Copied'}catch(e){i.select()}};b.append(c);
-    load()}catch(e){$('keybox').textContent=e.message}
+$('addacct').onclick=async()=>{
+  const m=$('acctmsg');m.className='mut';m.textContent='';
+  try{const r=await api('/accounts','POST',{label:$('newlabel').value||'Main'});$('newlabel').value='';
+    dlAcct.set(r.id);showKey('Account "'+r.label+'" added.',r.key);switched()}
+  catch(e){m.className='err';m.textContent=e.message}
 };
-$('rv').onclick=async()=>{if(!confirm('Disconnect your EA?'))return;try{await api('/key','DELETE');$('keybox').textContent='';load()}catch(e){alert(e.message)}};
 $('sv').onclick=async()=>{
-  try{await api('/rules','POST',{max_risk_pct:Number($('r1').value),daily_loss_pct:Number($('r2').value),max_positions:Number($('r3').value)});
+  try{await api('/rules','POST',dlAcct.body({max_risk_pct:Number($('r1').value),daily_loss_pct:Number($('r2').value),max_positions:Number($('r3').value)}));
     $('rmsg').className='win';$('rmsg').textContent='Saved. The EA picks it up on its next sync.';load()}
   catch(e){$('rmsg').className='err';$('rmsg').textContent=e.message}
 };

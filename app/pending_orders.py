@@ -315,15 +315,14 @@ async def place(request):
     now = int(time.time())
     entry = p["l"] if p.get("l") else p["p"]
     with closing(ea.db()) as ec:
-        k = ec.execute("SELECT last_seen FROM ea_keys WHERE user_id=?", (user["id"],)).fetchone()
-        s = ec.execute("SELECT state, specs FROM ea_state WHERE user_id=?", (user["id"],)).fetchone()
-        if not (k and k["last_seen"] and now - k["last_seen"] < 120 and s):
+        acct, s = ea.load(ec, user["id"], d.get("account"))          # which MT5 account: required when the member has more than one
+        if not (acct["last_seen"] and now - acct["last_seen"] < 120 and s):
             raise HTTPException(409, "Your MT5 is not connected right now. Pending orders are placed through your own MT5 connection.")
         state = json.loads(s["state"])
         acc, orders = state.get("account") or {}, [o for o in (state.get("orders") or []) if isinstance(o, dict)]
         if not acc.get("pending_allowed"):
             raise HTTPException(409, "Switch on AllowPending in the EA settings in MT5 to place pending orders from the app.")
-        rules = ea.get_rules(ec, user["id"])
+        rules = ea.get_rules(ec, acct["id"])
         if ea.risk_check(state, rules)["status"] == "STOP":
             raise HTTPException(409, f"You reached your own daily loss limit of {rules['daily_loss_pct']:g}%. New orders are paused for today.")
         if len(state.get("positions") or []) + len(orders) >= rules["max_positions"]:
@@ -344,14 +343,14 @@ async def place(request):
         pct = _risk_pct(spec, lots, abs(entry - p["s"]), float(acc.get("balance") or 0))
         # Like "Open trade in MT5": an empty lot size means the symbol's smallest lot, and the member is WARNED (in the app) when the
         # risk is above their own rule, never blocked. The risk is returned so the app can say so.
-        for r in ec.execute("SELECT payload FROM ea_commands WHERE user_id=? AND kind='pending_order' AND created_at>? "
-                            "AND status IN ('pending','sent','done')", (user["id"], now - 90)).fetchall():
+        for r in ec.execute("SELECT payload FROM ea_commands WHERE account_id=? AND kind='pending_order' AND created_at>? "
+                            "AND status IN ('pending','sent','done')", (acct["id"], now - 90)).fetchall():
             if r["payload"] and json.loads(r["payload"]).get("comment") == cmt:
                 raise HTTPException(409, "You just sent this order. Check the list of pending orders before sending it again.")
-        cid = ea.queue_open(ec, user["id"], {
+        cid = ea.queue_open(ec, acct, {
             "symbol": symbol, "ptype": kind, "lots": lots, "price": p["p"], "limit": p.get("l") or 0, "sl": p["s"], "tp": p["x"],
             "exp_min": int(hours * 60), "ref": p["r"], "maxdev": p["m"], "comment": cmt}, kind="pending_order")
-    return JSONResponse({"command_id": cid, "symbol": symbol, "comment": cmt,
+    return JSONResponse({"command_id": cid, "symbol": symbol, "comment": cmt, "account": acct["id"], "account_label": acct["label"],
                          "risk_pct": round(pct, 2) if pct is not None else None,
                          "over_rule": bool(pct is not None and pct > rules["max_risk_pct"] + 1e-9)})
 

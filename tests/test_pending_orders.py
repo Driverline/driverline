@@ -155,6 +155,8 @@ def test_token_cannot_be_edited_or_reused_when_stale():
 
 # ------------------------------------------------------------------------------------------------ placing and cancelling
 class Req:
+    query_params = {}          # a real request always has one
+
     def __init__(self, body):
         self._b = body
 
@@ -163,25 +165,26 @@ class Req:
 
 
 UID = None
+AID = None
 
 
 def setup_member(tier="member", positions=0, orders=None, pending_allowed=True, balance=10000.0, daily_loss=0.0, spec=True, seen=None):
-    global UID
+    global UID, AID
     auth.db().close()
     with closing(ea.db()) as con:
         email = f"m{random.random()}@x.com"
         con.execute("INSERT INTO users(email,pw_hash,tier,created_at) VALUES(?,?,?,?)", (email, "x", tier, "2026-01-01"))
         UID = con.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()["id"]
-        con.execute("INSERT INTO ea_keys(user_id,key_hash,created_at,last_seen) VALUES(?,?,?,?)",
-                    (UID, "h" + str(UID), int(time.time()), seen if seen is not None else int(time.time())))
+        AID = con.insert("INSERT INTO ea_accounts(user_id,label,key_hash,created_at,last_seen) VALUES(?,?,?,?,?)",
+                         (UID, "Main", "h" + str(UID), int(time.time()), seen if seen is not None else int(time.time())))
         state = {"account": {"balance": balance, "demo": True, "execute_allowed": True, "pending_allowed": pending_allowed,
                              "remote_close": True},
                  "today": {"closed_pnl": -daily_loss}, "positions": [{"ticket": i + 1, "profit": 0, "sl": 1, "risk": 1} for i in range(positions)],
                  "orders": orders or []}
         specs = [{"symbol": "EURUSDm", "tick_size": 0.00001, "tick_value": 1.0, "vol_min": 0.01, "vol_step": 0.01, "vol_max": 100,
                   "contract_size": 100000}] if spec else []
-        con.execute("INSERT INTO ea_state(user_id,state,specs,updated_at) VALUES(?,?,?,?)",
-                    (UID, json.dumps(state), json.dumps(specs), int(time.time())))
+        con.execute("INSERT INTO ea_acct_state(account_id,state,specs,updated_at) VALUES(?,?,?,?)",
+                    (AID, json.dumps(state), json.dumps(specs), int(time.time())))
         con.commit()
     auth.require_user = lambda request, _u={"id": UID, "tier": tier}: _u
     return UID
@@ -215,7 +218,7 @@ def test_place_queues_one_command_and_poll_hands_it_to_the_ea():
     # the EA's poll
     class PReq:
         headers = {"x-driverline-key": "unused"}
-    ea._key_user = lambda con, request: UID
+    ea._key_account = lambda con, request: (AID, UID)
     ea.credits.mt5_allowed = lambda u: True
     out = json.loads(_run(ea.poll(PReq())).body)
     assert out["cmd"] == "pending_order" and out["ptype"] == "BUY_STOP_LIMIT" and out["sym"] == "EURUSDm"

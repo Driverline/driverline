@@ -15,9 +15,9 @@
     return{lots:Number(lots.toFixed(Math.max(dec(sp.vstep),2))),warn};
   };
   // The exact symbol name MT5 uses, when the companion EA has reported it.
-  let specs=null;
+  let specs=null,specsFor=null;
   window.dlSymbolName=async function(name,key){
-    try{if(!specs)specs=await (await fetch('/api/ea/specs')).json();
+    try{const who=window.dlAcct?window.dlAcct.id():null;if(!specs||specsFor!==who){specs=window.dlAcct?await window.dlAcct.specs():await (await fetch('/api/ea/specs')).json();specsFor=who}
       const m=specs.find(x=>norm(x.symbol)===norm(name))||(key&&specs.find(x=>x.key===key));return m?m.symbol:name}catch(e){return name}
   };
 })();

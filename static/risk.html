@@ -10,6 +10,7 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/theme.css">
 <script src="/auth.js"></script>
+<script src="/acct.js"></script>
 </head>
 <body>
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
@@ -17,6 +18,7 @@
 <label>Instrument</label><select id="sym"></select>
 <div class="row"><div><label>Balance</label><input id="bal" type="number" inputmode="decimal"></div>
 <div><label>Risk %</label><input id="rp" type="number" inputmode="decimal" value="1"></div></div>
+<div id="acctbox"></div>
 <div class="row"><div><small id="mt5note"></small>
 <label>Entry</label><input id="en" type="number" inputmode="decimal"></div>
 <div><label>Stop loss</label><input id="sl" type="number" inputmode="decimal"></div></div>
@@ -66,16 +68,17 @@ if(typeof module!=='undefined')module.exports={calcLots};
 async function syncMt5(){
   try{
     let note='';
-    const st=await (await fetch('/api/ea/status')).json();
+    const st=await dlAcct.status();
+    const pk=dlAcct.picker(st,()=>syncMt5());$('acctbox').textContent='';if(pk)$('acctbox').append(pk);
     if(st.connected&&st.account&&Number(st.account.balance)>0){$('bal').value=st.account.balance;store.set('dl_bal',String(st.account.balance));note='Balance'}
-    const sp=await (await fetch('/api/ea/specs')).json();let n=0;
+    const sp=await dlAcct.specs();let n=0;
     const put=(inst,x)=>{store.set('dl_spec_'+inst.key,{ts:x.tick_size,tv:x.tick_value,vmin:x.vol_min,vstep:x.vol_step,vmax:x.vol_max,cs:x.contract_size});n++};
     const done=new Set();
     sp.forEach(x=>{const inst=list.find(i=>norm(i.name)===norm(x.symbol));if(inst){put(inst,x);done.add(inst.key)}});
     // broker variants such as XAUUSDm or XAUUSDmicro: used only when the plain symbol is not in Market Watch
     sp.forEach(x=>{const inst=x.key&&!done.has(x.key)&&list.find(i=>i.key===x.key);if(inst){put(inst,x);done.add(inst.key)}});
     if(n)note+=(note?' and ':'')+'contract specs';
-    if(note)$('mt5note').textContent=note+' synced from your MT5 account.';
+    if(note)$('mt5note').textContent=note+' synced from your MT5 account'+(st.label&&(st.accounts||[]).length>1?' "'+st.label+'"':'')+'.';
     loadSpec();update();
   }catch(e){}
 }

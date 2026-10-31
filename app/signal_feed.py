@@ -444,14 +444,13 @@ async def execute_signal(request):
         if sig["status"] != "open" or now > sig["expires_at"]:
             raise HTTPException(409, "This setup is no longer fresh enough to trade.")
         with closing(ea.db()) as ec:
-            k = ec.execute("SELECT last_seen FROM ea_keys WHERE user_id=?", (user["id"],)).fetchone()
-            s = ec.execute("SELECT state, specs FROM ea_state WHERE user_id=?", (user["id"],)).fetchone()
-            if not (k and k["last_seen"] and now - k["last_seen"] < 120 and s):
+            acct, s = ea.load(ec, user["id"], d.get("account"))      # which MT5 account: required when the member has more than one
+            if not (acct["last_seen"] and now - acct["last_seen"] < 120 and s):
                 raise HTTPException(409, "Your MT5 is not connected right now.")
             state = json.loads(s["state"])
             if not state["account"].get("execute_allowed"):
                 raise HTTPException(409, "Switch on AllowExecute in the EA settings in MT5 to open trades from the app.")
-            rules = ea.get_rules(ec, user["id"])
+            rules = ea.get_rules(ec, acct["id"])
             if ea.risk_check(state, rules)["status"] == "STOP":
                 raise HTTPException(409, f"You reached your own daily loss limit of {rules['daily_loss_pct']:g}%. Opening trades is paused for today.")
             if len(state["positions"]) >= rules["max_positions"]:
@@ -464,16 +463,16 @@ async def execute_signal(request):
                       or next((x["symbol"] for x in specs if match_key(x.get("symbol", "")) == sig["instrument"]), None))
             if not symbol:
                 raise HTTPException(409, f"{name} was not found in your MT5 Market Watch. Add it there first.")
-            for r in ec.execute("SELECT payload FROM ea_commands WHERE user_id=? AND kind='open' AND status IN "
-                                "('pending','sent','done') AND created_at>?", (user["id"], now - 6 * 3600)).fetchall():
+            for r in ec.execute("SELECT payload FROM ea_commands WHERE account_id=? AND kind='open' AND status IN "
+                                "('pending','sent','done') AND created_at>?", (acct["id"], now - 6 * 3600)).fetchall():
                 if r["payload"] and json.loads(r["payload"]).get("signal_id") == sid:
                     raise HTTPException(409, "You already sent this setup to MT5.")
             sd = abs(sig["entry"] - sig["stop"])
-            cid = ea.queue_open(ec, user["id"], {
+            cid = ea.queue_open(ec, acct, {
                 "symbol": symbol, "dir": "BUY" if sig["direction"] > 0 else "SELL", "lots": lots, "sl_dist": sd,
                 "tp_dist": abs(sig["target"] - sig["entry"]), "ref": sig["entry"], "maxdev": CFG["exec_max_dev_r"] * sd,
                 "signal_id": sid, "comment": f"TL-{sid}"})
-    return JSONResponse({"command_id": cid, "symbol": symbol})
+    return JSONResponse({"command_id": cid, "symbol": symbol, "account": acct["id"], "account_label": acct["label"]})
 
 
 async def set_limit(request):

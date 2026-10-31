@@ -2,6 +2,8 @@
 import hashlib
 import json
 import math
+import os
+import re
 import secrets
 import time
 from contextlib import closing
@@ -16,7 +18,8 @@ from .config import match_key
 MAX_BODY = 300_000
 CMD_TTL = 60  # seconds a close command stays valid
 DEFAULT_RULES = {"max_risk_pct": 1.0, "daily_loss_pct": 3.0, "max_positions": 3}
-_last_report: dict[int, float] = {}
+MAX_ACCOUNTS = max(1, int(os.environ.get("DRIVERLINE_MAX_MT5_ACCOUNTS", "3") or 3))   # MT5 accounts one member can connect
+_last_report: dict[int, float] = {}   # keyed by MT5 account id
 _last_poll: dict[int, float] = {}
 
 
@@ -29,13 +32,47 @@ EA_SCHEMA = """
         daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_commands(id {ID}, user_id INTEGER NOT NULL,
         kind TEXT NOT NULL, ticket BIGINT, created_at BIGINT NOT NULL, status TEXT NOT NULL, result TEXT, payload TEXT);
-    CREATE TABLE IF NOT EXISTS ea_manage(user_id INTEGER PRIMARY KEY, settings TEXT NOT NULL)"""
+    CREATE TABLE IF NOT EXISTS ea_manage(user_id INTEGER PRIMARY KEY, settings TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS ea_accounts(id {ID}, user_id INTEGER NOT NULL, label TEXT NOT NULL, key_hash TEXT UNIQUE NOT NULL,
+        created_at BIGINT NOT NULL, last_seen BIGINT, login TEXT);
+    CREATE TABLE IF NOT EXISTS ea_acct_state(account_id INTEGER PRIMARY KEY, state TEXT NOT NULL, specs TEXT, updated_at BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS ea_acct_rules(account_id INTEGER PRIMARY KEY, max_risk_pct DOUBLE PRECISION NOT NULL,
+        daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS ea_acct_manage(account_id INTEGER PRIMARY KEY, settings TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS ea_meta(k TEXT PRIMARY KEY, v TEXT)"""
 _auth_ready = False
 OPEN_TTL = 20   # seconds an 'open trade' request stays valid, so a stale order can never fire later
 
 
 def _migrate(con):
     con.add_column("ea_commands", "payload", "TEXT")
+    con.add_column("ea_commands", "account_id", "INTEGER")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_ea_accounts_label ON ea_accounts(user_id, label)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_ea_commands_account ON ea_commands(account_id, status)")
+    # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and
+    # auto-manage settings, so a connected EA keeps working untouched. The old tables are left as they are (rollback safety).
+    # The marker stops the copy from running again, so an account a member later removes can never be brought back from the old tables.
+    if con.execute("SELECT 1 FROM ea_meta WHERE k='accounts_backfilled'").fetchone():
+        return
+    try:
+        con.execute("INSERT INTO ea_accounts(user_id,label,key_hash,created_at,last_seen) "
+                    "SELECT k.user_id,'Main',k.key_hash,k.created_at,k.last_seen FROM ea_keys k "
+                    "WHERE NOT EXISTS (SELECT 1 FROM ea_accounts x WHERE x.key_hash=k.key_hash) "
+                    "AND NOT EXISTS (SELECT 1 FROM ea_accounts y WHERE y.user_id=k.user_id AND y.label='Main')")
+        con.execute("INSERT INTO ea_acct_state(account_id,state,specs,updated_at) "
+                    "SELECT a.id,s.state,s.specs,s.updated_at FROM ea_state s JOIN ea_accounts a ON a.user_id=s.user_id AND a.label='Main' "
+                    "WHERE NOT EXISTS (SELECT 1 FROM ea_acct_state z WHERE z.account_id=a.id)")
+        con.execute("INSERT INTO ea_acct_rules(account_id,max_risk_pct,daily_loss_pct,max_positions) "
+                    "SELECT a.id,r.max_risk_pct,r.daily_loss_pct,r.max_positions FROM ea_rules r JOIN ea_accounts a ON a.user_id=r.user_id AND a.label='Main' "
+                    "WHERE NOT EXISTS (SELECT 1 FROM ea_acct_rules z WHERE z.account_id=a.id)")
+        con.execute("INSERT INTO ea_acct_manage(account_id,settings) SELECT a.id,m.settings FROM ea_manage m JOIN ea_accounts a ON a.user_id=m.user_id AND a.label='Main' "
+                    "WHERE NOT EXISTS (SELECT 1 FROM ea_acct_manage z WHERE z.account_id=a.id)")
+        con.execute("INSERT INTO ea_meta(k,v) VALUES('accounts_backfilled',?)", (str(int(time.time())),))
+        con.commit()
+    except Exception as e:
+        con.raw.rollback()                       # another server instance did the same copy first: nothing more to do
+        if not dbx.is_duplicate(e):
+            raise
 
 
 def db():
@@ -58,9 +95,77 @@ def _f(v, default=0.0) -> float:
         return default
 
 
-def get_rules(con, uid) -> dict:
-    r = con.execute("SELECT max_risk_pct,daily_loss_pct,max_positions FROM ea_rules WHERE user_id=?", (uid,)).fetchone()
+def get_rules(con, aid) -> dict:
+    """The risk rules of one MT5 account (aid is the ea_accounts id)."""
+    r = con.execute("SELECT max_risk_pct,daily_loss_pct,max_positions FROM ea_acct_rules WHERE account_id=?", (aid,)).fetchone()
     return dict(r) if r else dict(DEFAULT_RULES)
+
+
+# ---------------------------------------------------------------- accounts: a member can connect several MT5 accounts
+def user_accounts(con, uid) -> list:
+    return [dict(r) for r in con.execute("SELECT * FROM ea_accounts WHERE user_id=? ORDER BY id", (uid,)).fetchall()]
+
+
+def _connected(row, now=None) -> bool:
+    return bool(row.get("last_seen") and (now or time.time()) - row["last_seen"] < 120)
+
+
+def resolve(con, uid, raw=None, explicit=False) -> dict:
+    """The member's MT5 account a request is about. A given id must belong to the member (404 otherwise, so one member can never
+    reach another's account). Without an id, a member with ONE account gets it; with several, anything that acts on an account
+    (trades, closes, rules, auto-manage) must say which (explicit=True), and a plain read gets the connected one."""
+    rows = user_accounts(con, uid)
+    if raw not in (None, ""):
+        try:
+            aid = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(422, "account must be a number")
+        for r in rows:
+            if r["id"] == aid:
+                return r
+        raise HTTPException(404, "That MT5 account was not found")
+    if not rows:
+        raise HTTPException(409, "No MT5 account is set up yet")
+    if len(rows) == 1:
+        return rows[0]
+    if explicit:
+        raise HTTPException(422, "You have more than one MT5 account. Choose which one to use")
+    return next((r for r in rows if _connected(r)), rows[0])
+
+
+def load(con, uid, raw):
+    """(account, state row) for something that acts on one account; the account must be named when the member has several."""
+    a = resolve(con, uid, raw, explicit=True)
+    return a, con.execute("SELECT state, specs FROM ea_acct_state WHERE account_id=?", (a["id"],)).fetchone()
+
+
+def _label(v) -> str:
+    return re.sub(r"[\x00-\x1f\x7f\s]+", " ", str(v or "")).strip()[:30]
+
+
+def _summary(con, a: dict, now: float) -> dict:
+    s = con.execute("SELECT state FROM ea_acct_state WHERE account_id=?", (a["id"],)).fetchone()
+    acc = (json.loads(s["state"]).get("account") or {}) if s else {}
+    return {"id": a["id"], "label": a["label"], "login": acc.get("login") or a.get("login"), "server": acc.get("server"),
+            "demo": acc.get("demo") if s else None, "currency": acc.get("currency"), "balance": acc.get("balance"),
+            "equity": acc.get("equity"), "connected": _connected(a, now),
+            "last_seen_ago": int(now - a["last_seen"]) if a.get("last_seen") else None}
+
+
+def _seed(con, uid, aid):
+    """A new account starts with the member's existing risk rules and auto-manage settings (from their first account)."""
+    first = con.execute("SELECT id FROM ea_accounts WHERE user_id=? AND id<>? ORDER BY id LIMIT 1", (uid, aid)).fetchone()
+    if first:
+        r = con.execute("SELECT max_risk_pct,daily_loss_pct,max_positions FROM ea_acct_rules WHERE account_id=?", (first["id"],)).fetchone()
+        m = con.execute("SELECT settings FROM ea_acct_manage WHERE account_id=?", (first["id"],)).fetchone()
+    else:
+        r = con.execute("SELECT max_risk_pct,daily_loss_pct,max_positions FROM ea_rules WHERE user_id=?", (uid,)).fetchone()
+        m = con.execute("SELECT settings FROM ea_manage WHERE user_id=?", (uid,)).fetchone()
+    if r:
+        con.execute("INSERT INTO ea_acct_rules(account_id,max_risk_pct,daily_loss_pct,max_positions) VALUES(?,?,?,?)",
+                    (aid, r["max_risk_pct"], r["daily_loss_pct"], r["max_positions"]))
+    if m:
+        con.execute("INSERT INTO ea_acct_manage(account_id,settings) VALUES(?,?)", (aid, m["settings"]))
 
 
 def risk_check(state: dict, rules: dict) -> dict:
@@ -117,16 +222,21 @@ async def report(request):
     if not isinstance(acc, dict):
         raise HTTPException(422, "account is required")
     with closing(db()) as con:
-        r = con.execute("SELECT k.user_id, u.blocked, u.tier FROM ea_keys k JOIN users u ON u.id=k.user_id "
-                        "WHERE k.key_hash=?", (_hash(key),)).fetchone()
+        r = con.execute("SELECT a.id, a.user_id, a.login, a.last_seen, u.blocked, u.tier FROM ea_accounts a JOIN users u ON u.id=a.user_id "
+                        "WHERE a.key_hash=?", (_hash(key),)).fetchone()
         if not r or r["blocked"]:
             raise HTTPException(401, "Invalid or revoked connection key")
         if not credits.mt5_can_report({"id": r["user_id"], "tier": r["tier"]}):
             raise HTTPException(403, "The MT5 connection is part of Signals Pro. Renew it in the Billing tab.")
-        uid, now = r["user_id"], time.time()
-        if now - _last_report.get(uid, 0) < 3:
+        uid, aid, now = r["user_id"], r["id"], time.time()
+        if now - _last_report.get(aid, 0) < 3:
             raise HTTPException(429, "Too many reports; wait a few seconds")
-        _last_report[uid] = now
+        login = str(acc.get("login") or "")[:40]
+        if r["login"] and login and r["login"] != login and r["last_seen"] and now - r["last_seen"] < 120:
+            # two MT5 terminals are using ONE key: refuse the newcomer so the two accounts' data never get mixed
+            raise HTTPException(409, f"This connection key is already in use by MT5 account {r['login']}. "
+                                     "Create a separate key for each MT5 account in the TradeLens MT5 tab.")
+        _last_report[aid] = now
         state = {
             "account": {k: acc.get(k) for k in ("login", "server", "currency", "balance", "equity", "margin_free", "demo",
                                            "remote_close", "manage_allowed", "execute_allowed", "pending_allowed", "server_offset")},
@@ -136,18 +246,18 @@ async def report(request):
         }
         specs = d.get("specs")
         specs_json = json.dumps([s for s in specs if isinstance(s, dict)][:100]) if isinstance(specs, list) else None
-        con.execute("INSERT INTO ea_state(user_id,state,specs,updated_at) VALUES(?,?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET state=excluded.state, "
-                    "specs=COALESCE(excluded.specs, ea_state.specs), updated_at=excluded.updated_at",
-                    (uid, json.dumps(state), specs_json, int(now)))
-        con.execute("UPDATE ea_keys SET last_seen=? WHERE user_id=?", (int(now), uid))
+        con.execute("INSERT INTO ea_acct_state(account_id,state,specs,updated_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(account_id) DO UPDATE SET state=excluded.state, "
+                    "specs=COALESCE(excluded.specs, ea_acct_state.specs), updated_at=excluded.updated_at",
+                    (aid, json.dumps(state), specs_json, int(now)))
+        con.execute("UPDATE ea_accounts SET last_seen=?, login=COALESCE(NULLIF(?, ''), login) WHERE id=?", (int(now), login, aid))
         con.commit()
         try:                                       # founding members: read the funded balance the EA reported (perks.py)
             from . import perks
             perks.verify_founder(uid, state["account"])
         except Exception as e:
             print(f"[perks] founder check failed: {type(e).__name__}", flush=True)
-        rules = get_rules(con, uid)
+        rules = get_rules(con, aid)
     closed = [c for c in (d.get("closed") or []) if isinstance(c, dict)] if isinstance(d.get("closed"), list) else []
     out = risk_check(state, rules)
     fresh: list = []
@@ -162,21 +272,26 @@ async def report(request):
     return JSONResponse(out)
 
 
-def _key_user(con, request) -> int:
+def _key_account(con, request):
+    """(account id, user id) of the connection key an EA sent."""
     key = request.headers.get("x-driverline-key", "")
     if not key:
         raise HTTPException(401, "Missing connection key")
-    r = con.execute("SELECT k.user_id, u.blocked, u.tier FROM ea_keys k JOIN users u ON u.id=k.user_id "
-                    "WHERE k.key_hash=?", (_hash(key),)).fetchone()
+    r = con.execute("SELECT a.id, a.user_id, u.blocked, u.tier FROM ea_accounts a JOIN users u ON u.id=a.user_id "
+                    "WHERE a.key_hash=?", (_hash(key),)).fetchone()
     if not r or r["blocked"]:
         raise HTTPException(401, "Invalid or revoked connection key")
     if not credits.mt5_allowed({"id": r["user_id"], "tier": r["tier"]}):
         raise HTTPException(403, "The MT5 connection is part of Signals Pro. Renew it in the Billing tab.")
-    return r["user_id"]
+    return r["id"], r["user_id"]
+
+
+def _acct_param(request, d=None):
+    return (d.get("account") if isinstance(d, dict) else None) or request.query_params.get("account")
 
 
 async def command_create(request):
-    """A signed-in member asks their own EA to close one position or all positions."""
+    """A signed-in member asks one of their own EAs to close one position or all positions."""
     u = auth.require_user(request)
     d = await auth._json(request)
     kind = d.get("kind")
@@ -184,9 +299,9 @@ async def command_create(request):
         raise HTTPException(422, "kind must be close, close_all or cancel_order")
     now = int(time.time())
     with closing(db()) as con:
-        k = con.execute("SELECT last_seen FROM ea_keys WHERE user_id=?", (u["id"],)).fetchone()
-        s = con.execute("SELECT state FROM ea_state WHERE user_id=?", (u["id"],)).fetchone()
-        if not (k and k["last_seen"] and now - k["last_seen"] < 120 and s):
+        a, s = load(con, u["id"], _acct_param(request, d))
+        aid = a["id"]
+        if not (a["last_seen"] and now - a["last_seen"] < 120 and s):
             raise HTTPException(409, "Your MT5 is not connected right now")
         st = json.loads(s["state"])
         if kind == "cancel_order":     # cancelling a waiting pending order is governed by AllowPending, not AllowRemoteClose
@@ -211,36 +326,36 @@ async def command_create(request):
                 raise HTTPException(404, "That position is not open any more")
         elif kind == "close_all" and not positions:
             raise HTTPException(409, "There are no open positions")
-        con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",
-                    (u["id"], now - CMD_TTL))
-        if con.execute("SELECT 1 FROM ea_commands WHERE user_id=? AND status IN ('pending','sent') AND created_at>?",
-                       (u["id"], now - CMD_TTL)).fetchone():
+        con.execute("UPDATE ea_commands SET status='expired' WHERE account_id=? AND status='pending' AND created_at<?",
+                    (aid, now - CMD_TTL))
+        if con.execute("SELECT 1 FROM ea_commands WHERE account_id=? AND status IN ('pending','sent') AND created_at>?",
+                       (aid, now - CMD_TTL)).fetchone():
             raise HTTPException(409, "Another close is still in progress")
-        cid = con.insert("INSERT INTO ea_commands(user_id,kind,ticket,created_at,status) VALUES(?,?,?,?,'pending')",
-                         (u["id"], kind, ticket, now))
+        cid = con.insert("INSERT INTO ea_commands(user_id,account_id,kind,ticket,created_at,status) VALUES(?,?,?,?,?,'pending')",
+                         (u["id"], aid, kind, ticket, now))
         con.commit()
-    return JSONResponse({"id": cid})
+    return JSONResponse({"id": cid, "account": aid})
 
 
 async def poll(request):
-    """The EA asks: is there a close command waiting for me?"""
+    """The EA asks: is there a command waiting for me? (Each MT5 account has its own key, so it only ever sees its own commands.)"""
     with closing(db()) as con:
-        uid = _key_user(con, request)
+        aid, uid = _key_account(con, request)
         now = time.time()
-        if now - _last_poll.get(uid, 0) < 1:
+        if now - _last_poll.get(aid, 0) < 1:
             raise HTTPException(429, "Polling too fast")
-        _last_poll[uid] = now
-        con.execute("UPDATE ea_keys SET last_seen=? WHERE user_id=?", (int(now), uid))
-        con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",
-                    (uid, int(now) - CMD_TTL))
-        con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND kind IN ('open','pending_order') "
-                    "AND created_at<?", (uid, int(now) - OPEN_TTL))
-        r = con.execute("SELECT id,kind,ticket,payload FROM ea_commands WHERE user_id=? AND status='pending' "
-                        "ORDER BY id LIMIT 1", (uid,)).fetchone()
+        _last_poll[aid] = now
+        con.execute("UPDATE ea_accounts SET last_seen=? WHERE id=?", (int(now), aid))
+        con.execute("UPDATE ea_commands SET status='expired' WHERE account_id=? AND status='pending' AND created_at<?",
+                    (aid, int(now) - CMD_TTL))
+        con.execute("UPDATE ea_commands SET status='expired' WHERE account_id=? AND status='pending' AND kind IN ('open','pending_order') "
+                    "AND created_at<?", (aid, int(now) - OPEN_TTL))
+        r = con.execute("SELECT id,kind,ticket,payload FROM ea_commands WHERE account_id=? AND status='pending' "
+                        "ORDER BY id LIMIT 1", (aid,)).fetchone()
         if r:
             con.execute("UPDATE ea_commands SET status='sent' WHERE id=?", (r["id"],))
         con.commit()
-        m = get_manage(con, uid)
+        m = get_manage(con, aid)
     flat = {"be_on": "1" if m["be_on"] else "0", "be_trigger": str(m["be_trigger"]), "be_offset": str(m["be_offset"]),
             "tsl_on": "1" if m["tsl_on"] else "0", "tsl_start": str(m["tsl_start"]), "tsl_dist": str(m["tsl_dist"]),
             "ttp_on": "1" if m["ttp_on"] else "0", "ttp_near": str(m["ttp_near"]), "ttp_step": str(m["ttp_step"]),
@@ -262,15 +377,15 @@ async def poll(request):
 async def result(request):
     d = await auth._json(request)
     with closing(db()) as con:
-        uid = _key_user(con, request)
+        aid, uid = _key_account(con, request)
         try:
             cid = int(d["id"])
         except (KeyError, TypeError, ValueError):
             raise HTTPException(422, "id is required")
         res = json.dumps({"closed": int(_f(d.get("closed"))), "failed": int(_f(d.get("failed"))),
                           "message": str(d.get("message", ""))[:200]})
-        con.execute("UPDATE ea_commands SET status=?, result=? WHERE id=? AND user_id=? AND status='sent'",
-                    ("done" if d.get("ok") else "failed", res, cid, uid))
+        con.execute("UPDATE ea_commands SET status=?, result=? WHERE id=? AND account_id=? AND status='sent'",
+                    ("done" if d.get("ok") else "failed", res, cid, aid))
         con.commit()
     return JSONResponse({"ok": True})
 
@@ -282,30 +397,32 @@ MANAGE_RANGES = {"be_trigger": (0.3, 3.0), "be_offset": (0.0, 0.5), "tsl_start":
                  "ttp_near": (0.1, 1.5), "ttp_step": (0.3, 3.0)}
 
 
-def get_manage(con, uid) -> dict:
-    r = con.execute("SELECT settings FROM ea_manage WHERE user_id=?", (uid,)).fetchone()
+def get_manage(con, aid) -> dict:
+    r = con.execute("SELECT settings FROM ea_acct_manage WHERE account_id=?", (aid,)).fetchone()
     return {**MANAGE_DEFAULT, **(json.loads(r["settings"]) if r else {})}
 
 
-def _save_manage(con, uid, s):
-    con.execute("INSERT INTO ea_manage(user_id,settings) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET settings=excluded.settings",
-                (uid, json.dumps(s)))
+def _save_manage(con, aid, s):
+    con.execute("INSERT INTO ea_acct_manage(account_id,settings) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET settings=excluded.settings",
+                (aid, json.dumps(s)))
     con.commit()
 
 
 async def manage_get(request):
     u = auth.require_user(request)
     with closing(db()) as con:
-        return JSONResponse(get_manage(con, u["id"]))
+        a = resolve(con, u["id"], _acct_param(request), explicit=True)
+        return JSONResponse(get_manage(con, a["id"]))
 
 
 async def manage_save(request):
-    """Switches and distances for breakeven, trailing stop and trailing take-profit. Distances are in R, where
+    """Switches and distances for breakeven, trailing stop and trailing take-profit of ONE MT5 account. Distances are in R, where
     1R is the original stop distance of the position."""
     u = auth.require_user(request)
     d = await auth._json(request)
     with closing(db()) as con:
-        s = get_manage(con, u["id"])
+        a = resolve(con, u["id"], _acct_param(request, d), explicit=True)
+        s = get_manage(con, a["id"])
         for k in ("be_on", "tsl_on", "ttp_on"):
             if k in d:
                 if not isinstance(d[k], bool):
@@ -319,7 +436,7 @@ async def manage_save(request):
                 s[k] = v
         if s["tsl_dist"] > s["tsl_start"]:
             raise HTTPException(422, "The trailing distance cannot be larger than the profit needed to start trailing")
-        _save_manage(con, u["id"], s)
+        _save_manage(con, a["id"], s)
     return JSONResponse(s)
 
 
@@ -332,61 +449,187 @@ async def manage_exclude(request):
     except (TypeError, ValueError):
         raise HTTPException(422, "ticket must be a number")
     with closing(db()) as con:
-        s = get_manage(con, u["id"])
+        a = resolve(con, u["id"], _acct_param(request, d), explicit=True)
+        s = get_manage(con, a["id"])
         ex = {int(t) for t in s["excluded"]}
         (ex.add if d.get("excluded") else ex.discard)(ticket)
         s["excluded"] = sorted(ex)[-200:]
-        _save_manage(con, u["id"], s)
+        _save_manage(con, a["id"], s)
     return JSONResponse(s)
 
 
-def queue_open(con, uid: int, payload: dict, kind: str = "open") -> int:
-    """Queue ONE 'open trade' (or 'pending_order') request for this member's EA. Called only after the member clicked the button."""
-    now = int(time.time())
-    con.execute("UPDATE ea_commands SET status='expired' WHERE user_id=? AND status='pending' AND created_at<?",
-                (uid, now - CMD_TTL))
-    if con.execute("SELECT 1 FROM ea_commands WHERE user_id=? AND status IN ('pending','sent') AND created_at>?",
-                   (uid, now - CMD_TTL)).fetchone():
+def queue_open(con, a: dict, payload: dict, kind: str = "open") -> int:
+    """Queue ONE 'open trade' (or 'pending_order') request for ONE of the member's MT5 accounts (a is its ea_accounts row).
+    Called only after the member clicked the button."""
+    now, aid = int(time.time()), a["id"]
+    con.execute("UPDATE ea_commands SET status='expired' WHERE account_id=? AND status='pending' AND created_at<?",
+                (aid, now - CMD_TTL))
+    if con.execute("SELECT 1 FROM ea_commands WHERE account_id=? AND status IN ('pending','sent') AND created_at>?",
+                   (aid, now - CMD_TTL)).fetchone():
         raise HTTPException(409, "Another request is still in progress. Wait a moment and try again.")
-    cid = con.insert("INSERT INTO ea_commands(user_id,kind,ticket,created_at,status,payload) VALUES(?,?,?,?,'pending',?)",
-                     (uid, kind, None, now, json.dumps(payload)))
+    cid = con.insert("INSERT INTO ea_commands(user_id,account_id,kind,ticket,created_at,status,payload) VALUES(?,?,?,?,?,'pending',?)",
+                     (a["user_id"], aid, kind, None, now, json.dumps(payload)))
     con.commit()
     return cid
 
 
-async def key_create(request):
+def _new_key(con, uid, label) -> tuple:
+    """Create a new MT5 account for the member and its connection key. Returns (id, raw key). The caller holds the member's lock."""
+    raw = "dlk_" + secrets.token_urlsafe(24)
+    aid = con.insert("INSERT INTO ea_accounts(user_id,label,key_hash,created_at) VALUES(?,?,?,?)", (uid, label, _hash(raw), int(time.time())))
+    _seed(con, uid, aid)
+    return aid, raw
+
+
+def _lock(con, uid):
+    if con.pg:       # one create/remove at a time per member, so the account limit cannot be beaten by two quick taps
+        con.execute("SELECT pg_advisory_xact_lock(?)", (10_000_000_000 + uid,))
+
+
+async def accounts_list(request):
+    u = auth.require_user(request)
+    with closing(db()) as con:
+        now = time.time()
+        return JSONResponse({"accounts": [_summary(con, a, now) for a in user_accounts(con, u["id"])], "max": MAX_ACCOUNTS,
+                             "mt5_allowed": credits.mt5_can_report(u)})
+
+
+async def account_create(request):
+    """Add another MT5 account (for example a Demo next to a Live one). Each gets its own connection key."""
+    u = auth.require_user(request)
+    if not credits.mt5_can_report(u):
+        raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
+    d = await auth._json(request)
+    label = _label(d.get("label"))
+    if not label:
+        raise HTTPException(422, "Give the account a short name, for example Live or Demo")
+    with closing(db()) as con:
+        _lock(con, u["id"])
+        rows = user_accounts(con, u["id"])
+        if len(rows) >= MAX_ACCOUNTS:
+            raise HTTPException(409, f"You can connect up to {MAX_ACCOUNTS} MT5 accounts. Remove one first.")
+        if any(r["label"].lower() == label.lower() for r in rows):
+            raise HTTPException(409, "You already have an account with that name")
+        try:
+            aid, raw = _new_key(con, u["id"], label)
+            con.commit()
+        except Exception as e:
+            con.raw.rollback()
+            if dbx.is_duplicate(e):
+                raise HTTPException(409, "You already have an account with that name")
+            raise
+    return JSONResponse({"id": aid, "label": label, "key": raw})
+
+
+async def account_key(request):
+    """Replace the connection key of ONE account (the old key stops working at once). The account's data and settings stay."""
     u = auth.require_user(request)
     if not credits.mt5_can_report(u):
         raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
     raw = "dlk_" + secrets.token_urlsafe(24)
     with closing(db()) as con:
-        con.execute("INSERT INTO ea_keys(user_id,key_hash,created_at) VALUES(?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET key_hash=excluded.key_hash, "
-                    "created_at=excluded.created_at, last_seen=NULL", (u["id"], _hash(raw), int(time.time())))
+        a = resolve(con, u["id"], request.path_params["aid"])
+        con.execute("UPDATE ea_accounts SET key_hash=?, created_at=?, last_seen=NULL, login=NULL WHERE id=?", (_hash(raw), int(time.time()), a["id"]))
         con.commit()
-    return JSONResponse({"key": raw})
+    return JSONResponse({"id": a["id"], "key": raw})
+
+
+async def account_rename(request):
+    u = auth.require_user(request)
+    d = await auth._json(request)
+    label = _label(d.get("label"))
+    if not label:
+        raise HTTPException(422, "Give the account a short name")
+    with closing(db()) as con:
+        a = resolve(con, u["id"], request.path_params["aid"])
+        if any(r["label"].lower() == label.lower() and r["id"] != a["id"] for r in user_accounts(con, u["id"])):
+            raise HTTPException(409, "You already have an account with that name")
+        try:
+            con.execute("UPDATE ea_accounts SET label=? WHERE id=?", (label, a["id"]))
+            con.commit()
+        except Exception as e:
+            con.raw.rollback()
+            if dbx.is_duplicate(e):
+                raise HTTPException(409, "You already have an account with that name")
+            raise
+    return JSONResponse({"id": a["id"], "label": label})
+
+
+def _remove(con, a: dict):
+    aid = a["id"]
+    for t in ("ea_acct_state", "ea_acct_rules", "ea_acct_manage"):
+        con.execute(f"DELETE FROM {t} WHERE account_id=?", (aid,))
+    con.execute("DELETE FROM ea_commands WHERE account_id=?", (aid,))
+    con.execute("DELETE FROM ea_accounts WHERE id=?", (aid,))
+    con.commit()
+    _last_report.pop(aid, None)
+    _last_poll.pop(aid, None)
+
+
+async def account_delete(request):
+    """Disconnect and remove ONE MT5 account: its key stops working and its live data and settings are deleted.
+    Journal entries already imported from it stay."""
+    u = auth.require_user(request)
+    with closing(db()) as con:
+        a = resolve(con, u["id"], request.path_params["aid"])
+        _remove(con, a)
+    return JSONResponse({"ok": True})
+
+
+async def key_create(request):
+    """Older single-account call, kept so a page cached on a phone still works: creates the first account, or replaces the key of the
+    only account. With several accounts it must be told which (account=...)."""
+    u = auth.require_user(request)
+    if not credits.mt5_can_report(u):
+        raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
+    try:
+        d = await request.json()
+    except Exception:
+        d = {}
+    with closing(db()) as con:
+        _lock(con, u["id"])
+        rows = user_accounts(con, u["id"])
+        if not rows and not request.query_params.get("account"):
+            aid, raw = _new_key(con, u["id"], "Main")
+            con.commit()
+            return JSONResponse({"key": raw, "id": aid})
+        a = resolve(con, u["id"], _acct_param(request, d if isinstance(d, dict) else None), explicit=True)
+        raw = "dlk_" + secrets.token_urlsafe(24)
+        con.execute("UPDATE ea_accounts SET key_hash=?, created_at=?, last_seen=NULL, login=NULL WHERE id=?", (_hash(raw), int(time.time()), a["id"]))
+        con.commit()
+    return JSONResponse({"key": raw, "id": a["id"]})
 
 
 async def key_revoke(request):
+    """Older single-account call: removes the only account (several: say which with account=...)."""
     u = auth.require_user(request)
     with closing(db()) as con:
-        con.execute("DELETE FROM ea_keys WHERE user_id=?", (u["id"],))
-        con.commit()
+        if user_accounts(con, u["id"]):
+            _remove(con, resolve(con, u["id"], request.query_params.get("account"), explicit=True))
     return JSONResponse({"ok": True})
 
 
 async def status(request):
     u = auth.require_user(request)
-    with closing(db()) as con:
-        k = con.execute("SELECT last_seen FROM ea_keys WHERE user_id=?", (u["id"],)).fetchone()
-        s = con.execute("SELECT state, updated_at FROM ea_state WHERE user_id=?", (u["id"],)).fetchone()
-        rules = get_rules(con, u["id"])
-        mg = get_manage(con, u["id"])
-        cmd = con.execute("SELECT id,kind,ticket,status,result,created_at FROM ea_commands WHERE user_id=? "
-                          "ORDER BY id DESC LIMIT 1", (u["id"],)).fetchone()
     now = time.time()
-    seen = k["last_seen"] if k else None
-    out = {"mt5_allowed": credits.mt5_can_report(u), "has_key": bool(k), "connected": bool(seen and now - seen < 120),
+    with closing(db()) as con:
+        rows = user_accounts(con, u["id"])
+        accounts = [_summary(con, a, now) for a in rows]
+        base = {"mt5_allowed": credits.mt5_can_report(u), "accounts": accounts, "max_accounts": MAX_ACCOUNTS}
+        if not rows and request.query_params.get("account") not in (None, ""):
+            raise HTTPException(404, "That MT5 account was not found")
+        if not rows:
+            return JSONResponse({**base, "has_key": False, "connected": False, "last_seen_ago": None, "rules": dict(DEFAULT_RULES),
+                                 "manage": dict(MANAGE_DEFAULT), "account_id": None})
+        a = resolve(con, u["id"], request.query_params.get("account"))
+        aid = a["id"]
+        s = con.execute("SELECT state, updated_at FROM ea_acct_state WHERE account_id=?", (aid,)).fetchone()
+        rules = get_rules(con, aid)
+        mg = get_manage(con, aid)
+        cmd = con.execute("SELECT id,kind,ticket,status,result,created_at FROM ea_commands WHERE account_id=? "
+                          "ORDER BY id DESC LIMIT 1", (aid,)).fetchone()
+    seen = a["last_seen"]
+    out = {**base, "account_id": aid, "label": a["label"], "has_key": True, "connected": bool(seen and now - seen < 120),
            "last_seen_ago": int(now - seen) if seen else None, "rules": rules, "manage": mg}
     if s:
         st = json.loads(s["state"])
@@ -417,9 +660,10 @@ async def rules_save(request):
     if not (0.1 <= mr <= 10 and 0.5 <= dl <= 20 and 1 <= mp <= 50):
         raise HTTPException(422, "Risk per trade 0.1 to 10%, daily loss 0.5 to 20%, positions 1 to 50")
     with closing(db()) as con:
-        con.execute("INSERT INTO ea_rules VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+        a = resolve(con, u["id"], _acct_param(request, d), explicit=True)
+        con.execute("INSERT INTO ea_acct_rules VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET "
                     "max_risk_pct=excluded.max_risk_pct, daily_loss_pct=excluded.daily_loss_pct, "
-                    "max_positions=excluded.max_positions", (u["id"], mr, dl, mp))
+                    "max_positions=excluded.max_positions", (a["id"], mr, dl, mp))
         con.commit()
     return JSONResponse({"ok": True})
 
@@ -427,7 +671,10 @@ async def rules_save(request):
 async def specs(request):
     u = auth.require_user(request)
     with closing(db()) as con:
-        s = con.execute("SELECT specs FROM ea_state WHERE user_id=?", (u["id"],)).fetchone()
+        if not user_accounts(con, u["id"]) and request.query_params.get("account") in (None, ""):
+            return JSONResponse([])
+        a = resolve(con, u["id"], request.query_params.get("account"))
+        s = con.execute("SELECT specs FROM ea_acct_state WHERE account_id=?", (a["id"],)).fetchone()
     rows = json.loads(s["specs"]) if s and s["specs"] else []
     # "key" tells the pages which TradeLens instrument a broker symbol (XAUUSDm, XAUUSDmicro ...) belongs to
     return JSONResponse([{**x, "key": match_key(x.get("symbol", ""))} for x in rows if isinstance(x, dict)])
@@ -440,6 +687,11 @@ routes = [
     Route("/api/ea/command", command_create, methods=["POST"]),
     Route("/api/ea/key", key_create, methods=["POST"]),
     Route("/api/ea/key", key_revoke, methods=["DELETE"]),
+    Route("/api/ea/accounts", accounts_list, methods=["GET"]),
+    Route("/api/ea/accounts", account_create, methods=["POST"]),
+    Route("/api/ea/accounts/{aid:int}/key", account_key, methods=["POST"]),
+    Route("/api/ea/accounts/{aid:int}/rename", account_rename, methods=["POST"]),
+    Route("/api/ea/accounts/{aid:int}", account_delete, methods=["DELETE"]),
     Route("/api/ea/status", status, methods=["GET"]),
     Route("/api/ea/rules", rules_save, methods=["POST"]),
     Route("/api/ea/manage", manage_get, methods=["GET"]),

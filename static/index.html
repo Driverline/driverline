@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="/theme.css">
 <script src="/track.js"></script>
 <script src="/auth.js"></script>
+<script src="/acct.js"></script>
 <script src="/ticket.js"></script>
 <style>
 @keyframes dlspin{to{transform:rotate(360deg)}}
@@ -133,7 +134,7 @@ function pendingSection(p,wbox,name,key){
   if(!p.enabled){const w=el('div','warn',p.why_not||'Pending orders are not offered for this result.');box.append(w);return section('Pending orders',box)}
   box.append(el('div','mut',p.note));
   (p.warnings||[]).forEach(t=>box.append(el('div','warn',t)));
-  const status=el('div','mut'),list=el('div'),detail=el('div'),mine=el('div'),msgBox=el('div');let ea=null,sel=null;msgBox.style.margin='10px 0';
+  const status=el('div','mut'),pickBox=el('div'),list=el('div'),detail=el('div'),mine=el('div'),msgBox=el('div');let ea=null,sel=null;msgBox.style.margin='10px 0';
   status.style.margin='8px 0';list.style.cssText='display:grid;gap:8px;margin:10px 0';
   function eaNote(){
     status.className='mut';
@@ -153,10 +154,10 @@ function pendingSection(p,wbox,name,key){
       r.append(el('span','',o.type.replace(/_/g,' ').toLowerCase()+' '+o.volume+' at '+o.price+(Number(o.limit)?' (limit '+o.limit+')':'')+' · SL '+o.sl+' · TP '+o.tp+' · '+exp));
       if(ea.can_pending){const b=el('button','ghost','Cancel');b.style.cssText='width:auto;padding:6px 12px';
         b.onclick=async()=>{if(!confirm('Cancel this waiting order?'))return;b.disabled=true;
-          try{const r2=await eaApi('/api/ea/command','POST',{kind:'cancel_order',ticket:Number(o.ticket)});await waitCmd(r2.id);await refresh()}catch(e){alert(e.message);b.disabled=false}};
+          try{const r2=await eaApi('/api/ea/command','POST',dlAcct.body({kind:'cancel_order',ticket:Number(o.ticket)}));await waitCmd(r2.id);await refresh()}catch(e){alert(e.message);b.disabled=false}};
         r.append(b)}
       mine.append(r)})}
-  let specs=[];
+  let specs=[],specsFor=null;
   function specFor(){return specs.find(x=>pNorm(x.symbol)===pNorm(name))||specs.find(x=>x.key===key)||specs.find(x=>pNorm(x.symbol).startsWith(pNorm(name)))}
   function riskEst(o,lots){
     const sp=specFor();if(!sp)return null;
@@ -165,12 +166,13 @@ function pendingSection(p,wbox,name,key){
     const money=l*Math.abs(o.entry-o.sl)*unit,bal=ea&&ea.account&&ea.account.balance;
     return{text:'Estimated risk if the stop loss is hit: about '+money.toFixed(2)+(bal>0?' ('+(money/bal*100).toFixed(2)+'% of your balance)':'')+'. This is an estimate.',
       pct:bal>0?money/bal*100:null,lots:l}}
-  async function refresh(){try{ea=await eaApi('/api/ea/status')}catch(e){ea=null}
-    if(!specs.length){try{specs=await eaApi('/api/ea/specs')}catch(e){}}eaNote();showMine();if(sel)pick(sel,true)}
+  async function refresh(){try{ea=await dlAcct.status()}catch(e){ea=null}
+    if(ea&&(!specs.length||specsFor!==ea.account_id)){specs=await dlAcct.specs();specsFor=ea.account_id}
+    pickBox.textContent='';const pk=ea&&dlAcct.picker(ea,()=>{specs=[];refresh()});if(pk)pickBox.append(pk);eaNote();showMine();if(sel)pick(sel,true)}
   async function waitCmd(id){
     const m=el('div','mut','Sending to your MT5...');msgBox.textContent='';msgBox.append(m);
     for(let i=0;i<20;i++){await new Promise(r=>setTimeout(r,1500));
-      try{const st=await eaApi('/api/ea/status'),cm=st.command;
+      try{const st=await dlAcct.status(),cm=st.command;
         if(cm&&cm.id===id&&!['pending','sent'].includes(cm.status)){const ok=cm.status==='done';
           m.className=ok?'win':'err';m.textContent=(cm.result&&cm.result.message)||(ok?'Done.':'Your EA did not confirm. Check MT5.');return ok}}catch(e){}}
     m.className='warn';m.textContent='No reply from your EA yet. Check MT5 before trying again.';return false}
@@ -194,11 +196,11 @@ function pendingSection(p,wbox,name,key){
     go.disabled=!(ea&&ea.connected&&ea.can_pending&&ea.mt5_allowed!==false);
     go.onclick=async()=>{
       const lots=lot.value===''?null:Number(lot.value),h=Number(hs.value),re=riskEst(o,lots||0);
-      if(!confirm('Set this PENDING order in your MT5?\n\n'+name+' '+o.label+'\n'+(o.limit?'Trigger '+wFmt(o.price)+', then limit '+wFmt(o.limit):'Price '+wFmt(o.price))+'\nStop loss '+wFmt(o.sl)+'  ·  Take profit '+wFmt(o.tp)+
+      if(!confirm('Set this PENDING order in your MT5'+((ea.accounts||[]).length>1?' account "'+ea.label+'" ('+(ea.account&&ea.account.demo?'DEMO':'LIVE')+')':'')+'?\n\n'+name+' '+o.label+'\n'+(o.limit?'Trigger '+wFmt(o.price)+', then limit '+wFmt(o.limit):'Price '+wFmt(o.price))+'\nStop loss '+wFmt(o.sl)+'  ·  Take profit '+wFmt(o.tp)+
         '\nLot size: '+(lots?lots:(re&&re.lots?re.lots+' (the minimum lot)':'the minimum lot'))+(re?'\n'+re.text:'')+'\nCancels itself after '+h+' hours if not filled.\n\nIf price reaches the level, MT5 opens a REAL trade by itself, even if this app is closed. You can cancel it any time while it waits.'))return;
       if(re&&re.pct!==null&&ea.rules&&re.pct>ea.rules.max_risk_pct&&!confirm('WARNING: if the stop loss is hit this risks about '+re.pct.toFixed(2)+'% of your balance, more than the '+ea.rules.max_risk_pct+'% you set as your own limit.\n\nSet it anyway?'))return;
       go.disabled=true;msgBox.textContent='';
-      try{const r=await eaApi('/api/pending/place','POST',{token:o.token,lots:lots,hours:h});
+      try{const r=await eaApi('/api/pending/place','POST',dlAcct.body({token:o.token,lots:lots,hours:h}));
         await waitCmd(r.command_id)}catch(e){msgBox.textContent='';msgBox.append(el('div','err',e.message))}
       await refresh()};
     detail.append(go)}
@@ -207,7 +209,7 @@ function pendingSection(p,wbox,name,key){
     b.style.cssText='text-align:left;display:flex;justify-content:space-between;gap:10px;align-items:center;border-color:#16305f;color:#e9eefc';
     const l=el('span');const t=el('b','',o.label);t.style.color=PCOL[o.direction];l.append(t,document.createTextNode('  at '+wFmt(o.price)));
     b.append(l,el('span','mut','R:R '+o.rr));b.onclick=()=>pick(o);list.append(b)});
-  if(p.options.length)box.append(el('div','',''),status,list,detail);else box.append(status);
+  if(p.options.length)box.append(el('div','',''),pickBox,status,list,detail);else box.append(pickBox,status);
   box.append(msgBox,mine);
   if(p.unavailable.length){const u=el('details');u.append(el('summary','','Why aren’t the other order types shown?'));
     p.unavailable.forEach(x=>{const d=el('div');d.style.margin='6px 0';d.append(el('b','',x.label+': '),document.createTextNode(x.reason));u.append(d)});box.append(u)}

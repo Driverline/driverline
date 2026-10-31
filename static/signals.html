@@ -10,6 +10,7 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/theme.css">
 <script src="/auth.js"></script>
+<script src="/acct.js"></script>
 </head>
 <body>
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
@@ -34,7 +35,7 @@ function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||
 async function api(path,method,body){
   const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
-let filter='all',state=null,hasEA=false,ea={},specs=[],execMsg={},dv={enabled:false},dvAcc=null,dvMsg={},hold=0;
+let filter='all',state=null,hasEA=false,ea={},specs=[],specsFor=null,execMsg={},dv={enabled:false},dvAcc=null,dvMsg={},hold=0;
 const norm=s=>String(s).toLowerCase().replace(/index/g,'').replace(/[^a-z0-9]/g,'');
 
 function ago(t){const m=Math.max(0,Math.round((Date.now()/1000-t)/60));return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'}
@@ -107,6 +108,7 @@ function riskText(s,lots){
 function execBlock(s){
   const b=el('div');b.style.cssText='margin-top:12px;border-top:1px solid var(--line);padding-top:10px';
   b.append(el('h2','','Open this trade in MT5'));
+  const pk=dlAcct.picker(ea,()=>load());if(pk)b.append(pk);
   if(!ea.connected){const a=el('a','','Connect your MT5 to open trades from here');a.href='/mt5.html';a.style.color='var(--gold2)';b.append(a);return b}
   if(!ea.can_execute){b.append(el('div','mut','Switch on AllowExecute in the EA settings in MT5 to open trades from here.'));return b}
   const sp=specFor(s);
@@ -117,17 +119,17 @@ function execBlock(s){
   const out=el('div',execMsg[s.id]&&execMsg[s.id].ok?'win':'err',execMsg[s.id]?execMsg[s.id].text:'');
   go.onclick=async()=>{
     const lots=lot.value===''?null:Number(lot.value),r=riskText(s,lots||0);
-    let q='Open a REAL trade in your MT5 now?\n\n'+s.name+' '+s.direction+'\nLot size: '+(lots?lots:(r&&r.lots?r.lots+' (the minimum lot)':'the minimum lot'))+
+    let q='Open a REAL trade in your MT5'+((ea.accounts||[]).length>1?' account "'+ea.label+'" ('+(ea.account&&ea.account.demo?'DEMO':'LIVE')+')':'')+' now?\n\n'+s.name+' '+s.direction+'\nLot size: '+(lots?lots:(r&&r.lots?r.lots+' (the minimum lot)':'the minimum lot'))+
       '\nStop loss and take profit are attached, set from the price at the moment the order is placed (about '+px(s,s.stop)+' and '+px(s,s.target)+').'+
       (r&&r.text?'\n'+r.text:'')+'\n\nYou are placing this order yourself. You can close or adjust it at any time.';
     if(!confirm(q))return;
     if(r&&r.pct!==null&&ea.rules&&r.pct>ea.rules.max_risk_pct&&!confirm('WARNING: this risks about '+r.pct.toFixed(2)+'% of your balance, more than the '+ea.rules.max_risk_pct+'% you set as your own limit.\n\nPlace it anyway?'))return;
     go.disabled=true;out.className='mut';out.textContent='Sending to your MT5...';
     try{
-      const r2=await api('/api/signals/'+s.id+'/execute','POST',{lots});
+      const r2=await api('/api/signals/'+s.id+'/execute','POST',dlAcct.body({lots}));
       for(let i=0;i<20;i++){
         await new Promise(r=>setTimeout(r,1500));
-        const st=await api('/api/ea/status'),cm=st.command;
+        const st=await dlAcct.status(),cm=st.command;
         if(cm&&cm.id===r2.command_id&&!['pending','sent'].includes(cm.status)){
           const ok=cm.status==='done';execMsg[s.id]={ok,text:(cm.result&&cm.result.message)||(ok?'Done.':'Your EA did not confirm. Check MT5.')};break}
       }
@@ -282,7 +284,7 @@ async function renderNotif(){
 async function load(){
   try{
     state=await api('/api/signals');
-    try{const s=await api('/api/ea/status');hasEA=!!s.connected;ea=s;if(!specs.length)specs=await api('/api/ea/specs')}catch(e){ea={}}
+    try{const s=await dlAcct.status();hasEA=!!s.connected;ea=s;if(!specs.length||specsFor!==s.account_id){specs=await dlAcct.specs();specsFor=s.account_id}}catch(e){ea={}}
     try{dv=await api('/api/deriv/status')}catch(e){dv={enabled:false}}
     renderBudget(state.budget,state.paid);renderAdvice();renderChips();renderList();loadDvTrades();
   }catch(e){$('budget').textContent=e.message}
