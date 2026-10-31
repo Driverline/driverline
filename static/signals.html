@@ -110,7 +110,7 @@ function execBlock(s){
   b.append(el('h2','','Open this trade in MT5'));
   const pk=dlAcct.picker(ea,()=>load());if(pk)b.append(pk);
   if(!ea.connected){const a=el('a','','Connect your MT5 to open trades from here');a.href='/mt5.html';a.style.color='var(--gold2)';b.append(a);return b}
-  if(!ea.can_execute){b.append(el('div','mut','Switch on AllowExecute in the EA settings in MT5 to open trades from here.'));return b}
+  if(!ea.can_execute){b.append(el('div','mut','Opening trades from the app is not enabled on your account yet. Ask TradeLens support to enable it.'));return b}
   const sp=specFor(s);
   const lot=document.createElement('input');lot.type='number';lot.step='any';lot.min='0';lot.inputMode='decimal';
   lot.placeholder='Lot size'+(sp&&sp.vol_min?' (empty = minimum '+sp.vol_min+')':' (empty = minimum lot)');

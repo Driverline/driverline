@@ -449,7 +449,7 @@ async def execute_signal(request):
                 raise HTTPException(409, "Your MT5 is not connected right now.")
             state = json.loads(s["state"])
             if not state["account"].get("execute_allowed"):
-                raise HTTPException(409, "Switch on AllowExecute in the EA settings in MT5 to open trades from the app.")
+                raise HTTPException(409, "Opening trades from the app is not enabled on your account yet (AllowExecute is off). Ask TradeLens support to enable it.")
             rules = ea.get_rules(ec, acct["id"])
             if ea.risk_check(state, rules)["status"] == "STOP":
                 raise HTTPException(409, f"You reached your own daily loss limit of {rules['daily_loss_pct']:g}%. Opening trades is paused for today.")

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Admin: MT5 connections</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main id="root"><span class="mut">Loading...</span></main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||'',v));return d}
+async function api(path,method,body){
+  const r=await fetch('/api/mt5req/admin'+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
+const day=t=>t?new Date(t*1000).toISOString().slice(0,16).replace('T',' '):'-';
+const open={};let all=false,msg=null;
+function note(t,c){if(msg){msg.className=c||'mut';msg.textContent=t}}
+function copyBtn(label,text){const b=el('button','ghost',label);b.style.cssText='width:auto;padding:6px 10px';
+  b.onclick=async()=>{try{await navigator.clipboard.writeText(text);b.textContent='Copied'}catch(e){b.textContent='Copy failed'}};return b}
+function secretBox(title,rows){const box=el('div','card');box.style.borderColor='var(--gold)';box.append(el('div','mut',title+' Shown once. It hides itself in 2 minutes.'));
+  rows.forEach(([k,v])=>{const r=el('div','kv');r.append(el('span','',k),el('span','',v));box.append(r);box.append(copyBtn('Copy '+k.toLowerCase(),v))});
+  const done=el('button','ghost','Hide');done.style.marginTop='8px';done.onclick=()=>box.remove();box.append(done);setTimeout(()=>box.remove(),120000);return box}
+async function load(){
+  const root=$('root');let d;
+  try{d=await api(all?'?status=all':'')}catch(e){root.textContent=e.message;return}
+  const keep=root.querySelectorAll('.secret');root.textContent='';
+  const head=el('div','card');head.append(el('h2','','MT5 connections'),
+    el('p','mut','Members send their MT5 login, password and server. Reveal the details, set the account up on the VPS, then press Create account and key and put the key in that terminal EA. When the EA first reports, the member password is deleted automatically.'));
+  if(!d.vault_ready)head.append(el('div','err','DRIVERLINE_VAULT_KEY is not set on the server, so members cannot send details yet. Add it in Render (Environment) and redeploy.'));
+  msg=el('div','mut');head.append(msg);
+  const tg=el('button','ghost',all?'Show open requests only':'Show all recent requests');tg.onclick=()=>{all=!all;load()};head.append(tg);root.append(head);
+  keep.forEach(k=>root.append(k));
+  if(!d.requests.length){const e=el('div','card');e.append(el('div','mut','No requests.'));root.append(e)}
+  d.requests.forEach(r=>{
+    const c=el('div','card');
+    c.append(el('h2','',r.label+' | '+r.login),kv('Member',r.email),kv('Server',r.server),kv('Sent',day(r.created_at)),
+      kv('Status',r.status+(r.account_id?(r.ea_connected?' | EA connected':' | waiting for the EA'):''),r.status==='in_progress'?'warn':(r.status==='connected'?'win':'mut')),
+      kv('Password',r.has_password?'stored (encrypted)':'deleted',r.has_password?'warn':'win'));
+    if(r.note)c.append(el('div','mut',r.note));
+    const act=el('div','btns');act.style.flexWrap='wrap';
+    const mk=(t,f,cls)=>{const b=el('button',cls||'ghost',t);b.style.cssText='width:auto;padding:8px 12px';b.onclick=f;act.append(b);return b};
+    const run=f=>async()=>{try{await f()}catch(e){note(e.message,'err')}};
+    if(r.has_password)mk('Reveal details',run(async()=>{const x=await api('/'+r.id+'/reveal','POST');
+      const b=secretBox('Details for '+r.email+'.',[['Login',x.login],['Password',x.password],['Server',x.server]]);b.classList.add('secret');c.after(b)}));
+    if(['new','in_progress'].includes(r.status)&&!r.account_id)mk('Create account and key',run(async()=>{
+      if(!confirm('Create the MT5 account for '+r.email+' and a connection key? Put the key in the EA of the terminal that will run this account.'))return;
+      const x=await api('/'+r.id+'/provision','POST');const b=secretBox('Connection key for '+r.label+'.',[['Key',x.key]]);b.classList.add('secret');c.after(b);note('Account created. Paste the key into the EA on the VPS.','win');
+      setTimeout(load,300)}),'');
+    if(r.account_id&&['in_progress','new'].includes(r.status))mk('New key',run(async()=>{if(!confirm('Replace the key? The EA using the old one stops.'))return;
+      const x=await api('/'+r.id+'/key','POST');const b=secretBox('New key for '+r.label+'.',[['Key',x.key]]);b.classList.add('secret');c.after(b)}));
+    if(r.status==='new')mk('Mark in progress',run(async()=>{await api('/'+r.id+'/set','POST',{action:'progress'});load()}));
+    if(['new','in_progress'].includes(r.status))mk('Reject',run(async()=>{const n=prompt('Reason (the member will see it)');if(!n)return;await api('/'+r.id+'/set','POST',{action:'reject',note:n});load()}));
+    if(r.has_password)mk('Delete password now',run(async()=>{if(!confirm('Delete the stored password? You will not be able to reveal it again.'))return;await api('/'+r.id+'/set','POST',{action:'wipe'});load()}));
+    c.append(act);root.append(c)});
+}
+load();setInterval(()=>{if(!document.hidden&&!document.querySelector('.secret'))load()},20000);
+</script>
+</body>
+</html>

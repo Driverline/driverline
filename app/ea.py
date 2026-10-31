@@ -19,6 +19,13 @@ MAX_BODY = 300_000
 CMD_TTL = 60  # seconds a close command stays valid
 DEFAULT_RULES = {"max_risk_pct": 1.0, "daily_loss_pct": 3.0, "max_positions": 3}
 MAX_ACCOUNTS = max(1, int(os.environ.get("DRIVERLINE_MAX_MT5_ACCOUNTS", "3") or 3))   # MT5 accounts one member can connect
+def member_keys_ok(u) -> bool:
+    """TradeLens does not give members the EA, so by default only an admin creates connection keys (through MT5 connection requests).
+    DRIVERLINE_MEMBER_KEYS=1 brings back self-service keys."""
+    return u.get("tier") == "admin" or os.environ.get("DRIVERLINE_MEMBER_KEYS") == "1"
+
+
+_NO_KEYS = "Your MT5 connection is set up for you by TradeLens support. Use Request MT5 connection on the MT5 page."
 _last_report: dict[int, float] = {}   # keyed by MT5 account id
 _last_poll: dict[int, float] = {}
 
@@ -40,6 +47,9 @@ EA_SCHEMA = """
         daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_acct_manage(account_id INTEGER PRIMARY KEY, settings TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_meta(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE IF NOT EXISTS mt5_requests(id {ID}, user_id INTEGER NOT NULL, label TEXT NOT NULL, login TEXT NOT NULL, server TEXT NOT NULL,
+        pw_enc TEXT, status TEXT NOT NULL, note TEXT, account_id INTEGER, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, pw_wiped_at BIGINT);
+    CREATE TABLE IF NOT EXISTS mt5_request_log(id {ID}, request_id INTEGER NOT NULL, admin_id INTEGER, action TEXT NOT NULL, created_at BIGINT NOT NULL);
     CREATE TABLE IF NOT EXISTS copy_subs(user_id INTEGER PRIMARY KEY, ends_at BIGINT NOT NULL, note TEXT, admin_id INTEGER, updated_at BIGINT NOT NULL);
     CREATE TABLE IF NOT EXISTS copy_members(account_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
         mode TEXT NOT NULL DEFAULT 'fixed', fixed_lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, max_risk_pct DOUBLE PRECISION, updated_at BIGINT NOT NULL);
@@ -62,6 +72,7 @@ def _migrate(con):
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_copy_jobs_flag_acct ON copy_jobs(flag_id, account_id)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_jobs_acct ON copy_jobs(account_id, status)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_flags_status ON copy_flags(status)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_mt5_requests_status ON mt5_requests(status, user_id)")
     # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and
     # auto-manage settings, so a connected EA keeps working untouched. The old tables are left as they are (rollback safety).
     # The marker stops the copy from running again, so an account a member later removes can never be brought back from the old tables.
@@ -271,6 +282,12 @@ async def report(request):
         except Exception as e:
             con.raw.rollback()
             print(f"[copy] report hook failed: {type(e).__name__}: {e}", flush=True)
+        try:                                       # a connection request finished: delete the stored password
+            from . import mt5_requests
+            mt5_requests.on_report(con, aid)
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[mt5req] report hook failed: {type(e).__name__}", flush=True)
         try:                                       # founding members: read the funded balance the EA reported (perks.py)
             from . import perks
             perks.verify_founder(uid, state["account"])
@@ -325,9 +342,9 @@ async def command_create(request):
         st = json.loads(s["state"])
         if kind == "cancel_order":     # cancelling a waiting pending order is governed by AllowPending, not AllowRemoteClose
             if not st["account"].get("pending_allowed"):
-                raise HTTPException(409, "Pending orders are switched off in your EA settings (AllowPending)")
+                raise HTTPException(409, "Pending orders are not enabled on your account yet (AllowPending is off). Ask TradeLens support to enable it.")
         elif not st["account"].get("remote_close"):
-            raise HTTPException(409, "Remote close is switched off in your EA settings (AllowRemoteClose)")
+            raise HTTPException(409, "Closing from the app is not enabled on your account yet (AllowRemoteClose is off). Ask TradeLens support to enable it.")
         positions, ticket = st["positions"], None
         if kind == "cancel_order":
             try:
@@ -525,6 +542,8 @@ async def account_create(request):
     u = auth.require_user(request)
     if not credits.mt5_can_report(u):
         raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
+    if not member_keys_ok(u):
+        raise HTTPException(403, _NO_KEYS)
     d = await auth._json(request)
     label = _label(d.get("label"))
     if not label:
@@ -552,6 +571,8 @@ async def account_key(request):
     u = auth.require_user(request)
     if not credits.mt5_can_report(u):
         raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
+    if not member_keys_ok(u):
+        raise HTTPException(403, _NO_KEYS)
     raw = "dlk_" + secrets.token_urlsafe(24)
     with closing(db()) as con:
         a = resolve(con, u["id"], request.path_params["aid"])
@@ -610,6 +631,8 @@ async def key_create(request):
     u = auth.require_user(request)
     if not credits.mt5_can_report(u):
         raise HTTPException(403, "The MT5 connection is part of Signals Pro. Buy it in the Billing tab.")
+    if not member_keys_ok(u):
+        raise HTTPException(403, _NO_KEYS)
     try:
         d = await request.json()
     except Exception:
@@ -643,7 +666,7 @@ async def status(request):
     with closing(db()) as con:
         rows = user_accounts(con, u["id"])
         accounts = [_summary(con, a, now) for a in rows]
-        base = {"mt5_allowed": credits.mt5_can_report(u), "accounts": accounts, "max_accounts": MAX_ACCOUNTS}
+        base = {"mt5_allowed": credits.mt5_can_report(u), "accounts": accounts, "max_accounts": MAX_ACCOUNTS, "self_serve": member_keys_ok(u)}
         if not rows and request.query_params.get("account") not in (None, ""):
             raise HTTPException(404, "That MT5 account was not found")
         if not rows:

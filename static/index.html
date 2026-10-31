@@ -141,7 +141,7 @@ function pendingSection(p,wbox,name,key){
     if(!ea)status.textContent='';
     else if(ea.mt5_allowed===false){status.className='warn';status.textContent='Pending orders use your MT5 connection, which is part of Signals Pro. Renew it in the Billing tab.'}
     else if(!ea.connected){status.className='warn';status.textContent='Your MT5 is not connected, so you can read these orders but not place them yet. Open the MT5 page to connect it.'}
-    else if(!ea.can_pending){status.className='warn';status.textContent='Switch on AllowPending in the EA settings in MT5 to place pending orders from here.'}
+    else if(!ea.can_pending){status.className='warn';status.textContent='Pending orders are not enabled on your account yet. Ask TradeLens support to enable it.'}
     else{status.className='win';status.textContent='MT5 connected. Pending orders are allowed.'}
   }
   function showMine(){

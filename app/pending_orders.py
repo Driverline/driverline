@@ -321,7 +321,7 @@ async def place(request):
         state = json.loads(s["state"])
         acc, orders = state.get("account") or {}, [o for o in (state.get("orders") or []) if isinstance(o, dict)]
         if not acc.get("pending_allowed"):
-            raise HTTPException(409, "Switch on AllowPending in the EA settings in MT5 to place pending orders from the app.")
+            raise HTTPException(409, "Pending orders are not enabled on your account yet (AllowPending is off). Ask TradeLens support to enable it.")
         rules = ea.get_rules(ec, acct["id"])
         if ea.risk_check(state, rules)["status"] == "STOP":
             raise HTTPException(409, f"You reached your own daily loss limit of {rules['daily_loss_pct']:g}%. New orders are paused for today.")

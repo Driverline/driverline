@@ -21,7 +21,7 @@ for _n in ("websockets", "pywebpush", "psycopg", "psycopg.rows"):
         __import__(_n)
     except ImportError:
         sys.modules[_n] = types.ModuleType(_n)
-os.environ.update(DRIVERLINE_SECRET="s" * 40)
+os.environ.update(DRIVERLINE_SECRET="s" * 40, DRIVERLINE_MEMBER_KEYS="1")
 os.environ.pop("DATABASE_URL", None)
 
 from app import auth, credits, dbx, ea, copy_trading as CT, pending_orders, signal_feed     # noqa: E402

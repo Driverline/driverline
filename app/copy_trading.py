@@ -205,7 +205,7 @@ def dispatch(con, aid: int):
         return skip("No data from your MT5 yet")
     acc = st["account"]
     if not acc.get("execute_allowed"):
-        return skip("AllowExecute is off in your EA settings")
+        return skip("Trading from the app is not enabled on your account (AllowExecute is off)")
     rules = ea.get_rules(con, aid)
     if ea.risk_check(st, rules)["status"] == "STOP":
         return skip(f"You reached your own daily loss limit of {rules['daily_loss_pct']:g}%")

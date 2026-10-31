@@ -77,6 +77,8 @@ function render(d){
   const bt=el('div','card');bt.append(el('h2','','Signal backtest'));const bb=el('div');bt.append(bb);root.append(bt);loadBacktest(bb);
   const pay=el('div','card');pay.append(el('h2','','Payments'),el('p','mut','Naira (Moniepoint) approvals, crypto payments, manual USDT orders, signal credits and billing settings are on their own page.'));
   const pl=el('a','','Open Payments');pl.href='/admin-payments.html';pl.style.cssText='display:block;text-align:center;padding:13px 14px;border-radius:12px;background:var(--grad);color:#02122c;font-weight:700;text-decoration:none;margin-top:8px';pay.append(pl);root.append(pay);
+  const mt=el('div','card');mt.append(el('h2','','MT5 connections'),el('p','mut','Members send their MT5 login details here. Set the account up on the VPS, create its key, and the member\'s password is deleted once it connects.'));
+  const ml=el('a','','Open MT5 connections');ml.href='/admin-mt5.html';ml.style.cssText='display:block;text-align:center;padding:13px 14px;border-radius:12px;background:var(--grad);color:#02122c;font-weight:700;text-decoration:none;margin-top:8px';mt.append(ml);root.append(mt);
   const cp=el('div','card');cp.append(el('h2','','Copy trading'),el('p','mut','Flag trades on your master MT5 account to copy them to subscribed members, and manage who is subscribed.'));
   const cl=el('a','','Open Copy trading');cl.href='/admin-copy.html';cl.style.cssText='display:block;text-align:center;padding:13px 14px;border-radius:12px;background:var(--grad);color:#02122c;font-weight:700;text-decoration:none;margin-top:8px';cp.append(cl);root.append(cp);
   const rs=el('div','card');rs.append(el('h2','','Forex and gold research'));const rsb=el('div');rs.append(rsb);root.append(rs);loadResearch(rsb);

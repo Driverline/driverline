@@ -17,13 +17,21 @@
 <div class="card"><h2>Connection</h2><div id="conn"><span class="mut">Loading...</span></div></div>
 
 <div class="card"><h2>Connect your MT5</h2>
-<div class="mut">1. Add an account here (for example Demo, Live or Swap Free) to get its key. 2. Put the TradeLens EA on a chart in that MT5 terminal on a PC or VPS. 3. Paste your TradeLens address and that account's key into the EA inputs. Each MT5 account needs its own key, so a Demo and a Live account are two accounts with two keys. 4. In MT5: Tools, Options, Expert Advisors, tick Allow WebRequest and add your TradeLens address. The EA never opens a trade on its own. It opens, closes or adjusts a trade, or places a pending order, only when you click a button in the app and have allowed that in its settings (AllowExecute, AllowRemoteClose, AllowManage, AllowPending).</div>
+<div class="mut">Send us your MT5 account details and TradeLens support will connect the account for you. You do not install or set up anything. When it is ready it appears below as Connected and you can manage it from this page.</div>
 <div id="acctlist" style="margin-top:10px"></div>
-<label>Add an account</label><input id="newlabel" maxlength="30" placeholder="Name, e.g. Demo or Live">
-<div class="btns"><button id="addacct">Add account and get key</button></div>
+<div id="reqlist"></div>
+<label>Your MT5 details</label>
+<textarea id="mtdet" rows="4" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Login: 12345678&#10;Password: your MT5 password&#10;Server: DerivSVG-Server-03"></textarea>
+<label>Name for this account (optional)</label><input id="reqlabel" maxlength="30" placeholder="e.g. Demo or Live">
+<label class="sw" style="margin-top:10px"><input type="checkbox" id="mtok"> I understand that this password lets TradeLens support trade on my account, and I agree to share it for setting up my connection.</label>
+<div class="mut" style="margin-top:6px">Your password is stored encrypted, only TradeLens administrators can see it while they set you up, and it is deleted automatically as soon as your account connects. It is never shown back to you. Use the master (trading) password, not the investor password, and think about changing it after setup.</div>
+<div class="btns"><button id="sendreq">Send my MT5 details</button></div>
+<div id="reqmsg" class="mut"></div>
+<div id="selfbox" hidden>
+<label>Add an account (admin)</label><input id="newlabel" maxlength="30" placeholder="Name, e.g. Demo or Live">
+<div class="btns"><button id="addacct">Add account and get key</button></div></div>
 <div id="acctmsg" class="mut"></div>
-<div id="keybox" style="margin-top:10px"></div>
-<div class="mut" style="margin-top:8px">Your TradeLens address: <b id="addr"></b></div></div>
+<div id="keybox" style="margin-top:10px"></div></div>
 
 <div class="card"><h2>My risk rules</h2>
 <label>Max risk per trade (% of balance)</label><input id="r1" type="number" step="any" inputmode="decimal">
@@ -42,7 +50,7 @@
 <label class="sw"><input type="checkbox" id="ttp_on"> Trail my take-profit (let winners run)</label>
 <div class="row"><div><label>When within (R) of target</label><input id="ttp_near" type="number" step="any" inputmode="decimal"></div>
 <div><label>Extend it by (R)</label><input id="ttp_step" type="number" step="any" inputmode="decimal"></div></div>
-<div class="mut" style="margin-top:10px">1R is the distance from your entry to your original stop loss. Stops only ever move in your favour, never wider. The take-profit is extended only once your stop protects the trade (breakeven or better). Trades with no stop loss are skipped. This needs AllowManage switched on in the EA settings in MT5.</div>
+<div class="mut" style="margin-top:10px">1R is the distance from your entry to your original stop loss. Stops only ever move in your favour, never wider. The take-profit is extended only once your stop protects the trade (breakeven or better). Trades with no stop loss are skipped. This needs auto-manage to be enabled on your account.</div>
 <div class="btns"><button id="mgsave">Save auto-manage</button></div><div id="mgmsg" class="mut"></div></div>
 
 <div class="card" id="copycard"><h2>Copy trading</h2><div id="copybody"><span class="mut">Loading...</span></div></div>
@@ -80,16 +88,16 @@ function renderAccounts(s){
     const act=el('div','btns');act.style.cssText='margin-bottom:8px;flex-wrap:wrap';
     const mk=(t,f,c)=>{const b=el('button',c||'ghost',t);b.style.cssText='width:auto;padding:6px 10px;white-space:nowrap';b.onclick=f;act.append(b)};
     if((s.accounts||[]).length>1&&a.id!==s.account_id)mk('Use this',()=>{dlAcct.set(a.id);switched()},'');
-    mk('New key',async()=>{if(!confirm('Make a new key for "'+a.label+'"? The EA using the old key stops until you paste the new one.'))return;
+    if(s.self_serve)mk('New key',async()=>{if(!confirm('Make a new key for "'+a.label+'"? The EA using the old key stops until you paste the new one.'))return;
       try{const r=await api('/accounts/'+a.id+'/key','POST');showKey('New key for "'+a.label+'".',r.key);load()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
     mk('Rename',async()=>{const n=prompt('New name',a.label);if(!n)return;
       try{await api('/accounts/'+a.id+'/rename','POST',{label:n});load()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
-    mk('Remove',async()=>{if(!confirm('Remove "'+a.label+'"? Its EA is disconnected and its saved rules and auto-manage settings are deleted. Trades already open in MT5 are not touched.'))return;
+    mk('Remove',async()=>{if(!confirm('Remove "'+a.label+'"? Its connection is removed and its saved rules and auto-manage settings are deleted. Trades already open in MT5 are not touched.'))return;
       try{await api('/accounts/'+a.id,'DELETE');if(dlAcct.id()===a.id)dlAcct.set(null);hideKey();switched()}catch(e){$('acctmsg').className='err';$('acctmsg').textContent=e.message}});
     box.append(act)});
-  if(!(s.accounts||[]).length)box.append(el('div','mut','No MT5 account yet. Add one below.'));
+  if(!(s.accounts||[]).length)box.append(el('div','mut','No connected MT5 account yet.'));
   const full=(s.accounts||[]).length>=(s.max_accounts||3);
-  $('addacct').disabled=full;$('newlabel').disabled=full;
+  $('selfbox').hidden=!s.self_serve;$('addacct').disabled=full;$('newlabel').disabled=full;
   if(full){$('acctmsg').className='mut';$('acctmsg').textContent='You have the maximum of '+s.max_accounts+' accounts. Remove one to add another.'}
 }
 async function load(){
@@ -97,15 +105,16 @@ async function load(){
     const s=await dlAcct.status();
     if(shown!==s.account_id){shown=s.account_id;first=true;mgFirst=true;loadCopy(s.account_id)}
     renderAccounts(s);
+    loadReqs();
     const old=$('pickhere');if(old)old.remove();
     const pk=dlAcct.picker(s,()=>switched());if(pk){pk.id='pickhere';$('conn').parentNode.insertBefore(pk,$('conn'))}
     const mg=s.manage||{};
     if(mgFirst){['be_on','tsl_on','ttp_on'].forEach(k=>{$(k).checked=!!mg[k]});['be_trigger','be_offset','tsl_start','tsl_dist','ttp_near','ttp_step'].forEach(k=>{$(k).value=mg[k]});mgFirst=false}
-    $('mgnote').textContent=s.can_manage?'Auto-manage is allowed in your EA and ready.':(s.connected?'Switch on AllowManage in the EA settings in MT5 to use this.':'Connect your MT5 first, using the steps above.');
+    $('mgnote').textContent=s.can_manage?'Auto-manage is ready for this account.':(s.connected?'Auto-manage is not enabled on your account yet.'+' Ask TradeLens support to enable it.':'Connect your MT5 first (see Connect your MT5 above).');
     const c=$('conn');c.textContent='';
     if(s.mt5_allowed===false){const w=el('div','warn','The MT5 connection is part of Signals Pro. Buy or renew it in the Billing tab.');w.style.marginBottom='8px';c.append(w)}
     if(s.label&&(s.accounts||[]).length>1)c.append(kv('Showing',s.label));
-    c.append(kv('Status',s.connected?'Connected':(s.has_key?'Key created, EA not connected':'Not set up'),s.connected?'win':'mut'));
+    c.append(kv('Status',s.connected?'Connected':(s.has_key?'Set up, waiting for your account to connect':'Not set up yet'),s.connected?'win':'mut'));
     if(s.last_seen_ago!==null)c.append(kv('Last sync',s.last_seen_ago+' seconds ago'));
     if(s.account){const a=s.account;
       c.append(kv('Account',(a.login||'-')+' ('+(a.demo?'DEMO':'LIVE')+')'),kv('Server',a.server||'-'),
@@ -126,7 +135,7 @@ async function load(){
     const n=(s.positions||[]).length;
     if(n&&s.can_close){const b=el('button',s.check&&s.check.status!=='OK'?'':'ghost','Close ALL positions');b.style.marginTop='10px';
       b.onclick=()=>closeCmd({kind:'close_all'},'Close ALL '+n+' open positions now?');p.append(b)}
-    else if(n&&s.connected)p.append(el('div','mut','Closing from the app is off. Turn on AllowRemoteClose in the EA inputs.'));
+    else if(n&&s.connected)p.append(el('div','mut','Closing from the app is not enabled on your account yet. Ask TradeLens support to enable it.'));
     const od=$('ords');od.textContent='';
     (s.orders||[]).forEach(o=>{const row=el('div','kv');const ml=Number(o.minutes_left);
       row.append(el('span','',o.symbol+' '+o.type.replace(/_/g,' ').toLowerCase()+' '+o.volume+' at '+o.price+(Number(o.limit)?' (limit '+o.limit+')':'')+' | SL '+o.sl+' | TP '+o.tp+' | '+(ml>=0?(ml>=60?Math.floor(ml/60)+'h '+(ml%60)+'m':ml+'m')+' left':'no expiry')));
@@ -134,11 +143,11 @@ async function load(){
         b.onclick=()=>closeCmd({kind:'cancel_order',ticket:o.ticket},'Cancel this pending order ('+o.symbol+' '+o.type.replace(/_/g,' ').toLowerCase()+')?');row.append(b)}
       od.append(row)});
     if(!(s.orders||[]).length)od.append(el('span','mut','Nothing waiting.'));
-    $('ordnote').textContent=s.can_pending?'Pending orders wait at your broker. MT5 opens the trade by itself if price reaches the level, even when this page is closed. Set them from a NO TRADE card.':(s.connected?'Switch on AllowPending in the EA settings in MT5 to set or cancel pending orders from the app.':'');
+    $('ordnote').textContent=s.can_pending?'Pending orders wait at your broker. MT5 opens the trade by itself if price reaches the level, even when this page is closed. Set them from a NO TRADE card.':(s.connected?'Pending orders are not enabled on your account yet. Ask TradeLens support to enable them.':'');
     const cm=s.command;
     if(cm){const r=cm.result;p.append(el('div',cm.status==='done'?'win':(cm.status==='sent'||cm.status==='pending'?'mut':'warn'),
       (cm.kind==='close_all'?'Close all':cm.kind==='open'?'Open trade':cm.kind==='pending_order'?'Pending order':cm.kind==='cancel_order'?'Cancel pending order':'Close '+cm.ticket)+': '+cm.status+(r?(['pending_order','cancel_order','open'].includes(cm.kind)?(r.message?' ('+r.message+')':''):' ('+r.closed+' closed'+(r.failed?', '+r.failed+' failed':'')+(r.message?': '+r.message:'')+')'):'')))}
-    if(!s.check)p.append(el('span','mut','Nothing yet. It fills in once the EA syncs.'));
+    if(!s.check)p.append(el('span','mut','Nothing yet. It fills in once your account is connected.'));
     return s;
   }catch(e){$('conn').textContent=e.message}
 }
@@ -149,7 +158,7 @@ async function loadCopy(sel){
     const r=await fetch('/api/copy/me'),d=await r.json();if(!r.ok)throw new Error(d.detail||'HTTP '+r.status);
     const a=(d.accounts||[]).find(x=>x.id===sel);box.textContent='';
     if(!a){box.append(el('div','mut','Add an MT5 account first.'));return}
-    box.append(el('div','mut','Trades the TradeLens admin flags are copied to this MT5 account while copy trading is on. Each copy is placed with its own stop loss and take profit, only if your EA allows it (AllowExecute), and never if the lot would risk more than your limit.'));
+    box.append(el('div','mut','Trades the TradeLens admin flags are copied to this MT5 account while copy trading is on. Each copy is placed with its own stop loss and take profit, only if trading from the app is enabled on your account, and never if the lot would risk more than your limit.'));
     if(a.is_master){box.append(el('div','warn','This is the master account. It cannot copy itself.'));return}
     box.append(kv('Subscription',d.subscribed?'Active until '+new Date(d.ends_at*1000).toISOString().slice(0,10):'Not active',d.subscribed?'win':'warn'));
     if(!d.subscribed)box.append(el('div','mut','Copy trading is a subscription. Contact TradeLens support to activate it.'));
@@ -172,12 +181,31 @@ async function loadCopy(sel){
       mine.forEach(j=>{box.append(kv(j.symbol+' '+j.dir+(j.lots?' '+j.lots+' lot':''),j.status,j.status==='skipped'||j.status==='failed'?'warn':(j.status==='closed'?'mut':'win')));if(j.note)box.append(el('div','mut',j.note))})}
   }catch(e){box.textContent=e.message}
 }
+
+async function loadReqs(){
+  try{const r=await fetch('/api/mt5req/me'),d=await r.json();if(!r.ok)return;const b=$('reqlist');b.textContent='';
+    const nice={new:'Waiting for TradeLens support',in_progress:'Being set up',rejected:'Needs your attention',expired:'Expired, please send again'};
+    (d.requests||[]).forEach(x=>{
+      b.append(kv(x.label+' | '+x.login+' | '+x.server,nice[x.status]||x.status,x.status==='rejected'||x.status==='expired'?'warn':'mut'));
+      if(x.note)b.append(el('div','mut',x.note));
+      if(x.status==='new'||x.status==='in_progress'){const c=el('button','ghost','Cancel and delete my details');c.style.cssText='width:auto;padding:6px 10px;margin:4px 0 8px';
+        c.onclick=async()=>{if(!confirm('Cancel this request? Your password is deleted.'))return;await fetch('/api/mt5req/'+x.id+'/cancel',{method:'POST'});loadReqs()};b.append(c)}});
+  }catch(e){}
+}
+$('sendreq').onclick=async()=>{
+  const m=$('reqmsg');m.className='mut';m.textContent='';
+  try{const r=await fetch('/api/mt5req',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({details:$('mtdet').value,label:$('reqlabel').value,consent:$('mtok').checked})});
+    const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'HTTP '+r.status);
+    $('mtdet').value='';$('reqlabel').value='';$('mtok').checked=false;
+    m.className='win';m.textContent='Sent. TradeLens support will connect your account and it will appear above as Connected.';loadReqs()}
+  catch(e){m.className='err';m.textContent=e.message}
+};
 async function toggleAuto(ticket,excluded){try{await api('/manage/exclude','POST',dlAcct.body({ticket:Number(ticket),excluded}));load()}catch(e){alert(e.message)}}
 $('mgsave').onclick=async()=>{
   const num=k=>Number($(k).value);
   try{
     await api('/manage','POST',dlAcct.body({be_on:$('be_on').checked,be_trigger:num('be_trigger'),be_offset:num('be_offset'),tsl_on:$('tsl_on').checked,tsl_start:num('tsl_start'),tsl_dist:num('tsl_dist'),ttp_on:$('ttp_on').checked,ttp_near:num('ttp_near'),ttp_step:num('ttp_step')}));
-    $('mgmsg').className='win';$('mgmsg').textContent='Saved. Your EA applies it within a few seconds.';load();
+    $('mgmsg').className='win';$('mgmsg').textContent='Saved. It applies to your account within a few seconds.';load();
   }catch(e){$('mgmsg').className='err';$('mgmsg').textContent=e.message}
 };
 async function closeCmd(body,question){
@@ -197,10 +225,9 @@ $('addacct').onclick=async()=>{
 };
 $('sv').onclick=async()=>{
   try{await api('/rules','POST',dlAcct.body({max_risk_pct:Number($('r1').value),daily_loss_pct:Number($('r2').value),max_positions:Number($('r3').value)}));
-    $('rmsg').className='win';$('rmsg').textContent='Saved. The EA picks it up on its next sync.';load()}
+    $('rmsg').className='win';$('rmsg').textContent='Saved. It applies to your account within a few seconds.';load()}
   catch(e){$('rmsg').className='err';$('rmsg').textContent=e.message}
 };
-$('addr').textContent=location.origin;
 load();setInterval(load,15000);
 </script>
 <script src="/chat.js" defer></script>
