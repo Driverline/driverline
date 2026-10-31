@@ -39,7 +39,17 @@ EA_SCHEMA = """
     CREATE TABLE IF NOT EXISTS ea_acct_rules(account_id INTEGER PRIMARY KEY, max_risk_pct DOUBLE PRECISION NOT NULL,
         daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_acct_manage(account_id INTEGER PRIMARY KEY, settings TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS ea_meta(k TEXT PRIMARY KEY, v TEXT)"""
+    CREATE TABLE IF NOT EXISTS ea_meta(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE IF NOT EXISTS copy_subs(user_id INTEGER PRIMARY KEY, ends_at BIGINT NOT NULL, note TEXT, admin_id INTEGER, updated_at BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS copy_members(account_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
+        mode TEXT NOT NULL DEFAULT 'fixed', fixed_lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, max_risk_pct DOUBLE PRECISION, updated_at BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS copy_flags(id {ID}, master_account_id INTEGER NOT NULL, master_ticket BIGINT NOT NULL, symbol TEXT NOT NULL,
+        dir TEXT NOT NULL, open_price DOUBLE PRECISION NOT NULL, sl DOUBLE PRECISION NOT NULL, tp DOUBLE PRECISION NOT NULL,
+        status TEXT NOT NULL, admin_id INTEGER, created_at BIGINT NOT NULL, closed_at BIGINT);
+    CREATE TABLE IF NOT EXISTS copy_jobs(id {ID}, flag_id INTEGER NOT NULL, account_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+        status TEXT NOT NULL, note TEXT, command_id INTEGER, lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, ticket BIGINT, before TEXT,
+        symbol TEXT, dir TEXT, close_req INTEGER NOT NULL DEFAULT 0, close_cmd INTEGER, close_tries INTEGER NOT NULL DEFAULT 0,
+        created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)"""
 _auth_ready = False
 OPEN_TTL = 20   # seconds an 'open trade' request stays valid, so a stale order can never fire later
 
@@ -49,6 +59,9 @@ def _migrate(con):
     con.add_column("ea_commands", "account_id", "INTEGER")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_ea_accounts_label ON ea_accounts(user_id, label)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_ea_commands_account ON ea_commands(account_id, status)")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_copy_jobs_flag_acct ON copy_jobs(flag_id, account_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_copy_jobs_acct ON copy_jobs(account_id, status)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_copy_flags_status ON copy_flags(status)")
     # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and
     # auto-manage settings, so a connected EA keeps working untouched. The old tables are left as they are (rollback safety).
     # The marker stops the copy from running again, so an account a member later removes can never be brought back from the old tables.
@@ -252,6 +265,12 @@ async def report(request):
                     (aid, json.dumps(state), specs_json, int(now)))
         con.execute("UPDATE ea_accounts SET last_seen=?, login=COALESCE(NULLIF(?, ''), login) WHERE id=?", (int(now), login, aid))
         con.commit()
+        try:                                       # copy trading: follow flagged trades / follow the master closing (never blocks the EA)
+            from . import copy_trading
+            copy_trading.on_report(con, aid, state)
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[copy] report hook failed: {type(e).__name__}: {e}", flush=True)
         try:                                       # founding members: read the funded balance the EA reported (perks.py)
             from . import perks
             perks.verify_founder(uid, state["account"])
@@ -350,6 +369,13 @@ async def poll(request):
                     (aid, int(now) - CMD_TTL))
         con.execute("UPDATE ea_commands SET status='expired' WHERE account_id=? AND status='pending' AND kind IN ('open','pending_order') "
                     "AND created_at<?", (aid, int(now) - OPEN_TTL))
+        con.commit()
+        try:                                       # copy trading: turn the next copy job for THIS account into a command
+            from . import copy_trading
+            copy_trading.dispatch(con, aid)
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[copy] dispatch failed: {type(e).__name__}: {e}", flush=True)
         r = con.execute("SELECT id,kind,ticket,payload FROM ea_commands WHERE account_id=? AND status='pending' "
                         "ORDER BY id LIMIT 1", (aid,)).fetchone()
         if r:
@@ -557,8 +583,10 @@ async def account_rename(request):
 
 def _remove(con, a: dict):
     aid = a["id"]
-    for t in ("ea_acct_state", "ea_acct_rules", "ea_acct_manage"):
+    for t in ("ea_acct_state", "ea_acct_rules", "ea_acct_manage", "copy_members"):
         con.execute(f"DELETE FROM {t} WHERE account_id=?", (aid,))
+    con.execute("UPDATE copy_jobs SET status='closed', note='Account removed' WHERE account_id=? AND status IN ('waiting','sent','open')", (aid,))
+    con.execute("DELETE FROM ea_meta WHERE k='copy_master' AND v=?", (str(aid),))
     con.execute("DELETE FROM ea_commands WHERE account_id=?", (aid,))
     con.execute("DELETE FROM ea_accounts WHERE id=?", (aid,))
     con.commit()

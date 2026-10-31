@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Admin: Copy trading</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main id="root"><span class="mut">Loading...</span></main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||'',v));return d}
+async function api(path,method,body){
+  const r=await fetch('/api/copy/admin'+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
+const day=t=>t?new Date(t*1000).toISOString().slice(0,16).replace('T',' '):'-';
+let msg=null;
+function note(t,c){if(msg){msg.className=c||'mut';msg.textContent=t}}
+async function act(f){try{await f();await load()}catch(e){note(e.message,'err')}}
+async function load(){
+  const root=$('root');let d;
+  try{d=await api('')}catch(e){root.textContent=e.message;return}
+  root.textContent='';
+  const head=el('div','card');head.append(el('h2','','Copy trading'),el('p','mut','Flag a trade on the master account and it is copied to subscribed members who switched copying on. Only flagged trades are copied, and only if they have a stop loss and a take profit.'));
+  msg=el('div','mut');head.append(msg);root.append(head);
+
+  const m=el('div','card');m.append(el('h2','','Master account'));
+  const sel=document.createElement('select');
+  const o0=document.createElement('option');o0.value='';o0.textContent='Choose one of your MT5 accounts';sel.append(o0);
+  d.my_accounts.forEach(a=>{const o=document.createElement('option');o.value=a.id;o.textContent=a.label;sel.append(o)});
+  if(d.master)sel.value=d.master.id;
+  const sv=el('button','','Use as master');sv.style.marginTop='8px';
+  sv.onclick=()=>{if(!sel.value)return;if(!confirm('Use this account as the copy-trading master? Members will copy the trades you flag on it.'))return;act(()=>api('/master','POST',{account:Number(sel.value)}))};
+  m.append(sel,sv);
+  if(d.master)m.append(kv('Master',d.master.label+(d.master.connected?' (connected)':' (not connected)'),d.master.connected?'win':'warn'));
+  m.append(kv('Active followers',String(d.followers)));root.append(m);
+
+  const p=el('div','card');p.append(el('h2','','Trades on the master account'));
+  if(!d.master)p.append(el('div','mut','Choose the master account first.'));
+  else if(!d.positions.length)p.append(el('div','mut','No open trades.'));
+  d.positions.forEach(x=>{
+    const row=el('div','kv');row.append(el('span','',x.symbol+' '+x.type+' '+x.volume+' | open '+x.open+' | SL '+(Number(x.sl)||'none')+' | TP '+(Number(x.tp)||'none')+' | P&L '+x.profit));
+    p.append(row);
+    if(x.flag_id){const b=el('button','ghost','Flagged. End copies');b.onclick=()=>{if(confirm('Close the copies of this trade on every follower account? Your own trade is not touched.'))act(()=>api('/flag/'+x.flag_id+'/close','POST'))};p.append(b)}
+    else{const b=el('button','',x.can_flag?'Flag for copying':'Needs SL and TP in MT5');b.disabled=!x.can_flag;b.style.marginBottom='8px';
+      b.onclick=()=>{if(confirm('Copy this '+x.symbol+' '+x.type+' to '+d.followers+' follower account(s)?\n\nEach follower is sized by their own settings and skipped if it risks more than their limit.'))
+        act(async()=>{const r=await api('/flag','POST',{ticket:x.ticket});note('Flagged. '+r.followers+' follower account(s) will place it when their EA next checks in.','win')})};p.append(b)}
+  });
+  root.append(p);
+
+  const f=el('div','card');f.append(el('h2','','Flagged trades'));
+  if(!d.flags.length)f.append(el('div','mut','Nothing flagged yet.'));
+  d.flags.forEach(x=>{
+    const c=Object.entries(x.counts).map(([k,v])=>v+' '+k).join(', ')||'no followers';
+    f.append(kv('#'+x.id+' '+x.symbol+' '+x.dir+' ('+x.status+')',c));
+    const b=el('button','ghost','Details');b.style.marginBottom='8px';
+    const out=el('div');b.onclick=async()=>{try{const jobs=await api('/flag/'+x.id);out.textContent='';
+      jobs.forEach(j=>out.append(kv(j.email,j.status+(j.lots?' | '+j.lots+' lot':'')+(j.risk_pct!=null?' | '+j.risk_pct+'%':''),j.status==='skipped'||j.status==='failed'?'warn':'mut'),
+        ...(j.note?[el('div','mut',j.note)]:[])));if(!jobs.length)out.append(el('div','mut','No followers had copying on.'))}catch(e){out.textContent=e.message}};
+    f.append(b,out)});
+  root.append(f);
+
+  const s=el('div','card');s.append(el('h2','','Copy trading subscribers'));
+  s.append(el('div','mut','Activate a member after you have confirmed their payment. Days stack on top of what they have left.'));
+  const em=document.createElement('input');em.type='email';em.placeholder='Member email';
+  const dy=document.createElement('input');dy.type='number';dy.placeholder='Days (e.g. 30)';dy.inputMode='numeric';
+  const go=el('button','','Activate or extend');go.style.marginTop='8px';
+  go.onclick=()=>act(async()=>{await api('/subscription','POST',{email:em.value,days:Number(dy.value)});note('Done.','win')});
+  s.append(em,dy,go);
+  d.subscribers.forEach(x=>{s.append(kv(x.email,(x.active?'until ':'ended ')+day(x.ends_at),x.active?'win':'mut'));
+    if(x.active){const b=el('button','ghost','Revoke');b.style.marginBottom='8px';b.onclick=()=>{if(confirm('Revoke copy trading for '+x.email+'? Copying is switched off and waiting copies are cancelled. Their open copies stay open.'))act(()=>api('/subscription','POST',{user_id:x.user_id,revoke:true}))};s.append(b)}});
+  root.append(s);
+}
+load();setInterval(()=>{if(!document.hidden&&!document.activeElement.matches('input,select'))load()},20000);
+</script>
+</body>
+</html>

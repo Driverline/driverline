@@ -77,6 +77,8 @@ function render(d){
   const bt=el('div','card');bt.append(el('h2','','Signal backtest'));const bb=el('div');bt.append(bb);root.append(bt);loadBacktest(bb);
   const pay=el('div','card');pay.append(el('h2','','Payments'),el('p','mut','Naira (Moniepoint) approvals, crypto payments, manual USDT orders, signal credits and billing settings are on their own page.'));
   const pl=el('a','','Open Payments');pl.href='/admin-payments.html';pl.style.cssText='display:block;text-align:center;padding:13px 14px;border-radius:12px;background:var(--grad);color:#02122c;font-weight:700;text-decoration:none;margin-top:8px';pay.append(pl);root.append(pay);
+  const cp=el('div','card');cp.append(el('h2','','Copy trading'),el('p','mut','Flag trades on your master MT5 account to copy them to subscribed members, and manage who is subscribed.'));
+  const cl=el('a','','Open Copy trading');cl.href='/admin-copy.html';cl.style.cssText='display:block;text-align:center;padding:13px 14px;border-radius:12px;background:var(--grad);color:#02122c;font-weight:700;text-decoration:none;margin-top:8px';cp.append(cl);root.append(cp);
   const rs=el('div','card');rs.append(el('h2','','Forex and gold research'));const rsb=el('div');rs.append(rsb);root.append(rs);loadResearch(rsb);
   const en=el('div','card');en.append(el('h2','','AI signal engine research (Step and Range Break)'));const enb=el('div');en.append(enb);root.append(en);loadEngine(enb);
   const ri=el('div','card');ri.append(el('h2','','Smart Analysis Timing insights'));const rb=el('div');rb.append(el('span','mut','Loading...'));ri.append(rb);root.append(ri);loadRadarInfo(rb);
