@@ -19,7 +19,7 @@
 //| the app is closed. Each has a stop, target and an expiry.        |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.52"
+#property version     "1.53"
 #property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
@@ -1279,10 +1279,10 @@ string TgPx(const string sym, const double p)
    return DoubleToString(p, dg);
 }
 
-// A price the reader can tap to copy.
+// A price the reader can tap to copy: bold monospace, so it stands out from the plain text around it.
 string TgCode(const string sym, const double p)
 {
-   return "<code>" + TgPx(sym, p) + "</code>";
+   return "<b><code>" + TgPx(sym, p) + "</code></b>";
 }
 
 string TgUrlEnc(const string s)
@@ -1494,10 +1494,10 @@ void TgPostOpen(const int k, const double sl, const double tp)
    t += "SL: " + (sl > 0.0 ? TgCode(sym, sl) : "none yet") + "\n";
    t += "TP: " + (tp > 0.0 ? TgCode(sym, tp) : "none yet") + "\n";
    if(sl > 0.0 && tp > 0.0 && MathAbs(open - sl) > 0.0)
-      t += "Reward:risk: 1 : " + StringFormat("%.2f", MathAbs(tp - open) / MathAbs(open - sl)) + "\n";
+      t += "Risk 1 : Reward " + StringFormat("%.2f", MathAbs(tp - open) / MathAbs(open - sl)) + "\n";   // risk first: 1 : 1.50 means you risk 1 to make 1.5
    if(InpTgShowLots)
-      t += "Lots: <code>" + DoubleToString(g_tgp[k].vol, 2) + "</code>\n";
-   t += "\nTap a number to copy it. If price has already moved far from the entry, skip this one. Updates follow as replies.";
+      t += "Lots: <b><code>" + DoubleToString(g_tgp[k].vol, 2) + "</code></b>\n";
+   t += "\nTap any bold number to copy it. If price has already moved far from the entry, skip this one. Updates follow as replies.";
    t += TgFooter();
    TgEnqueue(t, g_tgp[k].id, true);
 }

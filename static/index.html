@@ -184,7 +184,7 @@ function pendingSection(p,wbox,name,key){
     detail.append(el('div','',o.what));const miss=el('div','mut',o.miss);miss.style.margin='6px 0';detail.append(miss);
     detail.append(kv2(o.limit?'Trigger price':'Order price',wFmt(o.price)));
     if(o.limit)detail.append(kv2('Limit price (entry)',wFmt(o.limit)));
-    detail.append(kv2('Stop loss',wFmt(o.sl)),kv2('Take profit',wFmt(o.tp)),kv2('Reward : risk',o.rr+' : 1'));
+    detail.append(kv2('Stop loss',wFmt(o.sl)),kv2('Take profit',wFmt(o.tp)),kv2('Risk : Reward','1 : '+o.rr));
     const hl=el('label','','Cancel this order if it has not filled after');const hs=document.createElement('select');
     p.hours.forEach(h=>{const op=document.createElement('option');op.value=h;op.textContent=h+' hours';if(h===p.default_hours)op.selected=true;hs.append(op)});
     const ll=el('label','','Lot size');const lot=document.createElement('input');lot.type='number';lot.step='any';lot.min='0';lot.inputMode='decimal';
@@ -235,7 +235,7 @@ function render(d){
     const lv=el('div','lv');
     [['Entry',c.entry],['Stop',c.stop],['Target',c.target]].forEach(([n,v])=>{const x=el('div');x.append(el('small','',n),el('b','',v));lv.append(x)});
     t.append(lv);
-    if(c.reward_risk)t.append(el('div','hello','Reward:risk '+c.reward_risk));
+    if(c.reward_risk)t.append(el('div','hello','Risk 1 : Reward '+c.reward_risk));
     try{localStorage.setItem('dl_last',JSON.stringify({key:sym.value,direction:c.direction,entry:c.entry,stop:c.stop,target:c.target}))}catch(e){}
     const a=el('a','', 'Size this trade');a.href='/risk.html';a.style.cssText='display:block;margin-top:10px;color:var(--acc)';t.append(a);
     const j=el('a','', 'Log this trade');j.href='/journal.html';j.style.cssText='display:block;margin-top:6px;color:var(--acc)';t.append(j);

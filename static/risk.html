@@ -97,7 +97,7 @@ function update(){
   if(r.error){const d=document.createElement('div');d.className='err';d.textContent=r.error;out.append(d);$('specbox').open=true;return}
   const big=document.createElement('div');big.className='big';big.textContent=r.lots+' lots';out.append(big);
   out.append(row('Risk',r.risk.toFixed(2)+' ('+r.riskPctActual.toFixed(2)+'%)'),row('Loss per 1 lot',r.lossPerLot.toFixed(2)));
-  if(r.reward)out.append(row('Reward',r.reward.toFixed(2)),row('Reward:risk',r.rr.toFixed(2)));
+  if(r.reward)out.append(row('Reward',r.reward.toFixed(2)),row('Risk : Reward','1 : '+r.rr.toFixed(2)));
   r.warnings.forEach(t=>{const d=document.createElement('div');d.className='warn';d.textContent=t;out.append(d)});
   const k=list.find(i=>i.key===$('sym').value);
   if(k&&SPIKY.test(norm(k.name))){const d=document.createElement('div');d.className='warn';d.textContent='Spike instrument: price can jump past your stop, so real loss can exceed this figure.';out.append(d)}
