@@ -8,9 +8,12 @@ on for their MT5 account. Only flagged trades are copied.
 |---|---|---|
 | **Copy Trading** ($15 / 30 days) | yes, MT5 connection included | no |
 | **Signals Pro** ($30) | yes | yes, at the same time |
+| **Signal Vault** ($100 / 90 days, 5,500 signals) | yes, MT5 + notifications included | yes, at the same time |
+| **Signal Vault Lite** ($50 / 30 days, 2,500 signals) | yes, MT5 + notifications included | yes, at the same time |
 | **Signals Plus** ($15), Deriv account **linked to our IB** (confirmed partner tag) | yes, **instead of** signals | switch: one at a time |
 | Signals Plus, not linked | no | yes |
 | Admin grant (Admin > Copy trading) | yes | unchanged |
+Copy trading, MT5 and notifications last for the plan's days and do not roll over (a VPS is rented per period); signals are a balance and never expire.
 Existing members and admins get no free copy trading: it always needs one of the above (billing must be open for plans to count).
 
 **Signals Plus + IB switch.** The member is either on *Signals* (default) or *Copy trading* (MT5 page > Copy trading card, or by switching copying on, which asks first).

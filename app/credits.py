@@ -51,11 +51,14 @@ ORDER_STALE_DAYS = 7   # an unsubmitted order older than this is closed automati
 CATALOG = {
     "topup": {"label": "Signal Top-Up", "usd": 5, "signals": 267, "days": 0, "notify": False, "mt5": False},
     "boost": {"label": "Signal Boost", "usd": 10, "signals": 550, "days": 0, "notify": False, "mt5": False},
-    "vault": {"label": "Signal Vault", "usd": 100, "signals": 5500, "days": 0, "notify": False, "mt5": False},
     "plus": {"label": "Signals Plus", "usd": 15, "signals": 550, "days": 30, "notify": True, "mt5": False, "copy_ib": True},
     "pro": {"label": "Signals Pro", "usd": 30, "signals": 550, "days": 30, "notify": True, "mt5": True, "copy": True},
     # Copy trading on its own: MT5 connection + copy trading, no signals and no notifications (see copy_plan.py)
     "copy": {"label": "Copy Trading", "usd": 15, "signals": 0, "days": 30, "notify": False, "mt5": True, "copy": True},
+    # Big signal bundles that also include notifications, the MT5 connection and Copy trading for the plan's days. The signals never expire
+    # (they are balance); the days do not roll over (copy trading needs a VPS, which is rented per period).
+    "vaultlite": {"label": "Signal Vault Lite", "usd": 50, "signals": 2500, "days": 30, "notify": True, "mt5": True, "copy": True},
+    "vault": {"label": "Signal Vault", "usd": 100, "signals": 5500, "days": 90, "notify": True, "mt5": True, "copy": True},
 }
 # Free plans given by perks.py. They are not products: they cannot be bought and do not appear in the shop.
 GRANTS = {

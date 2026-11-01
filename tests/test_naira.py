@@ -340,12 +340,20 @@ class PendingTests(Base):
 class ApprovalTests(Base):
     def test_token_pack_is_credited_with_the_catalogue_quantity(self):
         u, admin = mk_user(), mk_user("admin")
-        for product in ("topup", "boost", "vault"):
+        for product in ("topup", "boost"):
             oid, _ = buy(u, product)
             r = approve(admin, oid, fresh_ref())
             self.assertEqual((r["result"], r["status"]), ("approved", "approved"))
-        self.assertEqual(balance(u), sum(credits.CATALOG[p]["signals"] for p in ("topup", "boost", "vault")))
-        self.assertEqual(sql("SELECT * FROM billing_subs WHERE user_id=?", u), [])
+        self.assertEqual(balance(u), sum(credits.CATALOG[p]["signals"] for p in ("topup", "boost")))
+        self.assertEqual(sql("SELECT * FROM billing_subs WHERE user_id=?", u), [])        # packs carry no days
+
+    def test_signal_vault_credits_its_signals_and_starts_its_90_days(self):
+        u, admin = mk_user(), mk_user("admin")
+        oid, _ = buy(u, "vault")
+        self.assertEqual(approve(admin, oid, fresh_ref())["status"], "approved")
+        self.assertEqual(balance(u), credits.CATALOG["vault"]["signals"])
+        rows = sql("SELECT * FROM billing_subs WHERE user_id=?", u)
+        self.assertEqual([(r["plan"], r["ends_at"] - r["starts_at"]) for r in rows], [("vault", 90 * 86400)])
 
     def test_subscription_activates_notifications_for_30_days_and_renewal_extends(self):
         u, admin = mk_user(), mk_user("admin")

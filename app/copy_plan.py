@@ -3,6 +3,8 @@
 Copy trading is available through:
   * "copy"  Copy Trading plan ($15 / 30 days): MT5 connection + copy trading, no signals, no notifications
   * "pro"   Signals Pro: signals, notifications, MT5 connection AND copy trading, all at the same time
+  * "vault" / "vaultlite"  Signal Vault (90 days) and Signal Vault Lite (30 days): big signal bundles with notifications, MT5 and copy trading
+            for the plan's days. Like Pro, signals and copy trading are active together.
   * "plus"  Signals Plus, ONLY for members whose Deriv account is confirmed as linked to our IB (perks._confirmed), and only INSTEAD of
             signals: the member chooses a mode, "signals" (default) or "copy". Copy mode pauses signals and notifications and gives the
             MT5 connection + copy trading. Every second spent in copy mode costs the Plus allocation pro rata (550 signals / 30 days
@@ -23,6 +25,11 @@ from starlette.routing import Route
 from . import auth, credits
 
 KIND = "copy_mode"
+
+
+def copy_keys() -> set:
+    """Every plan that includes copy trading (Pro, Copy Trading, Signal Vault, Signal Vault Lite ...): whatever the catalog flags."""
+    return {k for k, v in credits.CATALOG.items() if v.get("copy")}
 
 
 def _now() -> int:
@@ -57,7 +64,7 @@ def _mode(uid: int) -> str:
 
 def swap(user: dict, plan_keys: set, ea_con=None):
     """None, or "signals" / "copy": the member's mode when they are on Signals Plus alone and linked to our IB."""
-    if credits.grandfathered(user) or "plus" not in plan_keys or plan_keys & {"pro", "copy"}:
+    if credits.grandfathered(user) or "plus" not in plan_keys or plan_keys & copy_keys():
         return None
     if not ib_linked(user["id"]) or _granted_until(user["id"], ea_con):
         return None
@@ -65,9 +72,10 @@ def swap(user: dict, plan_keys: set, ea_con=None):
 
 
 def _plan_rows(uid: int):
+    names = sorted(copy_keys() | {"plus"})
     with closing(credits.db()) as con:
-        return [dict(r) for r in con.execute("SELECT plan, starts_at, ends_at FROM billing_subs WHERE user_id=? AND plan IN ('plus','pro','copy')",
-                                             (uid,)).fetchall()]
+        return [dict(r) for r in con.execute("SELECT plan, starts_at, ends_at FROM billing_subs WHERE user_id=? AND plan IN (%s)" % ",".join("?" * len(names)),
+                                             (uid, *names)).fetchall()]
 
 
 def state(user: dict, ea_con=None) -> dict:
@@ -78,9 +86,11 @@ def state(user: dict, ea_con=None) -> dict:
     keys = {r["plan"] for r in rows}
     end = lambda p: max([r["ends_at"] for r in rows if r["plan"] == p] or [0])
     granted = _granted_until(uid, ea_con)
-    best = max(end("pro"), end("copy"), granted)
+    ck = copy_keys()
+    top = max(((end(k), k) for k in ck), default=(0, None))
+    best = max(top[0], granted)
     if best:
-        out.update(copy=True, until=best, source="pro" if best == end("pro") else "copy" if best == end("copy") else "grant")
+        out.update(copy=True, until=best, source=top[1] if top[0] >= granted else "grant")
     out["plus_active"] = "plus" in keys
     mode = swap(user, keys, ea_con) if keys else None
     if mode:

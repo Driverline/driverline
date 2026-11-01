@@ -158,7 +158,7 @@ class CatalogTests(Base):
         self.assertTrue(c["pro"]["copy"])
         self.assertFalse(c["plus"].get("copy"))
         self.assertTrue(c["plus"]["copy_ib"])
-        for k in ("topup", "boost", "vault"):
+        for k in ("topup", "boost"):
             self.assertFalse(c[k].get("copy"))
 
     def test_buying_the_copy_plan_gives_30_days_and_no_signals(self):
@@ -297,6 +297,65 @@ class ModeTests(Base):
         give(u, "plus", days=10, start=now - 5 * DAY)
         give(u, "plus", days=10, start=now - 3 * DAY)
         self.assertEqual(CP._covered(u, now - 5 * DAY, now), 5 * DAY)
+
+
+class VaultTests(Base):
+    def buy(self, u, product):
+        with closing(credits.db()) as c:
+            oid = c.insert("INSERT INTO billing_orders(user_id,product,method,amount_usd,currency,ref,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                           (u, product, "trc20", credits.CATALOG[product]["usd"], "USD", f"V{u}{product}", "pending", int(time.time())))
+            self.assertTrue(credits.grant_product(c, u, product, oid, f"V{u}{product}"))
+            c.commit()
+
+    def test_the_two_vault_plans_in_the_catalog(self):
+        c = credits.CATALOG
+        for key, usd, sig, days in (("vault", 100, 5500, 90), ("vaultlite", 50, 2500, 30)):
+            self.assertEqual((c[key]["usd"], c[key]["signals"], c[key]["days"], c[key]["notify"], c[key]["mt5"], c[key]["copy"]), (usd, sig, days, True, True, True), key)
+        self.assertEqual(c["vaultlite"]["label"], "Signal Vault Lite")
+        shop = cl(mk_user()).get("/api/billing").json()["catalog"]
+        self.assertEqual({p["key"] for p in shop}, {"topup", "boost", "plus", "pro", "copy", "vaultlite", "vault"})
+        self.assertTrue(all(p["copy"] for p in shop if p["key"] in ("vault", "vaultlite")))
+
+    def test_buying_gives_the_signals_and_the_right_number_of_days(self):
+        for product, sig, days in (("vault", 5500, 90), ("vaultlite", 2500, 30)):
+            u, user = U()
+            self.buy(u, product)
+            self.assertEqual(bal(u), sig, product)
+            row = cq("SELECT plan,starts_at,ends_at FROM billing_subs WHERE user_id=?", u)[0]
+            self.assertEqual((row["plan"], row["ends_at"] - row["starts_at"]), (product, days * DAY))
+            self.assertEqual((ent(user, "copy"), ent(user, "mt5"), ent(user, "notify")), (True, True, True), product)
+
+    def test_signals_and_copy_trading_run_together_and_plus_has_no_switch_next_to_a_vault(self):
+        u, user = U()
+        IB.add(u)
+        give(u, "plus")
+        self.buy(u, "vaultlite")
+        self.assertFalse(CP.state(user)["swap"])
+        self.assertFalse(CP.signals_paused(user))
+        self.assertEqual(CP.state(user)["source"], "vaultlite")
+        a = addraw(u, "A")
+        self.assertEqual(cl(u).post("/api/copy/me/settings", json={"enabled": True}).status_code, 200)
+
+    def test_copy_trading_expires_with_the_plan_but_the_signals_stay(self):
+        u, user = U()
+        now = int(time.time())
+        give(u, "vault", days=90, start=now - 100 * DAY)                                      # ended 10 days ago, copy trading never used
+        setbal(u, 5000)
+        self.assertEqual((ent(user, "copy"), ent(user, "mt5"), ent(user, "notify")), (False, False, False))
+        self.assertEqual(bal(u), 5000)                                                         # signals do not expire
+        self.assertEqual(CP.state(user)["until"], 0)
+
+    def test_buying_again_adds_a_new_period_after_the_old_one(self):
+        u, user = U()
+        self.buy(u, "vaultlite")
+        first = cq("SELECT MAX(ends_at) AS e FROM billing_subs WHERE user_id=?", u)[0]["e"]
+        with closing(credits.db()) as c:
+            oid = c.insert("INSERT INTO billing_orders(user_id,product,method,amount_usd,currency,ref,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                           (u, "vaultlite", "trc20", 50, "USD", f"V2{u}", "pending", int(time.time())))
+            credits.grant_product(c, u, "vaultlite", oid, f"V2{u}")
+            c.commit()
+        self.assertEqual(cq("SELECT MAX(ends_at) AS e FROM billing_subs WHERE user_id=?", u)[0]["e"], first + 30 * DAY)
+        self.assertEqual(bal(u), 5000)
 
 
 class FlowTests(Base):
