@@ -277,7 +277,7 @@ class ModeTests(Base):
         cl(u).post("/api/copy/me/mode", json={"mode": "copy"})
         cq("UPDATE plan_mode SET since=? WHERE user_id=?", int(time.time()) - 6 * DAY, u)
         b = cl(u).get("/api/billing").json()
-        self.assertEqual(b["balance"], 550 + 10 - 110)                                  # +5 welcome +5 partner bonus, -110 for six days in copy mode
+        self.assertEqual(b["balance"], 550 + 5 - 110)                                   # a partner member holds 5 free signals in total (3 welcome + 2 bonus), -110 for six days in copy mode
         self.assertEqual((b["copy_plan"]["swap"], b["copy_plan"]["mode"], b["copy_plan"]["per_day"]), (True, "copy", 18.3))
 
     def test_only_time_when_plus_was_active_is_charged(self):

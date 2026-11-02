@@ -1033,7 +1033,7 @@ class ManualFlowRegressionTests(unittest.TestCase):
         self.assertEqual(balance(uid), 2)
         credits.ensure_welcome(uid)
         credits.ensure_welcome(uid)
-        self.assertEqual(balance(uid), 7)
+        self.assertEqual(balance(uid), 2 + credits.WELCOME)          # the welcome signals are given once, however often it is called
 
     def test_invite_signup_and_daily_quota_unchanged(self):
         with closing(auth.db()) as con:

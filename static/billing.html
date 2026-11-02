@@ -48,9 +48,12 @@ function renderBalance(){
   D.plans.forEach(p=>c.append(el('div','win',p.label+' is active until '+date(p.ends_at)+'.')));
   if(D.copy_plan&&D.copy_plan.swap)c.append(el('div','mut','Signals Plus with your linked Deriv account: you are on '+(D.copy_plan.mode==='copy'?'Copy trading (signals paused, about '+D.copy_plan.per_day+' signals a day used)':'Signals')+'. Switch on the MT5 page, Copy trading card.'));
   if(D.partner&&D.partner.partner){const P=D.partner;
-    c.append(el('div','win','Partner member: notifications are free until '+(P.notify_until?date(P.notify_until):'soon')+', you received '+P.bonus+' bonus signals, and Signals Pro costs $'+P.pro_usd+'.'));
-    if(P.founder&&P.founder.status==='pending')c.append(el('div','warn','Founding member: connect a live Deriv MT5 account with at least $'+P.founder.min_balance+' in it and your MT5 connection is free for 30 days.'+(P.founder.last_balance!=null?' Last balance we saw: $'+Number(P.founder.last_balance).toFixed(2)+'.':'')));
-    if(P.founder&&P.founder.status==='verified')c.append(el('div','win','Founding member: your MT5 connection is free until '+(P.founder.until?date(P.founder.until):'')+'.'))}
+    c.append(el('div','win','Partner member: you get '+P.signals+' free signals in total, and Signals Pro costs $'+P.pro_usd+'.'));
+    if(P.notify_until&&P.notify_until*1000>Date.now())c.append(el('div','win','Your free notifications run until '+date(P.notify_until)+'.'));
+    const F=P.founder;
+    if(F&&F.status==='pending')c.append(el('div','warn','Founding member places: the first '+F.slots+' partner members to fund a live Deriv MT5 account with at least $'+F.min_balance+' get notifications and the MT5 connection free for 30 days. Connect your account on the MT5 page and we check the balance automatically. '+F.slots_left+' of '+F.slots+' places left.'+(F.last_balance!=null?' Last balance we saw: $'+Number(F.last_balance).toFixed(2)+'.':'')));
+    if(F&&F.status==='closed')c.append(el('div','mut','All '+F.slots+' founding member places have been taken.'));
+    if(F&&F.status==='verified')c.append(el('div','win','Founding member: notifications and your MT5 connection are free until '+(F.until?date(F.until):'')+'.'))}
   const a=el('a','','Back to Signals');a.href='/signals.html';a.style.cssText='display:block;margin-top:8px;color:var(--gold2)';c.append(a);
 }
 function renderShop(){

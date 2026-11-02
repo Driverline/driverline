@@ -14,6 +14,7 @@ How it works:
     unaffected either way: they keep exactly what they have today.
 Payment details (wallet addresses, bank account) are stored in the database and edited in Admin, never in the code."""
 import secrets
+import threading
 import time
 from contextlib import closing
 
@@ -45,7 +46,8 @@ SCHEMA = """
     CREATE INDEX IF NOT EXISTS ix_pevents_order ON payment_events(order_id, id);
     CREATE INDEX IF NOT EXISTS ix_pevents_kind ON payment_events(kind, id)"""
 
-WELCOME = 5            # one-time welcome signals for a new member
+WELCOME = 3            # one-time welcome signals for a new member. A partner member ends with 5 in total instead (perks.py)
+GRANT_LOCK = threading.Lock()   # the welcome and the partner signals are decided under this lock, so a member never gets both in full
 OPEN_ORDERS_MAX = 3    # unfinished orders one member may hold at a time
 ORDER_STALE_DAYS = 7   # an unsubmitted order older than this is closed automatically
 CATALOG = {
@@ -61,6 +63,7 @@ CATALOG = {
     "vault": {"label": "Signal Vault", "usd": 100, "signals": 5500, "days": 90, "notify": True, "mt5": True, "copy": True},
 }
 # Free plans given by perks.py. They are not products: they cannot be bought and do not appear in the shop.
+# "partner_notify" is no longer given to anyone new (perks v2); it stays here so the ones already given keep working until they end.
 GRANTS = {
     "partner_notify": {"label": "Partner notifications (free)", "notify": True, "mt5": False},
     "founder_mt5": {"label": "Founding member: MT5 connection (free)", "notify": True, "mt5": True},
@@ -202,9 +205,10 @@ def spend(uid: int, ref: str) -> bool:
 
 
 def ensure_welcome(uid: int):
-    """The one-time welcome signals. Safe to call any number of times."""
-    with closing(db()) as con:
-        if con.execute("SELECT 1 FROM credit_ledger WHERE user_id=? AND kind='welcome'", (uid,)).fetchone():
+    """The one-time welcome signals. Safe to call any number of times.
+    Nothing is added to a member who already holds partner signals: a partner member gets 5 in total, not 3 and then 5 more."""
+    with GRANT_LOCK, closing(db()) as con:
+        if con.execute("SELECT 1 FROM credit_ledger WHERE user_id=? AND kind IN ('welcome','partner_welcome')", (uid,)).fetchone():
             return
         if _credit(con, uid, WELCOME, "welcome", "welcome", "Welcome signals"):
             con.commit()

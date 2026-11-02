@@ -9,15 +9,29 @@
   window.dlMe=async function(){
     const e=document.getElementById('me');
     try{const r=await fetch('/api/auth/me');if(!r.ok)return;const u=await r.json();
-      if(e)e.textContent=u.email+' \u00b7 '+u.tier+' \u00b7 AI analyses today '+u.used+'/'+u.limit;
-      if(u.tier==='admin')adminTab()}catch(x){}
+      if(e)e.textContent=u.email+' · '+u.tier+' · AI analyses today '+u.used+'/'+u.limit;
+      if(u.tier==='admin')adminTab();
+      window.dlBadge()}catch(x){}
+  };
+  // Unread counters on the Messages tabs: the member's own (announcements + replies) and, for an admin, members' unread messages.
+  function setBadge(a,n){
+    if(!a)return;let b=a.querySelector('.dlb');
+    if(!n){if(b)b.remove();return}
+    if(!b){b=document.createElement('span');b.className='dlb';b.style.cssText='display:inline-block;background:var(--gold,#e8b84a);color:#02122c;border-radius:99px;font-size:11px;font-weight:700;padding:1px 6px;margin-left:6px';a.append(b)}
+    b.textContent=n>99?'99+':String(n);
+  }
+  window.dlBadge=async function(){
+    if(/^\/(login|reset)/.test(location.pathname))return;
+    try{const r=await f('/api/inbox/summary');if(r.ok)setBadge(document.querySelector('nav.tabs a[href="/inbox.html"]'),(await r.json()).unread||0)}catch(x){}
+    const ad=document.querySelector('nav.tabs a[href="/admin-messages.html"]');
+    if(ad)try{const r=await f('/api/admin/inbox/summary');if(r.ok)setBadge(ad,(await r.json()).unread||0)}catch(x){}
   };
   function tabs(){
     const h=document.querySelector('header');
     if(!h||document.querySelector('nav.tabs')||/^\/(login|reset)/.test(location.pathname))return;
     const here=location.pathname==='/index.html'?'/':location.pathname;
     const n=document.createElement('nav');n.className='tabs';
-    [['Analysis','/'],['Signals','/signals.html'],['Risk','/risk.html'],['Journal','/journal.html'],['MT5','/mt5.html'],['Billing','/billing.html']].forEach(([t,u])=>{
+    [['Analysis','/'],['Signals','/signals.html'],['Risk','/risk.html'],['Journal','/journal.html'],['MT5','/mt5.html'],['Billing','/billing.html'],['Messages','/inbox.html']].forEach(([t,u])=>{
       const a=document.createElement('a');a.href=u;a.textContent=t;if(u===here)a.className='on';n.append(a)});
     h.after(n);
   }
@@ -25,6 +39,8 @@
     const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-admin]'))return;
     const a=document.createElement('a');a.href='/admin.html';a.textContent='Admin';a.dataset.admin='1';
     if(location.pathname==='/admin.html')a.className='on';n.append(a);
+    const m=document.createElement('a');m.href='/admin-messages.html';m.textContent='Inbox';m.dataset.admin='1';
+    if(location.pathname==='/admin-messages.html')m.className='on';n.append(m);
     const p=document.createElement('a');p.href='/admin-payments.html';p.textContent='Payments';p.dataset.admin='1';
     if(location.pathname==='/admin-payments.html')p.className='on';n.append(p);
   }

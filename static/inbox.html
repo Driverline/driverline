@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Messages</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+<style>
+.msg{max-width:86%;padding:9px 12px;border-radius:12px;margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:1.35}
+.msg small{display:block;margin-top:4px;color:var(--mut);font-size:11px}
+.msg.me{margin-left:auto;background:#0d2a63;border:1px solid var(--line)}
+.msg.team{margin-right:auto;background:#06122f;border:1px solid var(--line);border-left:3px solid var(--gold)}
+.msg.team.new{border-color:var(--gold)}
+.bc{padding:10px 0;border-top:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}
+.bc:first-of-type{border-top:0}
+.bc b{display:block}
+.bc small{color:var(--mut)}
+.dot{display:inline-block;background:var(--gold);color:#02122c;border-radius:99px;font-size:11px;font-weight:700;padding:1px 7px;margin-left:6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main>
+<div class="card"><h2>Announcements <span id="bcn"></span></h2><div id="bcs"><span class="mut">Loading...</span></div></div>
+<div class="card"><h2>Messages with the TradeLens team <span id="mgn"></span></h2>
+  <div id="thread"><span class="mut">Loading...</span></div>
+  <textarea id="body" rows="3" maxlength="1000" placeholder="Write to the team"></textarea>
+  <div class="mut" style="margin:4px 0 8px;font-size:12px">The team answers here. Please never send your password or any account secret.</div>
+  <button id="send">Send</button>
+  <div id="err" class="err"></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+async function api(path,method,body){
+  const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
+const when=t=>new Date(t*1000).toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+let busy=false;
+async function load(markRead){
+  if(busy)return;busy=true;
+  try{
+    const d=await api('/api/inbox');
+    const bs=$('bcs');bs.textContent='';
+    if(!d.broadcasts.length)bs.append(el('div','mut','No announcements yet.'));
+    d.broadcasts.forEach(b=>{const x=el('div','bc');if(b.title)x.append(el('b','',b.title));x.append(document.createTextNode(b.body),el('small','',when(b.created_at)));bs.append(x)});
+    const t=$('thread');t.textContent='';
+    if(!d.messages.length)t.append(el('div','mut','No messages yet. Write to the team below and they will answer here.'));
+    d.messages.forEach(m=>{const x=el('div','msg '+(m.sender==='admin'?'team'+(m.read?'':' new'):'me'));
+      x.append(document.createTextNode(m.body),el('small','',(m.sender==='admin'?'TradeLens team · ':'You · ')+when(m.created_at)));t.append(x)});
+    $('bcn').textContent='';$('mgn').textContent='';
+    if(d.broadcasts.some(b=>b.unread))$('bcn').append(el('span','dot','new'));
+    if(d.messages.some(m=>m.sender==='admin'&&!m.read))$('mgn').append(el('span','dot','new'));
+    if(markRead&&(d.unread>0)){await api('/api/inbox/read','POST');if(window.dlBadge)window.dlBadge()}
+  }catch(e){$('thread').textContent=e.message}
+  busy=false;
+}
+$('send').onclick=async()=>{
+  const b=$('body'),text=b.value.trim();$('err').textContent='';
+  if(!text)return;$('send').disabled=true;
+  try{await api('/api/inbox/send','POST',{body:text});b.value='';await load(false)}
+  catch(e){$('err').textContent=e.message}
+  $('send').disabled=false;
+};
+load(true);
+setInterval(()=>{if(!document.hidden)load(true)},30000);
+</script>
+</body>
+</html>
