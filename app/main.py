@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, pending_orders, tg_bot, copy_trading, copy_plan, mt5_requests, inbox
+from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, pending_orders, tg_bot, copy_trading, copy_plan, mt5_requests, inbox, recap
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -151,6 +151,8 @@ async def lifespan(app):
         tasks.append(asyncio.create_task(engine_signals.engine_loop()))
     if os.environ.get("NOWPAYMENTS_API_KEY"):   # re-checks open crypto orders with NOWPayments, so a lost notification only delays
         tasks.append(asyncio.create_task(nowpay.reconcile_loop()))
+    if recap.enabled():                    # the daily Telegram recap: only when DAILY_RECAP=1 and the bot token and channel are set (recap.py)
+        tasks.append(asyncio.create_task(recap.loop()))
     yield
     for t in tasks:
         t.cancel()
@@ -188,6 +190,7 @@ routes = [
     *copy_plan.routes,
     *mt5_requests.routes,
     *inbox.routes,
+    *recap.routes,
     Mount("/", app=StaticFiles(directory=str(STATIC_DIR), html=True), name="static"),
 ]
 

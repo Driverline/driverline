@@ -1,8 +1,8 @@
 # Telegram: pinned "Open TradeLens App" button
 
 A one-off, idempotent script that publishes and pins the TradeLens access message (with the button) in the Telegram channel and its linked
-discussion group. It is **not** part of the web app: the server has no Telegram code and no bot token (signals are posted by the Driverline
-Companion EA on the admin's MT5 terminal). The script only calls Telegram's Bot API, adds no server process, webhook, polling, table or
+discussion group. It is **not** part of the web app: the web app has no Telegram code for this feature (signals are posted by the Driverline
+Companion EA on the admin's MT5 terminal). The only server-side Telegram call is the optional daily recap (`app/recap.py`, see DAILY_RECAP.md), which is off unless switched on in Render. The script only calls Telegram's Bot API, adds no server process, webhook, polling, table or
 dependency, and does not touch signal publishing.
 
 ## Permissions the bot (@TradeLensagent) needs

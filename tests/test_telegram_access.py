@@ -253,6 +253,8 @@ class SafetyTests(Base):
         imports = {l.split()[1].split(".")[0] for l in src.splitlines() if l.startswith(("import ", "from "))}
         self.assertTrue(imports <= {"argparse", "json", "os", "re", "sys", "urllib", "pathlib"}, imports)
         for f in (ROOT / "app").glob("*.py"):
+            if f.name == "recap.py":                                              # the one owner-approved exception: the daily channel recap (docs/DAILY_RECAP.md)
+                continue
             self.assertNotIn("api.telegram.org", f.read_text(), f.name)          # the web app is untouched: no bot, no webhook, no polling
         self.assertNotIn("InpTgToken", src)
 

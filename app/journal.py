@@ -57,6 +57,7 @@ def _migrate(con):
     # older databases were created before these columns existed
     con.add_column("trades", "user_id", "INTEGER NOT NULL DEFAULT 0")
     con.add_column("trades", "mt5_id", "TEXT")
+    con.add_column("trades", "reason", "TEXT")      # why an MT5 position closed (tp, sl, manual, ...), kept for the daily recap; NULL for older trades
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_trades_mt5 ON trades(user_id, mt5_id)")
 
 
@@ -169,10 +170,11 @@ def import_mt5(uid: int, login, rows: list, offset: int = 0, fresh: list = None)
             iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
             cur = con.execute(
                 "INSERT INTO trades(user_id,instrument,direction,entry,stop,target,lots,exit_price,pnl,"
-                "r_multiple,status,notes,opened_at,closed_at,mt5_id) VALUES(?,?,?,?,?,?,?,?,?,?,'closed',"
-                "'Imported from MT5',?,?,?) ON CONFLICT DO NOTHING",
+                "r_multiple,status,notes,opened_at,closed_at,mt5_id,reason) VALUES(?,?,?,?,?,?,?,?,?,?,'closed',"
+                "'Imported from MT5',?,?,?,?) ON CONFLICT DO NOTHING",
                 (uid, match_key(sym) or sym, direction, entry, sl, tp, lots, exit_p, profit,
-                 r_mult(direction, entry, sl, exit_p), iso(opened), iso(closed), f"{login}:{pid}"))
+                 r_mult(direction, entry, sl, exit_p), iso(opened), iso(closed), f"{login}:{pid}",
+                 str(r.get("reason") or "")[:12] or None))
             added += cur.rowcount
             if cur.rowcount == 1 and fresh is not None:        # a trade we have not seen before: closed_alerts tells the member
                 fresh.append({"id": f"{login}:{pid}", "symbol": sym, "instrument": match_key(sym), "direction": direction,

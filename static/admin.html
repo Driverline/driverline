@@ -41,6 +41,7 @@ function render(d){
   const gr=el('div','card');gr.append(el('h2','','Growth: which ads bring members'));const grb=el('div');gr.append(grb);root.append(gr);loadGrowth(grb);
   const pt=el('div','card');pt.append(el('h2','','Partner tags: who is really tagged to you'));const ptb=el('div');pt.append(ptb);root.append(pt);loadPartner(ptb);
   const pk=el('div','card');pk.append(el('h2','','Partner perks and founding members'));const pkb=el('div');pk.append(pkb);root.append(pk);loadPerks(pkb);
+  const rc=el('div','card');rc.append(el('h2','','Daily Telegram recap'));const rcb=el('div');rc.append(rcb);root.append(rc);loadRecap(rcb);
   const ch=el('div','card');ch.append(el('h2','','AI help chat'));const chb=el('div');ch.append(chb);root.append(ch);loadChatAdmin(chb);
 
   const inv=el('div','card');inv.append(el('h2','','Invite codes'));
@@ -184,6 +185,22 @@ async function loadPerks(box){
     if(m.status==='pending'){const b=el('button','ghost','Stop this member claiming a place');b.style.cssText='width:auto;padding:6px 10px;margin-top:6px';
       b.onclick=async()=>{if(!confirm('Stop this member from claiming a founder place? They keep the ordinary partner perks.'))return;try{await api('/perks/release','POST',{user_id:m.user_id});loadPerks(box)}catch(e){alert(e.message)}};c.append(b)}
     box.append(c)})
+}
+async function loadRecap(box){
+  box.textContent='';
+  let d;try{d=await api('/recap')}catch(e){box.append(el('div','err',e.message));return}
+  const S=d.settings;
+  box.append(el('div','mut','One post a day in your Telegram channel: the trades that closed that day, how each ended (TP, SL, breakeven...), and a discipline or encouragement line. Results are shown in R, never money.'));
+  box.append(kv('Bot token',S.token_set?'set':'not set (TELEGRAM_BOT_TOKEN in Render)',S.token_set?'win':'err'),kv('Channel',S.chat_set?'set':'not set (TELEGRAM_RECAP_CHAT in Render)',S.chat_set?'win':'err'),
+    kv('Automatic posting',S.scheduled?'on, after '+S.hour+':00 (UTC'+(S.tz_offset>=0?'+':'')+S.tz_offset+')':(S.switched_on?'switched on but token/channel missing':'off (set DAILY_RECAP=1 in Render)'),S.scheduled?'win':'mut'));
+  const pre=el('pre','',d.preview);pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;background:#030918;border:1px solid var(--line);border-radius:10px;padding:10px;margin:10px 0;font:inherit;font-size:14px';
+  box.append(el('div','mut','Preview of today so far ('+d.day+', '+d.count+' trades):'),pre);
+  const b=el('button','ghost',"Post today's recap now");b.style.cssText='width:auto;padding:8px 14px';b.disabled=!S.can_post;
+  b.onclick=async()=>{if(!confirm("Post this recap to the Telegram channel now?"))return;b.disabled=true;
+    try{await api('/recap/send','POST',{});alert('Posted.');loadRecap(box)}
+    catch(e){if(/already posted/.test(e.message)){if(confirm('Today\'s recap was already posted. Post it again?')){try{await api('/recap/send','POST',{again:true});alert('Posted again.');loadRecap(box);return}catch(x){alert(x.message)}}}else alert(e.message);b.disabled=false}};
+  box.append(b);
+  d.log.forEach(r=>box.append(kv(r.day,r.status+(r.status==='sent'?' ('+r.trades+' trades)':r.error?': '+r.error:''),r.status==='sent'?'win':'mut')));
 }
 async function loadChatAdmin(box){
   box.textContent='';
