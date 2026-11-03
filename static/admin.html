@@ -194,8 +194,13 @@ async function loadRecap(box){
   box.append(kv('Bot token',S.token_set?'set':'not set (TELEGRAM_BOT_TOKEN in Render)',S.token_set?'win':'err'),kv('Channel',S.chat_set?'set':'not set (TELEGRAM_RECAP_CHAT in Render)',S.chat_set?'win':'err'),
     kv('Automatic posting',S.scheduled?'on, after '+S.hour+':00 (UTC'+(S.tz_offset>=0?'+':'')+S.tz_offset+')':(S.switched_on?'switched on but token/channel missing':'off (set DAILY_RECAP=1 in Render)'),S.scheduled?'win':'mut'));
   const pre=el('pre','',d.preview);pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;background:#030918;border:1px solid var(--line);border-radius:10px;padding:10px;margin:10px 0;font:inherit;font-size:14px';
+  const inc=(d.accounts||[]).filter(a=>a.included);
+  box.append(el('div','mut','MT5 accounts (only the ones marked "in recap" are ever shown in the channel; demo accounts never are'+(d.explicit?'; chosen by RECAP_MT5_LOGINS':'')+'):'));
+  if(!(d.accounts||[]).length)box.append(el('div','err','No MT5 account found.'));
+  (d.accounts||[]).forEach(a=>box.append(kv(a.label+' ('+a.login+', '+(a.live?'live':'demo/unknown')+')',(a.included?'in recap':'NOT in recap')+' · '+a.trades+' trades today',a.included?'win':'mut')));
+  if(!inc.length)box.append(el('div','err','No account is selected, so nothing will be posted. Set RECAP_MT5_LOGINS in Render to the login(s) you post from.'));
   box.append(el('div','mut','Preview of today so far ('+d.day+', '+d.count+' trades):'),pre);
-  const b=el('button','ghost',"Post today's recap now");b.style.cssText='width:auto;padding:8px 14px';b.disabled=!S.can_post;
+  const b=el('button','ghost',"Post today's recap now");b.style.cssText='width:auto;padding:8px 14px';b.disabled=!S.can_post||!inc.length;
   b.onclick=async()=>{if(!confirm("Post this recap to the Telegram channel now?"))return;b.disabled=true;
     try{await api('/recap/send','POST',{});alert('Posted.');loadRecap(box)}
     catch(e){if(/already posted/.test(e.message)){if(confirm('Today\'s recap was already posted. Post it again?')){try{await api('/recap/send','POST',{again:true});alert('Posted again.');loadRecap(box);return}catch(x){alert(x.message)}}}else alert(e.message);b.disabled=false}};

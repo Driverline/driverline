@@ -25,7 +25,7 @@ Educational only, not financial advice. Use your own lot size and risk.
 - Up to 25 trades are listed; a longer day says "...and N more". It never exceeds one Telegram message.
 
 ## What it covers (and does not)
-- Trades the Companion EA imported into the journal for the **admin** account(s) (all admins, or only `RECAP_USER_IDS`). A trade counts on the day it **closed** (Lagos time).
+- Trades the Companion EA imported from your **LIVE MT5 account(s) only**. Demo accounts, accounts whose type is unknown, and trades typed into the journal by hand are never included (the channel is public). To choose the accounts yourself set `RECAP_MT5_LOGINS`; that list replaces the live-only rule. With no account selected nothing is posted. Admin users: all admins, or only `RECAP_USER_IDS`. A trade counts on the day it **closed** (Lagos time).
 - Open positions are not in the journal, so they are not listed. Members' own trades are not included.
 - The reason a trade closed (TP / SL / manual) is now **saved on each trade** (`trades.reason`, new nullable column). Trades from before the upgrade have none:
   they are judged from their saved stop and target, otherwise shown only as "Closed in profit" / "Closed at a loss" (never guessed as TP).
@@ -38,6 +38,7 @@ Educational only, not financial advice. Use your own lot size and risk.
 | `TELEGRAM_RECAP_CHAT` | the channel, `@yourchannel` or `-100...`. The bot needs **Post messages** there. |
 | `DAILY_RECAP=1` | turns the schedule on. Without it nothing is ever posted automatically. |
 | `RECAP_HOUR` | post after this local hour (default `21`). `RECAP_TZ_OFFSET` = hours from UTC (default `1`, Lagos). |
+| `RECAP_MT5_LOGINS` | optional: exactly these MT5 logins feed the recap, e.g. `12345097`. Default: every live account. |
 | `RECAP_USER_IDS` | optional: only these admin user ids, e.g. `1`. |
 
 Admin > **Daily Telegram recap** shows what is set, a live preview of today so far, the last 7 days, and **Post today's recap now** (works even before `DAILY_RECAP=1`, to test).

@@ -1,9 +1,11 @@
 """Daily Telegram recap: one post a day in the TradeLens channel with the trades that closed that day, how each ended, and a short
 discipline or encouragement line that depends on how the day went.
 
-What it covers: the trades the Companion EA imported into the journal for the admin account(s) (all admins, or only the ids in
-RECAP_USER_IDS). A trade counts on the day (in RECAP_TZ_OFFSET time, default Lagos UTC+1) it CLOSED. Open positions are not in the journal,
-so they are not listed.
+What it covers: the trades the Companion EA imported into the journal from your LIVE MT5 account(s) only. A demo account, an account whose type
+is unknown, and trades typed into the journal by hand are never included: this channel is public. To name the accounts yourself, set
+RECAP_MT5_LOGINS (comma-separated MT5 logins); that list then replaces the live-only rule. Admin users: all admins, or only RECAP_USER_IDS.
+A trade counts on the day (in RECAP_TZ_OFFSET time, default Lagos UTC+1) it CLOSED. Open positions are not in the journal, so they are not listed.
+With no account selected nothing is posted (a recap with nothing behind it would mislead).
 
 Each line: instrument, Buy/Sell, an emoji for the RESULT (green tick profit, red cross loss, minus breakeven: the same whatever way the trade
 closed, so the day can be read at a glance), how it ended, and the result in R when it is reliable. Money is never shown (same rule as the EA's posts).
@@ -17,12 +19,14 @@ How it is switched on (all settings live in Render, none in the code):
   TELEGRAM_RECAP_CHAT     the channel, like @yourchannel or -100123456789. The bot must be able to post there.
   DAILY_RECAP=1           switches the schedule on. Without it nothing is ever posted automatically (the admin can still post by hand).
   RECAP_HOUR              local hour to post after (default 21). RECAP_TZ_OFFSET hours from UTC (default 1). RECAP_USER_IDS optional.
+  RECAP_MT5_LOGINS        optional: exactly these MT5 logins feed the recap (default: every live account).
 
 Safeguards: one post per day, recorded in recap_log before sending, so a restart or a second copy of the app cannot post it twice.
 A failed send is retried every 10 minutes (up to 6 times). If the service was asleep at the posting time, the missed day is posted late,
 but only for yesterday and only when a recap was posted on an earlier day, so switching it on never posts an old day.
 """
 import asyncio
+import json
 import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -47,6 +51,11 @@ RETRY_AFTER = 600
 MAX_ATTEMPTS = 6
 FOOTER = "Educational only, not financial advice. Use your own lot size and risk."
 _TRANSPORT = None          # tests plug a fake Telegram in here (httpx.MockTransport)
+_warned = [0.0]
+
+
+class NoAccount(Exception):
+    """No MT5 account is selected for the recap."""
 
 
 class RecapError(Exception):
@@ -120,18 +129,78 @@ def _recap_users() -> list:
         return [r["id"] for r in con.execute("SELECT id FROM users WHERE tier='admin' AND blocked=0").fetchall()]
 
 
-def trades_for_day(day: str) -> list:
-    """The recap users' trades that closed on that day, oldest first."""
+def _login_of(t: dict) -> str:
+    """The MT5 login a journal trade came from (its mt5_id is "login:position"); '' for a trade typed in by hand."""
+    return str(t.get("mt5_id") or "").split(":", 1)[0].strip() if t.get("mt5_id") else ""
+
+
+def accounts() -> list:
+    """The MT5 accounts of the recap users, and whether the EA last reported each one as a LIVE account. Anything that is not clearly
+    live (demo, never reported, unreadable) counts as NOT live: a demo account's trades must never reach the public channel."""
+    from . import ea
+    ids = _recap_users()
+    if not ids:
+        return []
+    with closing(ea.db()) as con:
+        rows = con.execute(f"SELECT a.id, a.user_id, a.label, a.login, s.state FROM ea_accounts a LEFT JOIN ea_acct_state s ON s.account_id=a.id "
+                           f"WHERE a.user_id IN ({','.join('?' * len(ids))}) ORDER BY a.id", ids).fetchall()
+    out = []
+    for r in rows:
+        live = False
+        try:
+            acc = (json.loads(r["state"]) or {}).get("account") or {}
+            live = acc.get("demo") is not None and not acc["demo"]
+        except (TypeError, ValueError, AttributeError):
+            pass
+        out.append({"id": r["id"], "label": r["label"], "login": str(r["login"] or "").strip(), "live": live})
+    return out
+
+
+def included_logins() -> set:
+    """Whose trades the recap may show: the logins listed in RECAP_MT5_LOGINS, or by default every LIVE account."""
+    raw = _env("RECAP_MT5_LOGINS")
+    if raw:
+        return {x.strip() for x in raw.split(",") if x.strip()}
+    return {a["login"] for a in accounts() if a["live"] and a["login"]}
+
+
+def _rows_for_day(day: str) -> list:
+    """Every EA-imported trade of the recap users that closed on that day, from any account, oldest first."""
     from . import journal
     ids = _recap_users()
     if not ids:
         return []
     start, end = _bounds(day)
     with closing(journal.db()) as con:
-        rows = con.execute(f"SELECT * FROM trades WHERE status='closed' AND closed_at>=? AND closed_at<? "
+        rows = con.execute(f"SELECT * FROM trades WHERE status='closed' AND mt5_id IS NOT NULL AND closed_at>=? AND closed_at<? "
                            f"AND user_id IN ({','.join('?' * len(ids))}) ORDER BY closed_at, id",
                            (start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"), *ids)).fetchall()
     return [dict(r) for r in rows]
+
+
+def trades_for_day(day: str) -> list:
+    """The trades that closed that day on the accounts the recap may show, oldest first."""
+    logins = included_logins()
+    return [t for t in _rows_for_day(day) if _login_of(t) in logins] if logins else []
+
+
+def _tail(login: str) -> str:
+    return "\u2026" + login[-3:] if login else "?"
+
+
+def account_overview(day: str) -> list:
+    """For the admin: every account that has trades, with whether it feeds the recap and how many trades it has that day."""
+    logins = included_logins()
+    rows = _rows_for_day(day)
+    seen, out = set(), []
+    for a in accounts():
+        seen.add(a["login"])
+        out.append({"label": a["label"], "login": _tail(a["login"]), "live": a["live"], "included": a["login"] in logins,
+                    "trades": sum(1 for t in rows if _login_of(t) == a["login"])})
+    for lg in sorted({_login_of(t) for t in rows} - seen):               # an account that is no longer listed but still has trades
+        out.append({"label": "(account no longer listed)", "login": _tail(lg), "live": False, "included": lg in logins,
+                    "trades": sum(1 for t in rows if _login_of(t) == lg)})
+    return out
 
 
 # ---------------------------------------------------------------- how a trade ended
@@ -322,6 +391,8 @@ async def send_telegram(text: str) -> str:
 
 async def post_day(day: str, now: int = None, force: bool = False, again: bool = False) -> dict:
     now = int(now or time.time())
+    if not await asyncio.to_thread(included_logins):
+        raise NoAccount("No MT5 account is selected for the recap (no LIVE account found). Set RECAP_MT5_LOGINS in Render to the account(s) you post from")
     trades = await asyncio.to_thread(trades_for_day, day)
     text = build(day, trades)
     if not await asyncio.to_thread(_claim, day, now, force, again):
@@ -343,6 +414,11 @@ async def tick(now: float = None) -> list:
     if not enabled():
         return []
     now = time.time() if now is None else now
+    if not await asyncio.to_thread(included_logins):               # a recap with no account behind it would be misleading: say nothing, warn rarely
+        if now - _warned[0] > 3600:
+            _warned[0] = now
+            print("[recap] no live MT5 account selected: nothing posted (set RECAP_MT5_LOGINS)", flush=True)
+        return []
     today = local_day(now)
     local = datetime.fromtimestamp(now, timezone.utc) + timedelta(hours=tz_offset())
     due = []
@@ -377,9 +453,11 @@ async def admin_view(request):
     auth.require_admin(request)
     day = local_day()
     trades = await asyncio.to_thread(trades_for_day, day)
+    accts = await asyncio.to_thread(account_overview, day)
     with closing(db()) as con:
         log = [dict(r) for r in con.execute("SELECT day,status,sent_at,trades,attempts,error FROM recap_log ORDER BY day DESC LIMIT 7").fetchall()]
-    return JSONResponse({"settings": status(), "day": day, "count": len(trades), "preview": build(day, trades), "log": log})
+    return JSONResponse({"settings": status(), "day": day, "count": len(trades), "preview": build(day, trades), "log": log,
+                         "accounts": accts, "explicit": bool(_env("RECAP_MT5_LOGINS"))})
 
 
 async def admin_send(request):
@@ -389,6 +467,8 @@ async def admin_send(request):
     d = await auth._json(request)
     try:
         r = await post_day(local_day(), force=True, again=d.get("again") is True)
+    except NoAccount as e:
+        raise HTTPException(409, str(e))
     except RecapError as e:
         raise HTTPException(502, str(e))
     if not r["sent"]:

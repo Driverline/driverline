@@ -28,7 +28,7 @@ for _n in ("websockets", "pywebpush", "psycopg", "psycopg.rows"):
 os.environ.update(DRIVERLINE_SECRET="s" * 40)
 os.environ.pop("DATABASE_URL", None)
 
-from app import auth, dbx, journal, recap                       # noqa: E402
+from app import auth, dbx, ea, journal, recap                       # noqa: E402
 
 dbx.SQLITE_PATH = Path(tempfile.mkdtemp()) / "t.db"
 from starlette.testclient import TestClient                      # noqa: E402
@@ -37,6 +37,7 @@ from app import main                                              # noqa: E402
 TOKEN = "123456:SECRET-TOKEN-VALUE"
 os.environ.update(TELEGRAM_BOT_TOKEN=TOKEN, TELEGRAM_RECAP_CHAT="@tl_channel", DAILY_RECAP="1", RECAP_HOUR="21", RECAP_TZ_OFFSET="1")
 os.environ.pop("RECAP_USER_IDS", None)
+os.environ.pop("RECAP_MT5_LOGINS", None)
 
 _seq = [0]
 
@@ -58,18 +59,40 @@ def mk_user(tier="admin", blocked=0):
     return uid
 
 
+def mk_account(uid, login="1001", demo=False, label=None, state=True):
+    """An MT5 account of the user as the EA reports it. demo=None leaves 'demo' out of the state; state=False means it never reported."""
+    label = label or f"Acct-{abs(hash(login)) % 10000}"
+    with closing(ea.db()) as con:
+        row = con.execute("SELECT id FROM ea_accounts WHERE user_id=? AND label=?", (uid, label)).fetchone()
+        if row:
+            return login
+        aid = con.insert("INSERT INTO ea_accounts(user_id,label,key_hash,created_at,last_seen,login) VALUES(?,?,?,?,?,?)",
+                         (uid, label, f"kh-{uid}-{login}-{label}", 0, 0, login))
+        if state:
+            acc = {"login": login} if demo is None else {"login": login, "demo": demo}
+            con.execute("INSERT INTO ea_acct_state(account_id,state,specs,updated_at) VALUES(?,?,?,?)", (aid, json.dumps({"account": acc}), None, 0))
+        con.commit()
+    return login
+
+
 def mk_trade(uid, instrument="v25", direction="BUY", entry=100.0, exit_price=101.0, stop=None, target=None, pnl=1.0, r=None,
-             reason=None, closed=utc(2026, 11, 2, 10, 0)):
+             reason=None, closed=utc(2026, 11, 2, 10, 0), login="1001", demo=False, manual=False, account=True):
+    """A closed journal trade imported by the EA from `login` (a live account by default). manual=True is typed in by hand (no mt5_id)."""
+    if account and not manual:
+        mk_account(uid, login, demo)
+    _seq[0] += 1
+    mt5 = None if manual else f"{login}:{_seq[0]}"
     with closing(journal.db()) as con:
-        con.execute("INSERT INTO trades(user_id,instrument,direction,entry,stop,target,lots,exit_price,pnl,r_multiple,status,opened_at,closed_at,reason) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,'closed',?,?,?)",
+        con.execute("INSERT INTO trades(user_id,instrument,direction,entry,stop,target,lots,exit_price,pnl,r_multiple,status,opened_at,closed_at,reason,mt5_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,'closed',?,?,?,?)",
                     (uid, instrument, direction, entry, stop, target, 1.0, exit_price, pnl, r,
-                     closed.isoformat(timespec="seconds"), closed.isoformat(timespec="seconds"), reason))
+                     closed.isoformat(timespec="seconds"), closed.isoformat(timespec="seconds"), reason, mt5))
         con.commit()
 
 
 def wipe():
-    for name, mod in (("trades", journal), ("recap_log", recap)):
+    os.environ.pop("RECAP_MT5_LOGINS", None)
+    for name, mod in (("trades", journal), ("recap_log", recap), ("ea_acct_state", ea), ("ea_accounts", ea)):
         with closing(mod.db()) as con:
             con.execute(f"DELETE FROM {name}")
             con.commit()
@@ -240,6 +263,67 @@ class Day(unittest.TestCase):
         mk_trade(a, instrument="v50", closed=utc(2026, 11, 2, 15))
         mk_trade(a, instrument="v10", closed=utc(2026, 11, 2, 8))
         self.assertEqual([t["instrument"] for t in recap.trades_for_day("2026-11-02")], ["v10", "v50"])
+
+
+class OnlyTheLiveAccount(unittest.TestCase):
+    """The incident: a demo account's trades were posted in the public recap."""
+    def setUp(self):
+        wipe()
+        os.environ.pop("RECAP_USER_IDS", None)
+        self.a = mk_user()
+
+    def logins(self, day="2026-11-02"):
+        return sorted(recap._login_of(t) for t in recap.trades_for_day(day))
+
+    def test_demo_trades_never_reach_the_recap(self):
+        mk_trade(self.a, login="097", demo=False)
+        mk_trade(self.a, login="097", demo=False)
+        mk_trade(self.a, login="981", demo=True)
+        mk_trade(self.a, login="981", demo=True)
+        mk_trade(self.a, login="981", demo=True)
+        self.assertEqual(self.logins(), ["097", "097"])
+        self.assertNotIn("Closed today: 5", recap.build("2026-11-02", recap.trades_for_day("2026-11-02")))
+
+    def test_an_account_of_unknown_type_is_left_out(self):
+        mk_trade(self.a, login="500", demo=None)                          # reported, but without the demo flag
+        mk_trade(self.a, login="600", demo=False)
+        mk_account(self.a, "700", state=False)                            # never reported
+        mk_trade(self.a, login="700", account=False)
+        self.assertEqual(self.logins(), ["600"])
+
+    def test_hand_typed_journal_entries_are_left_out(self):
+        mk_trade(self.a, login="097")
+        mk_trade(self.a, manual=True)
+        self.assertEqual(len(recap.trades_for_day("2026-11-02")), 1)
+
+    def test_the_owner_can_name_the_accounts_explicitly(self):
+        mk_trade(self.a, login="097", demo=False)
+        mk_trade(self.a, login="981", demo=True)
+        os.environ["RECAP_MT5_LOGINS"] = " 981 , 555 "
+        self.assertEqual(self.logins(), ["981"])                          # exactly the listed ones, even a demo, not the live one
+        os.environ["RECAP_MT5_LOGINS"] = "097"
+        self.assertEqual(self.logins(), ["097"])
+
+    def test_with_no_account_selected_nothing_is_ever_posted(self):
+        mk_trade(self.a, login="981", demo=True)
+        self.assertEqual(recap.included_logins(), set())
+        self.assertEqual(recap.trades_for_day("2026-11-02"), [])
+        fake = FakeTelegram()
+        plug(fake)
+        with self.assertRaises(recap.NoAccount):
+            asyncio.run(recap.post_day("2026-11-02", epoch(2026, 11, 2, 21)))
+        self.assertEqual(asyncio.run(recap.tick(epoch(2026, 11, 2, 21, 30))), [])
+        self.assertEqual(fake.requests, [])
+        with closing(recap.db()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) AS n FROM recap_log").fetchone()["n"], 0)
+
+    def test_overview_lists_each_account_with_a_masked_login(self):
+        mk_trade(self.a, login="1234097", demo=False)
+        mk_trade(self.a, login="7654981", demo=True)
+        ov = {o["login"]: o for o in recap.account_overview("2026-11-02")}
+        self.assertEqual((ov["\u2026097"]["included"], ov["\u2026097"]["live"], ov["\u2026097"]["trades"]), (True, True, 1))
+        self.assertEqual((ov["\u2026981"]["included"], ov["\u2026981"]["live"], ov["\u2026981"]["trades"]), (False, False, 1))
+        self.assertNotIn("1234097", json.dumps(ov))
 
 
 class JournalKeepsTheReason(unittest.TestCase):
@@ -415,6 +499,29 @@ class AdminApi(unittest.TestCase):
         self.assertNotIn("SECRET-TOKEN", r.text)
         self.assertNotIn("123456", r.text)
         self.assertEqual(self.fake.requests, [])                # looking never posts
+
+    def test_the_view_lists_accounts_and_a_demo_one_is_not_included(self):
+        mk_trade(self.aid, login="9999981", demo=True, closed=utc(2026, 11, 2, 9))
+        d = self.a.get("/api/admin/recap").json()
+        self.assertEqual(d["count"], 1)
+        acc = {x["login"]: x for x in d["accounts"]}
+        self.assertTrue(acc["\u2026001"]["included"])
+        self.assertFalse(acc["\u2026981"]["included"])
+        self.assertNotIn("9999981", self.a.get("/api/admin/recap").text)
+
+    def test_post_now_refuses_when_no_live_account_is_selected(self):
+        with closing(ea.db()) as con:
+            con.execute("UPDATE ea_acct_state SET state='{\"account\": {\"login\": \"1001\", \"demo\": true}}'")
+            con.commit()
+        try:
+            r = self.a.post("/api/admin/recap/send", json={})
+            self.assertEqual(r.status_code, 409)
+            self.assertIn("RECAP_MT5_LOGINS", r.json()["detail"])
+            self.assertEqual(self.fake.requests, [])
+        finally:
+            with closing(ea.db()) as con:
+                con.execute("UPDATE ea_acct_state SET state='{\"account\": {\"login\": \"1001\", \"demo\": false}}'")
+                con.commit()
 
     def test_post_now_posts_once_and_a_repeat_needs_confirming(self):
         r = self.a.post("/api/admin/recap/send", json={})
