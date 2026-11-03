@@ -175,6 +175,19 @@ class Messages(unittest.TestCase):
         for money in ("500", "250", "$"):
             self.assertNotIn(money, text)
 
+    def test_every_line_starts_with_the_emoji_of_its_result_however_it_closed(self):
+        base = dict(instrument="v25", direction="BUY", entry=100.0, stop=None, target=None, r_multiple=None)
+        cases = [(dict(reason="tp", exit_price=110.0, pnl=10.0), "✅"), (dict(reason="sl", exit_price=95.0, pnl=-5.0), "❌"),
+                 (dict(reason="sl", exit_price=103.0, pnl=3.0), "✅"),            # trailing stop in profit
+                 (dict(reason="so", exit_price=90.0, pnl=-9.0), "❌"),
+                 (dict(reason="manual", exit_price=102.0, pnl=2.0), "✅"), (dict(reason="manual", exit_price=98.0, pnl=-2.0), "❌"),
+                 (dict(reason=None, exit_price=102.0, pnl=2.0), "✅"), (dict(reason=None, exit_price=98.0, pnl=-2.0), "❌"),
+                 (dict(reason="sl", exit_price=100.0, pnl=0.0), "➖"), (dict(reason=None, exit_price=100.0, pnl=0.0), "➖")]
+        for extra, emoji in cases:
+            line = recap.build("2026-11-02", [dict(base, **extra)]).splitlines()[3]
+            self.assertTrue(line.startswith("1. Volatility 25 · Buy · " + emoji + " "), (extra, line))
+            self.assertEqual(sum(line.count(e) for e in "✅❌➖"), 1, line)       # one emoji per line, none left inside a label
+
     def test_net_result_is_left_out_when_any_r_is_unreliable(self):
         trades = [dict(instrument="v25", direction="BUY", entry=100.0, exit_price=110.0, stop=95.0, target=110.0, pnl=5.0, r_multiple=2.0, reason="tp"),
                   dict(instrument="v25", direction="BUY", entry=100.0, exit_price=101.0, stop=None, target=None, pnl=1.0, r_multiple=None, reason=None)]

@@ -5,7 +5,8 @@ What it covers: the trades the Companion EA imported into the journal for the ad
 RECAP_USER_IDS). A trade counts on the day (in RECAP_TZ_OFFSET time, default Lagos UTC+1) it CLOSED. Open positions are not in the journal,
 so they are not listed.
 
-Each line: instrument, Buy/Sell, how it ended, and the result in R when it is reliable. Money is never shown (same rule as the EA's posts).
+Each line: instrument, Buy/Sell, an emoji for the RESULT (green tick profit, red cross loss, minus breakeven: the same whatever way the trade
+closed, so the day can be read at a glance), how it ended, and the result in R when it is reliable. Money is never shown (same rule as the EA's posts).
   Take profit / Stop loss / Trailing stop in profit / Breakeven / Closed manually / Stopped out by the broker / Closed in profit or at a loss.
   The reason comes from MT5 through the EA and is kept on the trade from now on (journal.trades.reason). Older trades have none: they are
   judged from their stop and target when those were saved, otherwise they are only called "closed in profit" or "closed at a loss",
@@ -176,12 +177,15 @@ def _sign(t: dict, code: str) -> int:
     return (v > 0) - (v < 0)
 
 
+EMOJI = {1: "✅", -1: "❌", 0: "➖"}      # profit / loss / breakeven or flat: every line starts with its RESULT, however the trade closed
+
+
 def describe(t: dict) -> dict:
     code = outcome(t)
     sign = _sign(t, code)
-    label = {"tp": "✅ Take profit", "sl": "❌ Stop loss", "trail": "\U0001F512 Trailing stop, in profit",
-             "be": "➖ Breakeven", "so": "⚠️ Stopped out by the broker",
-             "manual": "✋ Closed manually", "closed": "Closed " + ("in profit" if sign > 0 else "at a loss" if sign < 0 else "flat")}[code]
+    label = {"tp": "Take profit", "sl": "Stop loss", "trail": "Trailing stop, in profit", "be": "Breakeven",
+             "so": "Stopped out by the broker", "manual": "Closed manually",
+             "closed": "Closed " + ("in profit" if sign > 0 else "at a loss" if sign < 0 else "flat")}[code]
     if code == "manual":
         label += " in profit" if sign > 0 else " at a loss" if sign < 0 else ""
     r = _num(t.get("r_multiple"))
@@ -189,7 +193,7 @@ def describe(t: dict) -> dict:
     key = t.get("instrument")
     name = INSTRUMENTS[key][1] if key in INSTRUMENTS else str(key or "Trade")
     return {"name": name, "side": "Buy" if t.get("direction") == "BUY" else "Sell", "code": code, "sign": sign,
-            "label": label, "r": r if reliable else None, "reliable": reliable or code == "be"}
+            "emoji": EMOJI[sign], "label": label, "r": r if reliable else None, "reliable": reliable or code == "be"}
 
 
 # ---------------------------------------------------------------- the day's message
@@ -238,7 +242,7 @@ def build(day: str, trades: list) -> str:
     pretty = datetime.strptime(day, "%Y-%m-%d").strftime("%a %d %b %Y")
     out = [f"\U0001F4CA TradeLens Daily Recap\n{pretty}", ""]
     for i, d in enumerate(rows[:MAX_ROWS], 1):
-        out.append(f"{i}. {d['name']} · {d['side']} · {d['label']}" + (f" {d['r']:+.1f}R" if d["r"] is not None else ""))
+        out.append(f"{i}. {d['name']} · {d['side']} · {d['emoji']} {d['label']}" +(f" {d['r']:+.1f}R" if d["r"] is not None else ""))
     if len(rows) > MAX_ROWS:
         out.append(f"...and {len(rows) - MAX_ROWS} more")
     if rows:
