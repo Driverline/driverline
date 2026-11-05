@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Rewards</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+<style>
+.big{font-size:34px;font-weight:800;line-height:1.1}
+.lvl{display:inline-block;background:var(--gold);color:#02122c;border-radius:99px;font-weight:800;padding:3px 12px;margin-left:8px;font-size:14px;vertical-align:middle}
+.bar{height:10px;border-radius:99px;background:#06122f;border:1px solid var(--line);margin:10px 0 4px;overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--gold)}
+.row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.row:first-of-type{border-top:0}
+.row b{font-weight:600}
+.row span{color:var(--mut);text-align:right}
+.me{color:var(--gold)}
+.link{background:#030918;border:1px solid var(--line);border-radius:10px;padding:10px;overflow-wrap:anywhere;margin:8px 0;font-size:14px}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btns button,.btns a{width:auto;padding:9px 14px;text-decoration:none;text-align:center}
+.seg button{width:auto;padding:6px 14px;margin-right:6px;background:transparent;border:1px solid var(--line);color:var(--tx);box-shadow:none}
+.seg button.on{border-color:var(--gold);color:var(--gold)}
+</style>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main>
+<div class="mut" id="me"></div>
+<div id="off" class="card" hidden><h2>Rewards</h2><div class="mut">Rewards are not open yet. Check back soon.</div></div>
+<div id="app" hidden>
+  <div class="card"><div class="mut">Your level</div>
+    <div><span class="big" id="lv"></span><span class="lvl" id="lvbadge"></span></div>
+    <div class="bar"><i id="barfill" style="width:0"></i></div>
+    <div class="mut" id="lvnote"></div>
+    <div class="row"><b>Lifetime points</b><span id="life"></span></div>
+    <div class="row"><b>Points to spend on prizes</b><span id="spend"></span></div>
+  </div>
+
+  <div class="card"><h2>Invite friends</h2>
+    <div class="mut">Share your link. When a friend joins through it and links their Deriv account, you earn points. Prizes and more rewards are coming.</div>
+    <div class="link" id="link"></div>
+    <div class="btns"><button id="copy">Copy link</button><button id="share" class="ghost" hidden>Share</button><a id="wa" class="ghost" target="_blank" rel="noopener">WhatsApp</a></div>
+    <div class="mut" id="copied" style="margin-top:6px"></div>
+    <div class="row"><b>Friends joined</b><span id="rtotal"></span></div>
+    <div class="row"><b>Linked their Deriv account</b><span id="rq"></span></div>
+    <div id="rlist"></div>
+  </div>
+
+  <div class="card"><h2>Leaderboard</h2>
+    <div class="seg"><button id="tmonth" class="on">This month</button><button id="tall">All time</button></div>
+    <div id="board" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card"><h2>How to earn points</h2><div id="rules"></div>
+    <div class="mut" style="margin-top:8px">Levels: <span id="levels"></span></div></div>
+
+  <div class="card"><h2>Recent points</h2><div id="recent"></div></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+const when=t=>new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short'});
+const num=n=>Number(n||0).toLocaleString();
+let D=null,period='month';
+function row(a,b,cls){const r=el('div','row');r.append(el('b',cls||'',a),el('span','',b));return r}
+function drawBoard(){
+  const box=$('board');box.textContent='';const B=D[period];
+  if(!B.top.length)box.append(el('div','mut','No points yet this period. Be the first.'));
+  B.top.forEach(x=>box.append(row('#'+x.rank+'  '+x.name+(x.me?' (you)':''),num(x.points)+' pts',x.me?'me':'')));
+  box.append(el('div','mut',B.my_rank?('Your rank: #'+B.my_rank+' with '+num(B.my_points)+' points'):'Earn points to get on the board'));
+  $('tmonth').className=period==='month'?'on':'';$('tall').className=period==='all'?'on':'';
+}
+async function load(){
+  const r=await fetch('/api/rewards');if(!r.ok){$('off').hidden=false;return}
+  D=await r.json();if(!D.enabled){$('off').hidden=false;return}
+  $('app').hidden=false;
+  $('lv').textContent=num(D.points.lifetime)+' pts';$('lvbadge').textContent=D.level.name;
+  $('barfill').style.width=D.level.percent+'%';
+  $('lvnote').textContent=D.level.next?(num(D.level.next_at-D.points.lifetime)+' points to '+D.level.next):'Top level reached';
+  $('life').textContent=num(D.points.lifetime);$('spend').textContent=num(D.points.spendable);
+  $('link').textContent=D.link;$('rtotal').textContent=D.referrals.total;$('rq').textContent=D.referrals.qualified;
+  const msg='Join me on TradeLens, the AI trading analysis app for Deriv traders: '+D.link;
+  $('wa').href='https://wa.me/?text='+encodeURIComponent(msg);
+  if(navigator.share){$('share').hidden=false;$('share').onclick=()=>navigator.share({title:'TradeLens',text:'Join me on TradeLens',url:D.link}).catch(()=>{})}
+  $('copy').onclick=async()=>{try{await navigator.clipboard.writeText(D.link);$('copied').textContent='Link copied'}catch(e){$('copied').textContent='Press and hold the link to copy it'}};
+  const rl=$('rlist');rl.textContent='';
+  D.referrals.list.forEach(x=>rl.append(row(x.name+' · '+when(x.at),x.status==='qualified'?'Deriv linked':'Joined')));
+  const ru=$('rules');ru.textContent='';D.rules.forEach(x=>ru.append(row(x.what,x.points)));
+  $('levels').textContent=D.levels.map(l=>l.name+' '+num(l.at)).join(' · ');
+  const rc=$('recent');rc.textContent='';
+  if(!D.recent.length)rc.append(el('div','mut','Open the app each day, run analyses and trade to start earning.'));
+  D.recent.forEach(x=>rc.append(row(x.note||x.kind,(x.delta>0?'+':'')+x.delta+' · '+when(x.created_at))));
+  drawBoard();
+}
+$('tmonth').onclick=()=>{period='month';drawBoard()};$('tall').onclick=()=>{period='all';drawBoard()};
+load().catch(()=>{$('off').hidden=false});
+</script>
+</body>
+</html>

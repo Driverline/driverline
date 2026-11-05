@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, pending_orders, tg_bot, copy_trading, copy_plan, mt5_requests, inbox, recap
+from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, rewards, pending_orders, tg_bot, copy_trading, copy_plan, mt5_requests, inbox, recap
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -191,6 +191,7 @@ routes = [
     *mt5_requests.routes,
     *inbox.routes,
     *recap.routes,
+    *rewards.routes,
     Mount("/", app=StaticFiles(directory=str(STATIC_DIR), html=True), name="static"),
 ]
 

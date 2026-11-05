@@ -42,6 +42,7 @@ function render(d){
   const pt=el('div','card');pt.append(el('h2','','Partner tags: who is really tagged to you'));const ptb=el('div');pt.append(ptb);root.append(pt);loadPartner(ptb);
   const pk=el('div','card');pk.append(el('h2','','Partner perks and founding members'));const pkb=el('div');pk.append(pkb);root.append(pk);loadPerks(pkb);
   const rc=el('div','card');rc.append(el('h2','','Daily Telegram recap'));const rcb=el('div');rc.append(rcb);root.append(rc);loadRecap(rcb);
+  const rw=el('div','card');rw.append(el('h2','','Rewards: referrals and points'));const rwb=el('div');rw.append(rwb);root.append(rw);loadRewards(rwb);
   const ch=el('div','card');ch.append(el('h2','','AI help chat'));const chb=el('div');ch.append(chb);root.append(ch);loadChatAdmin(chb);
 
   const inv=el('div','card');inv.append(el('h2','','Invite codes'));
@@ -206,6 +207,28 @@ async function loadRecap(box){
     catch(e){if(/already posted/.test(e.message)){if(confirm('Today\'s recap was already posted. Post it again?')){try{await api('/recap/send','POST',{again:true});alert('Posted again.');loadRecap(box);return}catch(x){alert(x.message)}}}else alert(e.message);b.disabled=false}};
   box.append(b);
   d.log.forEach(r=>box.append(kv(r.day,r.status+(r.status==='sent'?' ('+r.trades+' trades)':r.error?': '+r.error:''),r.status==='sent'?'win':'mut')));
+}
+async function loadRewards(box){
+  box.textContent='';
+  let d;try{d=await api('/rewards')}catch(e){box.append(el('div','err',e.message));return}
+  box.append(el('div','mut','Members earn points for activity and referrals, and levels follow lifetime points. Points count only from the day it was switched on.'));
+  box.append(kv('Status',d.enabled?'ON':'off (set REWARDS_ON=1 in Render)',d.enabled?'win':'mut'));
+  if(!d.enabled)return;
+  box.append(kv('Started',new Date(d.started*1000).toLocaleDateString()),kv('Members with points',d.totals.members_with_points),
+    kv('Points issued (lifetime)',d.totals.lifetime_issued),kv('Points held to spend',d.totals.spendable_held),
+    kv('Referrals',d.referrals.qualified+' linked Deriv, '+d.referrals.pending+' joined only'));
+  if(d.top_referrers.length){box.append(el('div','mut','Top referrers (linked Deriv):'));d.top_referrers.forEach(x=>box.append(kv(x.email,x.qualified)))}
+  const em=el('input');em.placeholder='Member email';em.type='email';
+  const pt=el('input');pt.placeholder='Points (use - to remove)';pt.inputMode='numeric';
+  const rs=el('input');rs.placeholder='Reason (kept in the ledger)';
+  const b=el('button','ghost','Adjust points');b.style.cssText='width:auto;padding:8px 14px;margin-top:8px';
+  const note=el('div','mut');
+  b.onclick=async()=>{note.className='mut';note.textContent='';
+    try{const r=await api('/rewards/adjust','POST',{email:em.value,points:pt.value,reason:rs.value});
+      note.className='win';note.textContent='Done. Lifetime '+r.points.lifetime+', spendable '+r.points.spendable;loadRewards(box)}
+    catch(e){note.className='err';note.textContent=e.message}};
+  box.append(el('div','mut','Manual adjustment:'),em,pt,rs,b,note);
+  if(d.recent.length){box.append(el('div','mut','Latest points:'));d.recent.slice(0,10).forEach(x=>box.append(kv(x.email,(x.delta>0?'+':'')+x.delta+' '+(x.note||x.kind))))}
 }
 async function loadChatAdmin(box){
   box.textContent='';

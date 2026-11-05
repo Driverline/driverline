@@ -11,6 +11,7 @@
     try{const r=await fetch('/api/auth/me');if(!r.ok)return;const u=await r.json();
       if(e)e.textContent=u.email+' · '+u.tier+' · AI analyses today '+u.used+'/'+u.limit;
       if(u.tier==='admin')adminTab();
+      if(u.rewards)rewardsTab();
       window.dlBadge()}catch(x){}
   };
   // Unread counters on the Messages tabs: the member's own (announcements + replies) and, for an admin, members' unread messages.
@@ -34,6 +35,12 @@
     [['Analysis','/'],['Signals','/signals.html'],['Risk','/risk.html'],['Journal','/journal.html'],['MT5','/mt5.html'],['Billing','/billing.html'],['Messages','/inbox.html']].forEach(([t,u])=>{
       const a=document.createElement('a');a.href=u;a.textContent=t;if(u===here)a.className='on';n.append(a)});
     h.after(n);
+  }
+  function rewardsTab(){
+    const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-rewards]'))return;
+    const a=document.createElement('a');a.href='/rewards.html';a.textContent='Rewards';a.dataset.rewards='1';
+    if(location.pathname==='/rewards.html')a.className='on';
+    const m=n.querySelector('a[href="/inbox.html"]');if(m)m.after(a);else n.append(a);
   }
   function adminTab(){
     const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-admin]'))return;

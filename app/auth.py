@@ -228,6 +228,11 @@ async def signup(request):
         track.record_signup(uid, request)
     except Exception as e:
         print(f"[track] could not record attribution: {type(e).__name__}", flush=True)
+    try:                                       # who invited this member (rewards.py); only when REWARDS_ON=1
+        from . import rewards
+        rewards.on_signup(uid, request)
+    except Exception as e:
+        print(f"[rewards] could not record referral: {type(e).__name__}", flush=True)
     return _session(JSONResponse({"ok": True}), uid, ph)
 
 
@@ -265,7 +270,15 @@ async def logout(request):
 async def me(request):
     u = require_user(request)
     used, limit = quota(u)
-    return JSONResponse({"email": u["email"], "tier": u["tier"], "used": used, "limit": limit})
+    on = False
+    try:                                       # daily visit and points, in the background (rewards.py); only when REWARDS_ON=1
+        from . import rewards
+        on = rewards.enabled()
+        if on:
+            rewards.touch_soon(u["id"])
+    except Exception as e:
+        print(f"[rewards] {type(e).__name__}", flush=True)
+    return JSONResponse({"email": u["email"], "tier": u["tier"], "used": used, "limit": limit, "rewards": on})
 
 
 RESET_TTL = 3600
