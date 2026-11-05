@@ -51,6 +51,14 @@
     <div id="rlist"></div>
   </div>
 
+  <div class="card" id="bonus" hidden><h2>Your referral rewards</h2>
+    <div class="mut" id="bnote"></div>
+    <div class="row"><b>Friends who bought MT5 or Copy Trading</b><span id="bbuy"></span></div>
+    <div class="row"><b>Free connections earned</b><span id="bfree"></span></div>
+    <div class="row"><b>Free connection active until</b><span id="buntil"></span></div>
+    <div class="row"><b>Free signals earned</b><span id="bsig"></span></div>
+  </div>
+
   <div class="card"><h2>Leaderboard</h2>
     <div class="seg"><button id="tmonth" class="on">This month</button><button id="tall">All time</button></div>
     <div id="board" style="margin-top:8px"></div>
@@ -96,6 +104,12 @@ async function load(){
   const rc=$('recent');rc.textContent='';
   if(!D.recent.length)rc.append(el('div','mut','Open the app each day, run analyses and trade to start earning.'));
   D.recent.forEach(x=>rc.append(row(x.note||x.kind,(x.delta>0?'+':'')+x.delta+' · '+when(x.created_at))));
+  const B=D.bonus;
+  if(B&&B.on){$('bonus').hidden=false;
+    $('bnote').textContent='Every '+B.every+' friends who buy an MT5 or Copy Trading plan earn you a free '+B.days+'-day MT5 connection, which you can use for signals or Copy Trading. When a friend buys a Signal Vault or Signal Vault Lite you also get '+B.signal_percent+'% of its signals. '+B.next_in+' more friend'+(B.next_in===1?'':'s')+' to your next free connection.';
+    $('bbuy').textContent=B.buyers;$('bfree').textContent=B.free_earned;
+    $('buntil').textContent=B.free_until?new Date(B.free_until*1000).toLocaleDateString():'none active';
+    $('bsig').textContent=num(B.signals_earned)}
   drawBoard();
 }
 $('tmonth').onclick=()=>{period='month';drawBoard()};$('tall').onclick=()=>{period='all';drawBoard()};

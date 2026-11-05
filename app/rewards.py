@@ -8,6 +8,10 @@
     trade and login flows are never touched or slowed. A sweep runs when a member opens the app (at most every 10 minutes), and when
     a referrer opens the Rewards page. Only activity from the day Rewards was switched on counts (rewards_meta.start).
   * Level = LIFETIME points (never goes down). Spendable points are kept apart for prizes (Phase 3), so redeeming never lowers a level.
+  * Phase 2 (bonus rewards) only runs when ALSO REWARDS_BONUS_ON=1, so points can go live before anything of value is given away:
+      - free signals: 5% of the signals of a Signal Vault / Vault Lite a qualified referral buys (credited through the credits ledger)
+      - a free 30-day MT5 connection (+ notifications + copy trading) for every 3 DIFFERENT qualified referrals who bought a plan
+        that includes MT5 or Copy trading. Both are granted when the purchase is confirmed (no hold: the terms say no refunds).
   * Everything is OFF unless REWARDS_ON=1. Tables are new and additive (migrations/2026_11_rewards.sql); nothing existing changes.
 Days are UTC days. Failures inside a sweep are logged by type only and never reach the member."""
 import asyncio
@@ -48,6 +52,11 @@ REF_PER_USD = 2            # referrer's points per USD of a referral's later pur
 ANALYSIS_DAILY_CAP = 5
 TRADE_DAILY_CAP = 5
 MT5_ACCOUNT_CAP = 2
+SIGNAL_SHARE = 0.05        # of the signals in a Signal Vault / Vault Lite bought by a qualified referral
+SIGNAL_PRODUCTS = ("vault", "vaultlite")
+FREE_EVERY = 3             # one free connection per this many different referrals who bought an MT5 / Copy trading plan
+FREE_DAYS = 30
+BAD_PAYMENT = ("refunded", "failed", "partially_paid")
 THROTTLE = 600             # seconds between automatic sweeps of one member
 RULES = [
     {"what": "Open the app each day", "points": "2 (+10 at a 7-day streak, +50 at 30 days)"},
@@ -69,6 +78,11 @@ _last: dict = {}
 
 def enabled() -> bool:
     return os.environ.get("REWARDS_ON", "").strip() == "1"
+
+
+def bonus_enabled() -> bool:
+    """Phase 2: real rewards (signals, free connections). Needs REWARDS_ON=1 too."""
+    return enabled() and os.environ.get("REWARDS_BONUS_ON", "").strip() == "1"
 
 
 def db():
@@ -336,6 +350,82 @@ def sweep_user(uid: int):
     _guard("trades", _trades, uid, st)
     _guard("orders", _orders, uid, st)
     _guard("mt5", _mt5_and_copy, uid)
+    _guard("bonus", _bonus_for_referrer_of, uid)
+
+
+# ------------------------------------------------------------------ Phase 2: signals and free connections for the referrer
+def _qualifying_orders(referrer: int, st: int) -> list:
+    """Approved, still-paid orders of the referrer's QUALIFIED referrals, oldest first."""
+    from . import credits
+    with closing(db()) as con:
+        ids = [r["referred_id"] for r in con.execute("SELECT referred_id FROM referrals WHERE referrer_id=? AND status='qualified'", (referrer,)).fetchall()]
+    if not ids:
+        return []
+    with closing(credits.db()) as c:
+        rows = c.execute(f"SELECT id, user_id, product, provider_status, COALESCE(fulfilled_at, decided_at, created_at) AS t FROM billing_orders "
+                         f"WHERE status='approved' AND user_id IN ({','.join('?' * len(ids))}) "
+                         f"ORDER BY COALESCE(fulfilled_at, decided_at, created_at), id", ids).fetchall()
+    return [r for r in rows if int(r["t"] or 0) >= st and r["provider_status"] not in BAD_PAYMENT]
+
+
+def _grant_free_mt5(uid: int, k: int, now: int) -> int:
+    """Reward number k: 30 days of MT5 connection + notifications (a billing_subs row marked with order_id -k, so repeating is harmless),
+    and copy trading for the same days (copy_subs never shortened). Returns when it ends."""
+    from . import credits, ea
+    with closing(credits.db()) as c:
+        row = c.execute("SELECT ends_at FROM billing_subs WHERE user_id=? AND plan='ref_mt5' AND order_id=?", (uid, -k)).fetchone()
+        if row:
+            ends = int(row["ends_at"])
+        else:
+            last = c.execute("SELECT MAX(ends_at) AS e FROM billing_subs WHERE user_id=? AND plan='ref_mt5' AND ends_at>?", (uid, now)).fetchone()["e"]
+            begin = max(now, int(last or 0))
+            ends = begin + FREE_DAYS * 86400
+            c.execute("INSERT INTO billing_subs(user_id,plan,starts_at,ends_at,order_id) VALUES(?,?,?,?,?)", (uid, "ref_mt5", begin, ends, -k))
+            c.commit()
+    with closing(ea.db()) as e:
+        e.execute("INSERT INTO copy_subs(user_id,ends_at,note,admin_id,updated_at) VALUES(?,?,?,NULL,?) ON CONFLICT(user_id) DO UPDATE SET "
+                  "ends_at=CASE WHEN copy_subs.ends_at>excluded.ends_at THEN copy_subs.ends_at ELSE excluded.ends_at END, updated_at=excluded.updated_at",
+                  (uid, ends, "Referral reward", now))
+        e.commit()
+    return ends
+
+
+def sweep_referrer(referrer: int):
+    """Free signals and free connections the referrer has earned from their referrals' purchases. Safe to repeat."""
+    if not bonus_enabled():
+        return
+    from . import credits
+    now, orders = _now(), _qualifying_orders(referrer, start())
+    with closing(credits.db()) as c:
+        for o in orders:
+            if o["product"] in SIGNAL_PRODUCTS and o["product"] in credits.CATALOG:
+                n = int(round(credits.CATALOG[o["product"]]["signals"] * SIGNAL_SHARE))
+                if n > 0 and credits._credit(c, referrer, n, "ref_signals", f"order:{o['id']}",
+                                             f"Referral reward: {int(SIGNAL_SHARE * 100)}% of a {credits.CATALOG[o['product']]['label']}"):
+                    c.commit()
+    buyers = {o["user_id"] for o in orders if (credits.CATALOG.get(o["product"]) or {}).get("mt5") or (credits.CATALOG.get(o["product"]) or {}).get("copy")}
+    for k in range(1, len(buyers) // FREE_EVERY + 1):
+        _grant_free_mt5(referrer, k, now)
+
+
+def _bonus_for_referrer_of(uid: int):
+    with closing(db()) as con:
+        r = con.execute("SELECT referrer_id FROM referrals WHERE referred_id=? AND status='qualified'", (uid,)).fetchone()
+    if r:
+        sweep_referrer(r["referrer_id"])
+
+
+def bonus_view(uid: int) -> dict:
+    from . import credits
+    now = _now()
+    orders = _qualifying_orders(uid, start()) if bonus_enabled() else []
+    buyers = {o["user_id"] for o in orders if (credits.CATALOG.get(o["product"]) or {}).get("mt5") or (credits.CATALOG.get(o["product"]) or {}).get("copy")}
+    with closing(credits.db()) as c:
+        ends = c.execute("SELECT MAX(ends_at) AS e FROM billing_subs WHERE user_id=? AND plan='ref_mt5' AND ends_at>?", (uid, now)).fetchone()["e"]
+        sig = c.execute("SELECT COALESCE(SUM(delta),0) AS s FROM credit_ledger WHERE user_id=? AND kind='ref_signals'", (uid,)).fetchone()["s"]
+    return {"on": bonus_enabled(), "buyers": len(buyers), "free_earned": len(buyers) // FREE_EVERY, "next_in": FREE_EVERY - len(buyers) % FREE_EVERY,
+            "every": FREE_EVERY, "days": FREE_DAYS, "free_until": int(ends) if ends else None, "signals_earned": int(sig or 0),
+            "signal_percent": int(SIGNAL_SHARE * 100)}
 
 
 def _streak(con, uid: int, today: str):
@@ -388,6 +478,7 @@ def sweep_referred(referrer: int):
         ids = [r["referred_id"] for r in con.execute("SELECT referred_id FROM referrals WHERE referrer_id=? ORDER BY created_at DESC LIMIT 200", (referrer,)).fetchall()]
     for rid in ids:
         sweep_user(rid)
+    sweep_referrer(referrer)
 
 
 # ------------------------------------------------------------------ boards and member view
@@ -420,7 +511,7 @@ def member_view(uid: int, base: str) -> dict:
             "levels": [{"name": n, "at": a} for n, a in LEVELS], "rules": RULES,
             "referrals": {"total": len(refs), "qualified": sum(1 for r in refs if r["status"] == "qualified"),
                           "list": [{"name": mask(emails.get(r["referred_id"])), "status": r["status"], "at": r["created_at"]} for r in refs]},
-            "recent": recent, "month": _board("month", uid), "all": _board("all", uid)}
+            "recent": recent, "month": _board("month", uid), "all": _board("all", uid), "bonus": bonus_view(uid)}
 
 
 def _base(request) -> str:

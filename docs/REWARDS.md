@@ -1,4 +1,4 @@
-# Referrals, points and levels (Phase 1)
+# Referrals, points and levels (Phase 1) and referral rewards (Phase 2)
 
 Switched OFF until `REWARDS_ON=1` is set in Render. Nothing existing changes: new tables only (`migrations/2026_11_rewards.sql`, the app also creates them itself).
 
@@ -30,5 +30,12 @@ Admin > Rewards: status, totals, top referrers, latest points, manual adjustment
 ## Switch on / off / roll back
 Render > Environment: `REWARDS_ON=1` to start, remove or `0` to stop (points and links stay stored). Rollback of the code is a Git revert; the tables can stay (they are empty if unused).
 
-## Not in Phase 1
-Free signals and free Copy/MT5 for referrals (Phase 2); commission import and payout, and the prize catalogue (Phase 3).
+## Phase 2: free signals and free connections (needs `REWARDS_ON=1` AND `REWARDS_BONUS_ON=1`)
+Only the referrer's QUALIFIED referrals count (Deriv account linked). Granted as soon as the purchase is confirmed: no hold, because the terms say there are no refunds.
+- **Free signals:** 5% of the signals of a Signal Vault (5,500 gives 275) or Signal Vault Lite (2,500 gives 125) a referral buys, credited to the referrer's signal balance through the credits ledger (kind `ref_signals`, one per order, so repeating never pays twice).
+- **Free connection:** for every 3 DIFFERENT referrals who bought a plan that includes MT5 or Copy trading (Signals Pro, Copy Trading, Signal Vault Lite, Signal Vault), the referrer gets 30 days of MT5 connection + notifications (plan `ref_mt5` in `billing_subs`, marked with `order_id = -k` so each reward is created once) and Copy trading for the same days (`copy_subs`, never shortened if a longer grant exists). Rewards stack back to back. Signals and Copy trading can both be used: the member simply turns Copy trading on or off.
+- Orders marked refunded, failed or partially paid do not count. A reward already given is not taken back (use Admin > Rewards > adjust, or the Copy trading grant screen, if a correction is needed).
+- Shown to members in Rewards > "Your referral rewards".
+
+## Not built yet
+Phase 3: monthly commission import and manual payout, and the prize catalogue.

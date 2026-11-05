@@ -90,7 +90,7 @@ def mk_trade(uid, login, n, closed=None):
         con.commit()
 
 
-def mk_order(uid, usd, status="approved", provider_status=None, product="vault"):
+def mk_order(uid, usd, status="approved", provider_status=None, product="vault"):  # noqa
     with closing(credits.db()) as con:
         oid = con.insert("INSERT INTO billing_orders(user_id,product,method,amount_usd,currency,ref,status,created_at,provider_status) VALUES(?,?,?,?,?,?,?,?,?)",
                          (uid, product, "manual", usd, "USD", f"ref{time.time_ns()}", status, int(time.time()), provider_status))
@@ -354,6 +354,147 @@ class Api(Base):
         self.assertEqual(self.ca.post("/api/admin/rewards/adjust", json={"email": email, "points": -999999, "reason": "too big"}).status_code, 422)
         self.assertEqual(self.ca.post("/api/admin/rewards/adjust", json={"email": email, "points": -100000, "reason": "too much"}).status_code, 409)
         self.assertEqual(self.ca.get("/api/admin/rewards").status_code, 200)
+
+
+class Bonus(Base):
+    """Phase 2: free signals and free MT5 + Copy trading for the referrer. Needs REWARDS_BONUS_ON=1 as well."""
+    def setUp(self):
+        super().setUp()
+        os.environ["REWARDS_BONUS_ON"] = "1"
+        self.a = mk_user()
+
+    def tearDown(self):
+        os.environ.pop("REWARDS_BONUS_ON", None)
+
+    def friend(self, qualified=True):
+        f = mk_user()
+        refer(self.a, f)
+        if qualified:
+            link_deriv(f, f"CR{f}")
+            rewards.sweep_user(f)
+        return f
+
+    def signals(self, uid=None):
+        with closing(credits.db()) as con:
+            r = con.execute("SELECT COALESCE(SUM(delta),0) AS s FROM credit_ledger WHERE user_id=? AND kind='ref_signals'", (uid or self.a,)).fetchone()
+        return r["s"]
+
+    def buy(self, f, product):
+        mk_order(f, credits.CATALOG[product]["usd"], product=product)
+        rewards.sweep_user(f)
+
+    def free_rows(self):
+        with closing(credits.db()) as con:
+            return [dict(r) for r in con.execute("SELECT * FROM billing_subs WHERE user_id=? AND plan='ref_mt5' ORDER BY id", (self.a,)).fetchall()]
+
+    def copy_end(self):
+        with closing(ea.db()) as con:
+            r = con.execute("SELECT ends_at FROM copy_subs WHERE user_id=?", (self.a,)).fetchone()
+        return r["ends_at"] if r else 0
+
+    def test_off_by_default_even_with_rewards_on(self):
+        os.environ.pop("REWARDS_BONUS_ON")
+        f = self.friend()
+        self.buy(f, "vault")
+        self.assertEqual((self.signals(), self.free_rows()), (0, []))
+
+    def test_five_percent_of_the_signals_of_a_vault_or_vault_lite(self):
+        f = self.friend()
+        self.buy(f, "vault")
+        self.buy(f, "vaultlite")
+        rewards.sweep_referrer(self.a)
+        rewards.sweep_referrer(self.a)
+        self.assertEqual(self.signals(), 275 + 125)
+        with closing(credits.db()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) AS n FROM credit_ledger WHERE user_id=? AND kind='ref_signals'", (self.a,)).fetchone()["n"], 2)
+
+    def test_other_plans_give_no_signals(self):
+        f = self.friend()
+        for p in ("pro", "copy", "plus", "topup", "boost"):
+            self.buy(f, p)
+        self.assertEqual(self.signals(), 0)
+
+    def test_a_friend_who_has_not_linked_deriv_earns_nothing(self):
+        f = self.friend(qualified=False)
+        self.buy(f, "vault")
+        self.assertEqual((self.signals(), self.free_rows()), (0, []))
+        link_deriv(f, "LATE1")                              # linking later counts what they already bought
+        rewards.sweep_user(f)
+        self.assertEqual(self.signals(), 275)
+
+    def test_a_refunded_or_unpaid_order_does_not_count(self):
+        f = self.friend()
+        mk_order(f, 100, product="vault", provider_status="refunded")
+        mk_order(f, 100, product="vault", status="pending")
+        rewards.sweep_user(f)
+        self.assertEqual(self.signals(), 0)
+
+    def test_every_third_buying_friend_earns_a_free_30_day_connection_with_copy_trading(self):
+        f1, f2, f3 = self.friend(), self.friend(), self.friend()
+        self.buy(f1, "copy")
+        self.buy(f2, "pro")
+        self.assertEqual(self.free_rows(), [])
+        self.buy(f3, "vaultlite")
+        rows = self.free_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ends_at"] - rows[0]["starts_at"], 30 * 86400)
+        self.assertEqual(self.copy_end(), rows[0]["ends_at"])
+        rewards.sweep_referrer(self.a)
+        rewards.sweep_referrer(self.a)
+        self.assertEqual(len(self.free_rows()), 1)           # repeating never gives another
+
+    def test_the_same_friend_buying_twice_counts_once_and_signal_plans_alone_do_not_count(self):
+        f1, f2, f3 = self.friend(), self.friend(), self.friend()
+        self.buy(f1, "copy")
+        self.buy(f1, "copy")
+        self.buy(f2, "copy")
+        self.buy(f3, "boost")
+        self.buy(f3, "plus")
+        self.assertEqual(self.free_rows(), [])
+
+    def test_six_friends_stack_two_rewards_back_to_back(self):
+        for _ in range(6):
+            self.buy(self.friend(), "copy")
+        rows = self.free_rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["starts_at"], rows[0]["ends_at"])
+        self.assertEqual(self.copy_end(), rows[1]["ends_at"])
+
+    def test_the_reward_gives_the_mt5_connection_and_never_shortens_a_longer_copy_grant(self):
+        long_end = int(time.time()) + 200 * 86400
+        with closing(ea.db()) as con:
+            con.execute("INSERT INTO copy_subs(user_id,ends_at,note,admin_id,updated_at) VALUES(?,?,?,?,?)", (self.a, long_end, "gift", None, 0))
+            con.commit()
+        for _ in range(3):
+            self.buy(self.friend(), "pro")
+        self.assertEqual(self.copy_end(), long_end)
+        os.environ["BILLING_ON"] = "1"
+        old = credits.billing_on
+        credits.billing_on = lambda: True
+        try:
+            u = {"id": self.a, "tier": "free"}
+            self.assertTrue(credits.entitled(u, "mt5"))
+            self.assertTrue(credits.entitled(u, "notify"))
+        finally:
+            credits.billing_on = old
+
+    def test_the_billing_page_still_loads_with_the_reward_plan_active(self):
+        for _ in range(3):
+            self.buy(self.friend(), "copy")
+        c = TestClient(main.app)
+        c.cookies.set(auth.COOKIE, auth.make_token(self.a, "h"))
+        r = c.get("/api/billing")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("ref_mt5", json.dumps(r.json()))
+
+    def test_the_rewards_page_shows_progress(self):
+        f1, f2 = self.friend(), self.friend()
+        self.buy(f1, "copy")
+        self.buy(f2, "vault")
+        c = TestClient(main.app)
+        c.cookies.set(auth.COOKIE, auth.make_token(self.a, "h"))
+        b = c.get("/api/rewards").json()["bonus"]
+        self.assertEqual((b["on"], b["buyers"], b["free_earned"], b["next_in"], b["signals_earned"]), (True, 2, 0, 1, 275))
 
 
 if __name__ == "__main__":

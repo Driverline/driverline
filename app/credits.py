@@ -67,6 +67,8 @@ CATALOG = {
 GRANTS = {
     "partner_notify": {"label": "Partner notifications (free)", "notify": True, "mt5": False},
     "founder_mt5": {"label": "Founding member: MT5 connection (free)", "notify": True, "mt5": True},
+    # Referral reward (rewards.py, Phase 2): 30 days of MT5 connection + notifications. Copy trading for the same days goes in through copy_subs.
+    "ref_mt5": {"label": "Referral reward: MT5 connection (free)", "notify": True, "mt5": True},
 }
 METHODS = {"trc20": "USDT (TRC20)", "bep20": "USDT (BEP20)"}
 LEGACY_LABELS = {"ngn": "Naira bank transfer (old form)"}   # only to label old orders; the manual flow no longer creates them
