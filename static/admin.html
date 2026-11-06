@@ -213,6 +213,7 @@ async function loadRewards(box){
   let d;try{d=await api('/rewards')}catch(e){box.append(el('div','err',e.message));return}
   box.append(el('div','mut','Members earn points for activity and referrals, and levels follow lifetime points. Points count only from the day it was switched on.'));
   box.append(kv('Status',d.enabled?'ON':'off (set REWARDS_ON=1 in Render)',d.enabled?'win':'mut'));
+  const lk=el('a','','Commission import, payouts and prizes');lk.href='/admin-rewards.html';lk.style.display='inline-block';lk.style.margin='6px 0';box.append(lk);
   if(!d.enabled)return;
   box.append(kv('Started',new Date(d.started*1000).toLocaleDateString()),kv('Members with points',d.totals.members_with_points),
     kv('Points issued (lifetime)',d.totals.lifetime_issued),kv('Points held to spend',d.totals.spendable_held),

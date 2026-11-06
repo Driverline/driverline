@@ -41,7 +41,15 @@ SCHEMA = """
     CREATE INDEX IF NOT EXISTS ix_points_day ON points_ledger(user_id, kind, day);
     CREATE TABLE IF NOT EXISTS points_balances(user_id INTEGER PRIMARY KEY, spendable INTEGER NOT NULL DEFAULT 0,
         lifetime INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS rewards_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"""
+    CREATE TABLE IF NOT EXISTS rewards_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS prizes(id {ID}, key TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT, points INTEGER NOT NULL,
+        cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0, stock INTEGER, active INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0,
+        created_at BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS redemptions(id {ID}, user_id INTEGER NOT NULL, prize_id INTEGER NOT NULL, prize_name TEXT NOT NULL,
+        points INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'requested', full_name TEXT, phone TEXT, address TEXT, note TEXT,
+        created_at BIGINT NOT NULL, decided_at BIGINT, admin_id INTEGER);
+    CREATE INDEX IF NOT EXISTS ix_redeem_user ON redemptions(user_id, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_redeem_open ON redemptions(user_id) WHERE status='requested'"""
 
 # ------------------------------------------------------------------ the rules (approved by the owner, Nov 2026)
 LEVELS = [("Bronze", 0), ("Silver", 1000), ("Gold", 5000), ("Diamond", 20000), ("Platinum", 60000)]
@@ -197,6 +205,15 @@ def on_signup(uid: int, request):
 
 
 # ------------------------------------------------------------------ reading what the app already records
+def _safe(fn, default):
+    """A section of the Rewards page that fails must never take the whole page down."""
+    try:
+        return fn()
+    except Exception as e:
+        print(f"[rewards] page section: {type(e).__name__}", flush=True)
+        return default
+
+
 def _guard(name, fn, *a):
     try:
         return fn(*a)
@@ -511,7 +528,9 @@ def member_view(uid: int, base: str) -> dict:
             "levels": [{"name": n, "at": a} for n, a in LEVELS], "rules": RULES,
             "referrals": {"total": len(refs), "qualified": sum(1 for r in refs if r["status"] == "qualified"),
                           "list": [{"name": mask(emails.get(r["referred_id"])), "status": r["status"], "at": r["created_at"]} for r in refs]},
-            "recent": recent, "month": _board("month", uid), "all": _board("all", uid), "bonus": bonus_view(uid)}
+            "recent": recent, "month": _board("month", uid), "all": _board("all", uid), "bonus": bonus_view(uid),
+            "commission": _safe(lambda: __import__("app.commission", fromlist=["view"]).view(uid), {"on": False}),
+            "prizes": _safe(lambda: __import__("app.prizes", fromlist=["view"]).view(uid), {"on": False})}
 
 
 def _base(request) -> str:

@@ -1,4 +1,4 @@
-# Referrals, points and levels (Phase 1) and referral rewards (Phase 2)
+# Referrals, points and levels (Phase 1), referral rewards (Phase 2), commission and prizes (Phase 3)
 
 Switched OFF until `REWARDS_ON=1` is set in Render. Nothing existing changes: new tables only (`migrations/2026_11_rewards.sql`, the app also creates them itself).
 
@@ -37,5 +37,17 @@ Only the referrer's QUALIFIED referrals count (Deriv account linked). Granted as
 - Orders marked refunded, failed or partially paid do not count. A reward already given is not taken back (use Admin > Rewards > adjust, or the Copy trading grant screen, if a correction is needed).
 - Shown to members in Rewards > "Your referral rewards".
 
-## Not built yet
-Phase 3: monthly commission import and manual payout, and the prize catalogue.
+## Phase 3: commission and prizes
+Switches (all need `REWARDS_ON=1`): `REWARDS_COMMISSION_ON=1` shows commission and payouts to members; `REWARDS_PRIZES_ON=1` shows the prize catalogue. The admin tools (Payouts tab) always work for admins.
+
+**Commission (10%).** Admin > Payouts > Commission import, once a month AFTER Deriv has paid TradeLens:
+1. Choose the month, load or paste the Partners Hub commission report (CSV), choose which column is the client ID and which is the commission (USD). The report format is not assumed, and a row with extra columns (for example an unquoted 1,000.00) is refused rather than misread.
+2. Preview shows the totals, who earns what, and why other rows were left out. Nothing is saved.
+3. Tick the USD / Deriv-has-paid confirmation and Apply. A month already imported is only replaced if you tick Replace (balances follow the corrected report; a referrer paid more than the corrected total is flagged "PAID MORE THAN EARNED").
+A client earns a share only if Deriv's partner records CONFIRM the account as tagged to TradeLens (partner_tags status "confirmed", which covers accounts created through TradeLens), the account belongs to a member, and that member was referred. Everything else stays with TradeLens.
+**Payout is manual:** the member saves a USDT address (TRC20 or BEP20, checked) and requests a payout (minimum $10, one at a time). Admin pays from their own wallet, pastes the transaction hash and presses Paid (or Rejects with a reason; the amount returns to the member's balance). The member is messaged in their inbox either way. The app never sends money.
+
+**Prizes.** Admin > Payouts > Prize catalogue: points, stock, cost (private), shown/hidden. The starting six use 100 points per $1 of cost and start with stock 0 ("coming soon"): Pen 500, Journal and pen 1,000, Powerbank 5,000, Tablet 11,000, Phone 25,000, Laptop 50,000. Members spend spendable points (their level never drops), give a name, phone and address, and have one request open at a time. Stock, points and request change in one transaction (no overselling). Admin marks a request sent (courier and tracking) or rejects it (points and stock return); the member can also cancel while it is waiting. Delivery details are visible to admins only.
+
+## Switch on / off
+Render > Environment. Off: remove the variable or set it to 0. Members stop seeing the cards; stored data stays.

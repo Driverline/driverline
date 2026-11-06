@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Rewards (admin)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+<style>
+.row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.row:first-of-type{border-top:0}
+.row span{color:var(--mut);text-align:right}
+.item{border-top:1px solid var(--line);padding:10px 0;overflow-wrap:anywhere}
+.item:first-of-type{border-top:0}
+.item input,.item select{margin-top:6px}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.btns button{width:auto;padding:8px 14px}
+pre.addr{background:#030918;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+label.chk{display:flex;gap:8px;align-items:flex-start;margin-top:8px;color:var(--tx)}
+label.chk input{width:auto;margin-top:3px}
+</style>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main>
+<div class="mut" id="me"></div>
+
+<div class="card"><h2>Commission import</h2>
+  <div class="mut">Each month, after Deriv has paid TradeLens, load the commission report from Deriv Partners Hub. TradeLens shares <b id="pct">10</b>% of it with the referrers of confirmed tagged clients. Nothing is saved until you press Apply.</div>
+  <div class="g" style="margin-top:8px"><div><div class="mut">Report month</div><input id="period" type="month"></div>
+    <div><div class="mut">Load the CSV file</div><input id="file" type="file" accept=".csv,.txt,text/csv,text/plain"></div></div>
+  <textarea id="csv" rows="5" placeholder="...or paste the report here (first line = column names)" style="margin-top:8px"></textarea>
+  <div id="cols" hidden class="g" style="margin-top:8px">
+    <div><div class="mut">Column with the client ID</div><select id="idc"></select></div>
+    <div><div class="mut">Column with the commission (USD)</div><select id="amc"></select></div></div>
+  <div class="btns"><button id="prev">Preview</button></div>
+  <div id="pnote" class="mut" style="margin-top:6px"></div>
+  <div id="pbox"></div>
+</div>
+
+<div class="card"><h2>Payout requests</h2>
+  <div class="mut">Pay from your own wallet, then paste the transaction hash and press Paid. The app never sends money.</div>
+  <div id="reqs"></div></div>
+
+<div class="card"><h2>Commission balances</h2><div id="tot"></div><div id="refs"></div><h2 style="margin-top:12px">Imports so far</h2><div id="imps"></div></div>
+
+<div class="card"><h2>Prize requests</h2>
+  <div class="mut">Packing details are shown here only. Mark a request sent with the courier and tracking, or reject it with a reason (points and stock go back).</div>
+  <div id="preqs"></div></div>
+
+<div class="card"><h2>Prize catalogue</h2>
+  <div class="mut">Stock 0 means "coming soon". Leave stock empty for unlimited. Cost is private. Suggested points: 100 per $1 of cost.</div>
+  <div id="prizes"></div>
+  <h2 style="margin-top:12px">Add a prize</h2>
+  <input id="nname" placeholder="Name" maxlength="80"><input id="ndesc" placeholder="Short description" maxlength="300" style="margin-top:6px">
+  <div class="g"><input id="npts" placeholder="Points" inputmode="numeric"><input id="ncost" placeholder="Cost to you (USD)" inputmode="decimal"></div>
+  <input id="nstock" placeholder="Stock" inputmode="numeric" style="margin-top:6px">
+  <div class="btns"><button id="nadd">Add prize</button></div><div id="nmsg" class="mut" style="margin-top:6px"></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+async function api(path,method,body){
+  const r=await fetch('/api/admin'+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
+const when=t=>new Date(t*1000).toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+const money=n=>'$'+Number(n||0).toFixed(2);
+function row(a,b){const r=el('div','row');r.append(el('b','',a),el('span','',String(b)));return r}
+const msg=(box,cls,t)=>{box.className=cls;box.textContent=t};
+
+// ---------------- commission import
+let report='';
+function body(){const b={csv:$('csv').value,period:$('period').value};if(!$('cols').hidden){b.id_col=$('idc').value;b.amount_col=$('amc').value}return b}
+$('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;
+  if(f.size>3000000){msg($('pnote'),'err','That file is too large (3 MB limit)');return}
+  $('csv').value=await f.text();$('cols').hidden=true;$('pbox').textContent='';msg($('pnote'),'mut','Loaded '+f.name+'. Press Preview.')};
+$('csv').oninput=()=>{$('cols').hidden=true;$('pbox').textContent=''};
+function fill(sel,headers,pick){sel.textContent='';headers.forEach(h=>{const o=el('option','',h);o.value=h;if(h===pick)o.selected=true;sel.append(o)})}
+$('prev').onclick=async()=>{msg($('pnote'),'mut','');$('pbox').textContent='';$('prev').disabled=true;
+  try{const d=await api('/commission/preview','POST',body());
+    if(d.needs_columns){fill($('idc'),d.headers,d.guess.id_col);fill($('amc'),d.headers,d.guess.amount_col);$('cols').hidden=false;
+      msg($('pnote'),'mut','Found '+d.rows+' rows. Check which columns hold the client ID and the commission, then press Preview again.');return}
+    drawPreview(d)}
+  catch(e){msg($('pnote'),'err',e.message)}
+  $('prev').disabled=false};
+function drawPreview(d){
+  const b=$('pbox');b.textContent='';
+  b.append(row('Report rows / distinct clients',d.rows+' / '+d.clients),row('Report total (all clients)',money(d.report_total)),
+    row('Clients that earn a share',d.shared_clients),row('Their commission',money(d.shared_commission)),
+    row('TradeLens pays out ('+d.percent+'%)',money(d.share_total)));
+  if(d.bad_rows)b.append(el('div','err',d.bad_rows+' row(s) had no client ID or an unreadable amount and were skipped.'));
+  const r=d.reasons;b.append(el('div','mut','Kept 100% by TradeLens: '+r.not_ours+' not our clients, '+r.no_member+' not linked to a member, '+r.not_confirmed+' not confirmed as tagged, '+r.no_referrer+' not referred by anyone.'));
+  if(d.unmatched_sample.length)b.append(el('div','mut','Unknown IDs, for example: '+d.unmatched_sample.join(', ')));
+  d.referrers.forEach(x=>b.append(row(x.email+' ('+x.clients+' client'+(x.clients===1?'':'s')+')',money(x.share))));
+  let rep=null;
+  if(d.already_imported){b.append(el('div','err',d.period+' was already imported ('+d.already_imported.rows+' rows, '+money(d.already_imported.share)+'). Applying will REPLACE it.'));
+    const l=el('label','chk');rep=el('input');rep.type='checkbox';l.append(rep,el('span','','Replace the existing import for '+d.period));b.append(l)}
+  const l2=el('label','chk');const ok=el('input');ok.type='checkbox';l2.append(ok,el('span','','These amounts are in USD, and Deriv has already paid this month to TradeLens.'));b.append(l2);
+  const btn=el('button','','Apply import');btn.style.cssText='width:auto;padding:8px 14px;margin-top:8px';
+  btn.onclick=async()=>{if(!ok.checked){msg($('pnote'),'err','Tick the confirmation first');return}
+    if(!confirm('Apply '+d.period+' and add '+money(d.share_total)+' to referrers? Members can withdraw it.'))return;
+    btn.disabled=true;
+    try{const x=await api('/commission/apply','POST',{...body(),confirm:true,replace:rep?rep.checked:false,filename:($('file').files[0]||{}).name||''});
+      msg($('pnote'),'win','Applied: '+x.shared_clients+' clients, '+money(x.share_total)+(x.replaced?' (replaced the earlier import)':''));$('pbox').textContent='';load()}
+    catch(e){msg($('pnote'),'err',e.message);btn.disabled=false}};
+  b.append(btn);
+}
+
+// ---------------- payouts, balances, imports
+async function decide(path,payload,note){try{await api(path,'POST',payload);await load()}catch(e){alert(e.message)}}
+async function load(){
+  const [c,p]=await Promise.all([api('/commission'),api('/prizes')]);
+  $('pct').textContent=c.percent;
+  const rq=$('reqs');rq.textContent='';
+  if(!c.requests.length)rq.append(el('div','mut','No payout requests yet.'));
+  c.requests.forEach(r=>{const x=el('div','item');x.append(row(r.email+' · '+when(r.at),money(r.amount)+' · '+r.status));
+    x.append(el('div','mut','USDT '+r.network.toUpperCase()),el('pre','addr',r.address));
+    if(r.status==='requested'){const tx=el('input');tx.placeholder='Transaction hash';const nt=el('input');nt.placeholder='Reason (only to reject)';
+      const b1=el('button','','Mark paid'),b2=el('button','ghost','Reject');
+      b1.onclick=()=>{if(confirm('Mark '+money(r.amount)+' as paid to '+r.email+'?'))decide('/commission/payout',{id:r.id,action:'paid',txid:tx.value})};
+      b2.onclick=()=>decide('/commission/payout',{id:r.id,action:'reject',note:nt.value});
+      const bt=el('div','btns');bt.append(b1,b2);x.append(tx,nt,bt)}
+    else if(r.txid)x.append(el('div','mut','Hash: '+r.txid));
+    else if(r.note)x.append(el('div','mut',r.note));
+    rq.append(x)});
+  const t=$('tot');t.textContent='';t.append(row('Earned by referrers',money(c.totals.earned)),row('Paid out',money(c.totals.paid)),row('Owed now (waiting + ready)',money(c.totals.owed)));
+  const rf=$('refs');rf.textContent='';c.referrers.forEach(r=>rf.append(row(r.email+(r.overpaid?' (PAID MORE THAN EARNED after a correction)':''),'earned '+money(r.earned)+' · paid '+money(r.paid)+' · waiting '+money(r.reserved)+' · ready '+money(r.available))));
+  const im=$('imps');im.textContent='';if(!c.imports.length)im.append(el('div','mut','No imports yet.'));
+  c.imports.forEach(i=>im.append(row(i.period+' · '+i.shared+' of '+i.rows+' rows'+(i.replaced?' · replaced':'')+' · '+when(i.at),money(i.share))));
+  drawPrizes(p);
+}
+
+// ---------------- prizes
+function drawPrizes(p){
+  const rq=$('preqs');rq.textContent='';
+  if(!p.requests.length)rq.append(el('div','mut','No prize requests yet.'));
+  p.requests.forEach(r=>{const x=el('div','item');x.append(row(r.email+' · '+when(r.at),r.prize+' ('+r.points+' pts) · '+r.status));
+    if(r.status==='requested'||r.status==='shipped')x.append(el('pre','addr',r.full_name+'\n'+r.phone+'\n'+r.address));
+    if(r.note)x.append(el('div','mut','Note: '+r.note));
+    if(r.status==='requested'){const nt=el('input');nt.placeholder='Courier and tracking (to ship) or the reason (to reject)';
+      const b1=el('button','','Mark sent'),b2=el('button','ghost','Reject');
+      b1.onclick=()=>decide('/prizes/decide',{id:r.id,action:'shipped',note:nt.value});
+      b2.onclick=()=>decide('/prizes/decide',{id:r.id,action:'reject',note:nt.value});
+      const bt=el('div','btns');bt.append(b1,b2);x.append(nt,bt)}
+    rq.append(x)});
+  const pl=$('prizes');pl.textContent='';
+  p.prizes.forEach(z=>{const x=el('div','item');x.append(el('b','',z.name+(z.active?'':' (hidden)')),el('div','mut',z.description||''));
+    const g=el('div','g');const pts=el('input'),st=el('input'),co=el('input');
+    pts.value=z.points;st.value=z.stock===null?'':z.stock;co.value=z.cost_usd;pts.inputMode=st.inputMode='numeric';co.inputMode='decimal';
+    pts.title='Points';st.title='Stock (empty = unlimited)';co.title='Cost to you (USD)';
+    const mk=(lab,inp)=>{const d=el('div');d.append(el('div','mut',lab),inp);return d};
+    g.append(mk('Points',pts),mk('Stock (empty = unlimited)',st));x.append(g,mk('Cost to you (USD)',co));
+    const act=el('label','chk');const ck=el('input');ck.type='checkbox';ck.checked=z.active;act.append(ck,el('span','','Shown to members'));x.append(act);
+    const b=el('button','','Save');const bt=el('div','btns');bt.append(b);x.append(bt);
+    b.onclick=()=>decide('/prizes/save',{id:z.id,points:pts.value,stock:st.value,cost_usd:co.value,active:ck.checked});
+    pl.append(x)});
+}
+$('nadd').onclick=async()=>{msg($('nmsg'),'mut','');
+  try{await api('/prizes/save','POST',{name:$('nname').value,description:$('ndesc').value,points:$('npts').value,cost_usd:$('ncost').value||0,stock:$('nstock').value||0});
+    ['nname','ndesc','npts','ncost','nstock'].forEach(i=>$(i).value='');msg($('nmsg'),'win','Added');await load()}
+  catch(e){msg($('nmsg'),'err',e.message)}};
+$('period').value=new Date(Date.now()-32*864e5).toISOString().slice(0,7);
+load().catch(e=>{$('reqs').textContent=e.message});
+</script>
+</body>
+</html>

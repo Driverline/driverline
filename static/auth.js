@@ -50,6 +50,8 @@
     if(location.pathname==='/admin-messages.html')m.className='on';n.append(m);
     const p=document.createElement('a');p.href='/admin-payments.html';p.textContent='Payments';p.dataset.admin='1';
     if(location.pathname==='/admin-payments.html')p.className='on';n.append(p);
+    const w=document.createElement('a');w.href='/admin-rewards.html';w.textContent='Payouts';w.dataset.admin='1';
+    if(location.pathname==='/admin-rewards.html')w.className='on';n.append(w);
   }
   document.addEventListener('DOMContentLoaded',()=>{
     tabs();
