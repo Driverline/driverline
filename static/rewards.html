@@ -42,12 +42,12 @@
   </div>
 
   <div class="card"><h2>Invite friends</h2>
-    <div class="mut">Share your link. When a friend joins through it and links their Deriv account, you earn points. Prizes and more rewards are coming.</div>
+    <div class="mut">Share your link. When a friend you invited joins TradeLens and later buys a bundle or subscription, you earn TradeLens points. Points are only for TradeLens activity. They are separate from Deriv, and TradeLens does not share any Deriv partner commission.</div>
     <div class="link" id="link"></div>
     <div class="btns"><button id="copy">Copy link</button><button id="share" class="ghost" hidden>Share</button><a id="wa" class="ghost" target="_blank" rel="noopener">WhatsApp</a></div>
     <div class="mut" id="copied" style="margin-top:6px"></div>
     <div class="row"><b>Friends joined</b><span id="rtotal"></span></div>
-    <div class="row"><b>Linked their Deriv account</b><span id="rq"></span></div>
+    <div class="row"><b>Finished onboarding (first analysis)</b><span id="rq"></span></div>
     <div id="rlist"></div>
   </div>
 
@@ -57,21 +57,6 @@
     <div class="row"><b>Free connections earned</b><span id="bfree"></span></div>
     <div class="row"><b>Free connection active until</b><span id="buntil"></span></div>
     <div class="row"><b>Free signals earned</b><span id="bsig"></span></div>
-  </div>
-
-  <div class="card" id="comm" hidden><h2>Your commission</h2>
-    <div class="mut" id="cnote"></div>
-    <div class="row"><b>Earned so far</b><span id="cearn"></span></div>
-    <div class="row"><b>Paid to you</b><span id="cpaid"></span></div>
-    <div class="row"><b>Waiting to be paid</b><span id="cres"></span></div>
-    <div class="row"><b>Ready to withdraw</b><span id="cavail"></span></div>
-    <h2 style="margin-top:14px">Where to send it</h2>
-    <div class="mut" id="cdet"></div>
-    <select id="cnet"><option value="trc20">USDT (TRC20)</option><option value="bep20">USDT (BEP20)</option></select>
-    <input id="caddr" placeholder="Your USDT wallet address" autocomplete="off" style="margin-top:8px">
-    <div class="btns" style="margin-top:8px"><button id="csave" class="ghost">Save address</button><button id="creq">Request payout</button></div>
-    <div class="mut" id="cmsg" style="margin-top:6px"></div>
-    <div id="cper" style="margin-top:8px"></div><div id="creqs"></div>
   </div>
 
   <div class="card" id="prz" hidden><h2>Prizes</h2>
@@ -124,7 +109,7 @@ async function load(){
   if(navigator.share){$('share').hidden=false;$('share').onclick=()=>navigator.share({title:'TradeLens',text:'Join me on TradeLens',url:D.link}).catch(()=>{})}
   $('copy').onclick=async()=>{try{await navigator.clipboard.writeText(D.link);$('copied').textContent='Link copied'}catch(e){$('copied').textContent='Press and hold the link to copy it'}};
   const rl=$('rlist');rl.textContent='';
-  D.referrals.list.forEach(x=>rl.append(row(x.name+' · '+when(x.at),x.status==='qualified'?'Deriv linked':'Joined')));
+  D.referrals.list.forEach(x=>rl.append(row(x.name+' · '+when(x.at),x.status==='qualified'?'Onboarded':'Joined')));
   const ru=$('rules');ru.textContent='';D.rules.forEach(x=>ru.append(row(x.what,x.points)));
   $('levels').textContent=D.levels.map(l=>l.name+' '+num(l.at)).join(' · ');
   const rc=$('recent');rc.textContent='';
@@ -136,29 +121,13 @@ async function load(){
     $('bbuy').textContent=B.buyers;$('bfree').textContent=B.free_earned;
     $('buntil').textContent=B.free_until?new Date(B.free_until*1000).toLocaleDateString():'none active';
     $('bsig').textContent=num(B.signals_earned)}
-  drawCommission();drawPrizes();
+  drawPrizes();
   drawBoard();
 }
 const money=n=>'$'+Number(n||0).toFixed(2);
 async function post(path,body){
   const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('Error '+r.status));return d}
-function drawCommission(){
-  const C=D.commission;if(!C||!C.on){$('comm').hidden=true;return}$('comm').hidden=false;
-  $('cnote').textContent='You earn '+C.percent+'% of the commission TradeLens earns on the trading of friends you referred, when their Deriv account is tagged to TradeLens. Commission is added after Deriv pays TradeLens each month. Minimum payout '+money(C.min_payout)+'.';
-  $('cearn').textContent=money(C.earned);$('cpaid').textContent=money(C.paid);$('cres').textContent=money(C.reserved);$('cavail').textContent=money(C.available);
-  $('cdet').textContent=C.details?('Saved: USDT '+C.details.network.toUpperCase()+' '+C.details.address):'No address saved yet.';
-  $('creq').disabled=!C.can_request;
-  const p=$('cper');p.textContent='';C.periods.forEach(x=>p.append(row(x.period+' · '+x.clients+' friend'+(x.clients===1?'':'s')+' trading',money(x.share))));
-  const q=$('creqs');q.textContent='';C.requests.forEach(x=>q.append(row('Payout '+money(x.amount)+' · '+when(x.at),x.status==='paid'?'Paid':x.status==='requested'?'Waiting':'Not paid'+(x.note?': '+x.note:''))));
-}
-$('csave').onclick=async()=>{$('cmsg').className='mut';$('cmsg').textContent='';
-  try{await post('/api/rewards/payout-details',{network:$('cnet').value,address:$('caddr').value.trim()});$('caddr').value='';$('cmsg').className='win';$('cmsg').textContent='Saved';await load()}
-  catch(e){$('cmsg').className='err';$('cmsg').textContent=e.message}};
-$('creq').onclick=async()=>{$('cmsg').className='mut';$('cmsg').textContent='';
-  if(!confirm('Request a payout of '+money(D.commission.available)+' to your saved address?'))return;
-  try{await post('/api/rewards/payout-request');$('cmsg').className='win';$('cmsg').textContent='Requested. You will get a message here when it is paid.';await load()}
-  catch(e){$('cmsg').className='err';$('cmsg').textContent=e.message}};
 let pick=null;
 function drawPrizes(){
   const P=D.prizes;if(!P||!P.on){$('prz').hidden=true;return}$('prz').hidden=false;

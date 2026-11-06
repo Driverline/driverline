@@ -20,7 +20,13 @@ Founding members (3 places)
   * The balance proves the account holds the money, not where it came from or that it stays there. Admin can see the login and balance.
 
 Everything takes effect only while billing is switched on, exactly like paid plans.
+
+NEW GRANTS ARE OFF (Nov 2026). These perks reward Deriv account status and Deriv funding, which TradeLens must not incentivise. Unless
+PARTNER_PERKS_ON=1 is set (leave it unset), no new partner bonus signals are given, no new founding-member place can be claimed, and
+nobody new waits for one. Everything already granted keeps working and nothing is taken back. The $15 Signals Pro price for confirmed
+partner members (price_for) is unchanged and is listed as an open decision in docs/PARTNER_PROGRAMME.md.
 """
+import os
 import time
 from contextlib import closing
 
@@ -55,6 +61,11 @@ def _migrate(con):
 def db():
     auth.db().close()
     return dbx.connect("perks", SCHEMA, _migrate)
+
+
+def grants_on() -> bool:
+    """Whether NEW perks may be given. Off unless PARTNER_PERKS_ON=1."""
+    return os.environ.get("PARTNER_PERKS_ON", "").strip() == "1"
 
 
 def _f(v, default=0.0) -> float:
@@ -113,7 +124,10 @@ def _top_up_signals(uid: int):
 
 
 def sync(uid: int) -> bool:
-    """Gives a confirmed partner member their perks. True when the member is a confirmed partner member."""
+    """Gives a confirmed partner member their perks. True when the member is a confirmed partner member.
+    Does nothing (False) while new grants are off."""
+    if not grants_on():
+        return False
     with closing(auth.db()) as con:
         u = con.execute("SELECT tier FROM users WHERE id=?", (uid,)).fetchone()
     if not u or credits.grandfathered({"tier": u["tier"]}) or not _confirmed(uid):
@@ -134,7 +148,9 @@ def sync(uid: int) -> bool:
 
 
 def sync_all() -> int:
-    """Run in the background every few minutes: perks for everyone Deriv has confirmed, in the order they signed up."""
+    """Run in the background every few minutes: perks for everyone Deriv has confirmed, in the order they signed up. Off by default."""
+    if not grants_on():
+        return 0
     from . import partner
     with closing(partner.db()) as con:
         ids = [r["user_id"] for r in con.execute(
@@ -151,7 +167,9 @@ def sync_all() -> int:
 
 # ---------------------------------------------------------------- the founding-member check, run when the EA reports
 def founder_pending(uid: int) -> bool:
-    """True while this member may still connect so their balance can be read: waiting, and a place is still free."""
+    """True while this member may still connect so their balance can be read: waiting, and a place is still free. Never while new grants are off."""
+    if not grants_on():
+        return False
     with closing(db()) as con:
         r = con.execute("SELECT founder_status FROM partner_perks WHERE user_id=?", (uid,)).fetchone()
         return bool(r and r["founder_status"] == "pending" and _verified(con) < FOUNDER_SLOTS)
@@ -185,7 +203,9 @@ def _claim_place(con, uid: int, login: str, bal: float, now: int) -> bool:
 
 
 def verify_founder(uid: int, acc: dict):
-    """acc is the account block the EA reported: login, server, currency, balance, demo."""
+    """acc is the account block the EA reported: login, server, currency, balance, demo. Claims nothing while new grants are off."""
+    if not grants_on():
+        return
     login = str(acc.get("login") or "").strip()[:40]
     verified = False
     with closing(db()) as con:

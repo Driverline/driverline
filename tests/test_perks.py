@@ -23,6 +23,7 @@ for _n in ("websockets", "pywebpush", "psycopg", "psycopg.rows"):
         sys.modules[_n] = types.ModuleType(_n)
 os.environ.update(DRIVERLINE_SECRET="s" * 40)
 os.environ.pop("DATABASE_URL", None)
+os.environ["PARTNER_PERKS_ON"] = "1"      # new partner perks are off by default (Nov 2026); these tests exercise the mechanism itself
 
 from app import auth, credits, dbx, perks                       # noqa: E402
 

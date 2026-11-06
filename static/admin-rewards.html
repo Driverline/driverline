@@ -30,24 +30,9 @@ label.chk input{width:auto;margin-top:3px}
 <main>
 <div class="mut" id="me"></div>
 
-<div class="card"><h2>Commission import</h2>
-  <div class="mut">Each month, after Deriv has paid TradeLens, load the commission report from Deriv Partners Hub. TradeLens shares <b id="pct">10</b>% of it with the referrers of confirmed tagged clients. Nothing is saved until you press Apply.</div>
-  <div class="g" style="margin-top:8px"><div><div class="mut">Report month</div><input id="period" type="month"></div>
-    <div><div class="mut">Load the CSV file</div><input id="file" type="file" accept=".csv,.txt,text/csv,text/plain"></div></div>
-  <textarea id="csv" rows="5" placeholder="...or paste the report here (first line = column names)" style="margin-top:8px"></textarea>
-  <div id="cols" hidden class="g" style="margin-top:8px">
-    <div><div class="mut">Column with the client ID</div><select id="idc"></select></div>
-    <div><div class="mut">Column with the commission (USD)</div><select id="amc"></select></div></div>
-  <div class="btns"><button id="prev">Preview</button></div>
-  <div id="pnote" class="mut" style="margin-top:6px"></div>
-  <div id="pbox"></div>
-</div>
-
-<div class="card"><h2>Payout requests</h2>
-  <div class="mut">Pay from your own wallet, then paste the transaction hash and press Paid. The app never sends money.</div>
-  <div id="reqs"></div></div>
-
-<div class="card"><h2>Commission balances</h2><div id="tot"></div><div id="refs"></div><h2 style="margin-top:12px">Imports so far</h2><div id="imps"></div></div>
+<div class="card" id="retired" hidden><h2>Commission sharing (retired)</h2>
+  <div class="mut">TradeLens no longer shares Deriv partner commission with members, and no new commission or payout records can be created. Deriv pays partner commission directly under its own programme. These are the old records, kept read-only for audit.</div>
+  <div id="rtot"></div><div id="rimps"></div><div id="rreqs"></div></div>
 
 <div class="card"><h2>Prize requests</h2>
   <div class="mut">Packing details are shown here only. Mark a request sent with the courier and tracking, or reject it with a reason (points and stock go back).</div>
@@ -74,65 +59,17 @@ const money=n=>'$'+Number(n||0).toFixed(2);
 function row(a,b){const r=el('div','row');r.append(el('b','',a),el('span','',String(b)));return r}
 const msg=(box,cls,t)=>{box.className=cls;box.textContent=t};
 
-// ---------------- commission import
-let report='';
-function body(){const b={csv:$('csv').value,period:$('period').value};if(!$('cols').hidden){b.id_col=$('idc').value;b.amount_col=$('amc').value}return b}
-$('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;
-  if(f.size>3000000){msg($('pnote'),'err','That file is too large (3 MB limit)');return}
-  $('csv').value=await f.text();$('cols').hidden=true;$('pbox').textContent='';msg($('pnote'),'mut','Loaded '+f.name+'. Press Preview.')};
-$('csv').oninput=()=>{$('cols').hidden=true;$('pbox').textContent=''};
-function fill(sel,headers,pick){sel.textContent='';headers.forEach(h=>{const o=el('option','',h);o.value=h;if(h===pick)o.selected=true;sel.append(o)})}
-$('prev').onclick=async()=>{msg($('pnote'),'mut','');$('pbox').textContent='';$('prev').disabled=true;
-  try{const d=await api('/commission/preview','POST',body());
-    if(d.needs_columns){fill($('idc'),d.headers,d.guess.id_col);fill($('amc'),d.headers,d.guess.amount_col);$('cols').hidden=false;
-      msg($('pnote'),'mut','Found '+d.rows+' rows. Check which columns hold the client ID and the commission, then press Preview again.');return}
-    drawPreview(d)}
-  catch(e){msg($('pnote'),'err',e.message)}
-  $('prev').disabled=false};
-function drawPreview(d){
-  const b=$('pbox');b.textContent='';
-  b.append(row('Report rows / distinct clients',d.rows+' / '+d.clients),row('Report total (all clients)',money(d.report_total)),
-    row('Clients that earn a share',d.shared_clients),row('Their commission',money(d.shared_commission)),
-    row('TradeLens pays out ('+d.percent+'%)',money(d.share_total)));
-  if(d.bad_rows)b.append(el('div','err',d.bad_rows+' row(s) had no client ID or an unreadable amount and were skipped.'));
-  const r=d.reasons;b.append(el('div','mut','Kept 100% by TradeLens: '+r.not_ours+' not our clients, '+r.no_member+' not linked to a member, '+r.not_confirmed+' not confirmed as tagged, '+r.no_referrer+' not referred by anyone.'));
-  if(d.unmatched_sample.length)b.append(el('div','mut','Unknown IDs, for example: '+d.unmatched_sample.join(', ')));
-  d.referrers.forEach(x=>b.append(row(x.email+' ('+x.clients+' client'+(x.clients===1?'':'s')+')',money(x.share))));
-  let rep=null;
-  if(d.already_imported){b.append(el('div','err',d.period+' was already imported ('+d.already_imported.rows+' rows, '+money(d.already_imported.share)+'). Applying will REPLACE it.'));
-    const l=el('label','chk');rep=el('input');rep.type='checkbox';l.append(rep,el('span','','Replace the existing import for '+d.period));b.append(l)}
-  const l2=el('label','chk');const ok=el('input');ok.type='checkbox';l2.append(ok,el('span','','These amounts are in USD, and Deriv has already paid this month to TradeLens.'));b.append(l2);
-  const btn=el('button','','Apply import');btn.style.cssText='width:auto;padding:8px 14px;margin-top:8px';
-  btn.onclick=async()=>{if(!ok.checked){msg($('pnote'),'err','Tick the confirmation first');return}
-    if(!confirm('Apply '+d.period+' and add '+money(d.share_total)+' to referrers? Members can withdraw it.'))return;
-    btn.disabled=true;
-    try{const x=await api('/commission/apply','POST',{...body(),confirm:true,replace:rep?rep.checked:false,filename:($('file').files[0]||{}).name||''});
-      msg($('pnote'),'win','Applied: '+x.shared_clients+' clients, '+money(x.share_total)+(x.replaced?' (replaced the earlier import)':''));$('pbox').textContent='';load()}
-    catch(e){msg($('pnote'),'err',e.message);btn.disabled=false}};
-  b.append(btn);
-}
-
-// ---------------- payouts, balances, imports
+// ---------------- retired commission records (read-only) and prizes
 async function decide(path,payload,note){try{await api(path,'POST',payload);await load()}catch(e){alert(e.message)}}
 async function load(){
   const [c,p]=await Promise.all([api('/commission'),api('/prizes')]);
-  $('pct').textContent=c.percent;
-  const rq=$('reqs');rq.textContent='';
-  if(!c.requests.length)rq.append(el('div','mut','No payout requests yet.'));
-  c.requests.forEach(r=>{const x=el('div','item');x.append(row(r.email+' · '+when(r.at),money(r.amount)+' · '+r.status));
-    x.append(el('div','mut','USDT '+r.network.toUpperCase()),el('pre','addr',r.address));
-    if(r.status==='requested'){const tx=el('input');tx.placeholder='Transaction hash';const nt=el('input');nt.placeholder='Reason (only to reject)';
-      const b1=el('button','','Mark paid'),b2=el('button','ghost','Reject');
-      b1.onclick=()=>{if(confirm('Mark '+money(r.amount)+' as paid to '+r.email+'?'))decide('/commission/payout',{id:r.id,action:'paid',txid:tx.value})};
-      b2.onclick=()=>decide('/commission/payout',{id:r.id,action:'reject',note:nt.value});
-      const bt=el('div','btns');bt.append(b1,b2);x.append(tx,nt,bt)}
-    else if(r.txid)x.append(el('div','mut','Hash: '+r.txid));
-    else if(r.note)x.append(el('div','mut',r.note));
-    rq.append(x)});
-  const t=$('tot');t.textContent='';t.append(row('Earned by referrers',money(c.totals.earned)),row('Paid out',money(c.totals.paid)),row('Owed now (waiting + ready)',money(c.totals.owed)));
-  const rf=$('refs');rf.textContent='';c.referrers.forEach(r=>rf.append(row(r.email+(r.overpaid?' (PAID MORE THAN EARNED after a correction)':''),'earned '+money(r.earned)+' · paid '+money(r.paid)+' · waiting '+money(r.reserved)+' · ready '+money(r.available))));
-  const im=$('imps');im.textContent='';if(!c.imports.length)im.append(el('div','mut','No imports yet.'));
-  c.imports.forEach(i=>im.append(row(i.period+' · '+i.shared+' of '+i.rows+' rows'+(i.replaced?' · replaced':'')+' · '+when(i.at),money(i.share))));
+  const any=c.rows||c.imports.length||c.payout_requests.length;
+  $('retired').hidden=!any;
+  if(any){
+    const t=$('rtot');t.textContent='';t.append(row('Old commission rows',c.rows),row('Total shared with referrers then',money(c.shared_cents/100)));
+    const im=$('rimps');im.textContent='';c.imports.forEach(i=>im.append(row('Import '+i.period+' · '+when(i.created_at),money(i.share_cents/100))));
+    const rq=$('rreqs');rq.textContent='';c.payout_requests.forEach(r=>rq.append(row('Payout request #'+r.id+' · '+when(r.created_at),money(r.amount_cents/100)+' · '+r.status)));
+  }
   drawPrizes(p);
 }
 
@@ -165,8 +102,7 @@ $('nadd').onclick=async()=>{msg($('nmsg'),'mut','');
   try{await api('/prizes/save','POST',{name:$('nname').value,description:$('ndesc').value,points:$('npts').value,cost_usd:$('ncost').value||0,stock:$('nstock').value||0});
     ['nname','ndesc','npts','ncost','nstock'].forEach(i=>$(i).value='');msg($('nmsg'),'win','Added');await load()}
   catch(e){msg($('nmsg'),'err',e.message)}};
-$('period').value=new Date(Date.now()-32*864e5).toISOString().slice(0,7);
-load().catch(e=>{$('reqs').textContent=e.message});
+load().catch(e=>{$('preqs').textContent=e.message});
 </script>
 </body>
 </html>

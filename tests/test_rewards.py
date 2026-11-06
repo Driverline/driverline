@@ -98,6 +98,13 @@ def mk_order(uid, usd, status="approved", provider_status=None, product="vault")
     return oid
 
 
+def onboard(uid):
+    """TradeLens onboarding: the member has run at least one analysis."""
+    with closing(auth.db()) as con:
+        con.execute("INSERT INTO usage(user_id,day,n) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET n=n+1", (uid, "2026-11-01"))
+        con.commit()
+
+
 def link_deriv(uid, acct):
     with closing(deriv_login.db()) as con:
         con.execute("INSERT INTO deriv_accounts(account_id,user_id,created_at,linked_at) VALUES(?,?,?,?)", (acct, uid, 0, 0))
@@ -181,37 +188,51 @@ class Referral(Base):
         with closing(rewards.db()) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) AS n FROM referrals").fetchone()["n"], 0)
 
-    def test_the_referrer_is_paid_only_when_the_friend_links_deriv(self):
+    def test_a_referral_qualifies_on_tradelens_onboarding_and_pays_no_points_for_it(self):
         a, f = mk_user(), mk_user()
         refer(a, f)
         rewards.sweep_user(f)
-        self.assertEqual(pts(a), 0)                             # joined only: nothing yet
+        with closing(rewards.db()) as con:
+            self.assertEqual(con.execute("SELECT status FROM referrals WHERE referred_id=?", (f,)).fetchone()["status"], "pending")
+        onboard(f)
+        rewards.sweep_user(f)
+        rewards.sweep_user(f)
+        with closing(rewards.db()) as con:
+            self.assertEqual(con.execute("SELECT status FROM referrals WHERE referred_id=?", (f,)).fetchone()["status"], "qualified")
+        self.assertEqual(kinds(a), [])                          # no points for onboarding, and none ever for Deriv
+
+    def test_linking_a_deriv_account_earns_the_referrer_nothing(self):
+        a, f = mk_user(), mk_user()
+        refer(a, f)
         link_deriv(f, "CR1")
         rewards.sweep_user(f)
-        rewards.sweep_user(f)                                   # again: still once
-        self.assertEqual(kinds(a), [("ref_qualify", 50)])
+        rewards.sweep_user(f)
+        self.assertEqual(kinds(a), [])
+        with closing(rewards.db()) as con:
+            self.assertEqual(con.execute("SELECT status FROM referrals WHERE referred_id=?", (f,)).fetchone()["status"], "pending")
+        self.assertNotIn("ref_qualify", rewards.POINTS)
 
-    def test_purchases_by_a_referral_pay_the_referrer_and_a_refund_takes_it_back(self):
+    def test_purchases_by_an_onboarded_referral_pay_the_referrer_and_a_refund_takes_it_back(self):
         a, f = mk_user(), mk_user()
         refer(a, f)
-        link_deriv(f, "CR2")
+        onboard(f)
         o1 = mk_order(f, 100)
         rewards.sweep_user(f)
         self.assertEqual(pts(f), 1000)                          # 10 points per USD
-        self.assertEqual(sorted(kinds(a)), [("ref_first_buy", 100), ("ref_qualify", 50)])
+        self.assertEqual(sorted(kinds(a)), [("ref_first_buy", 100)])
         o2 = mk_order(f, 50)
         rewards.sweep_user(f)
         self.assertEqual(pts(f), 1500)
-        self.assertEqual(pts(a), 50 + 100 + 100)                # later purchase: 2 per USD
+        self.assertEqual(pts(a), 100 + 100)                     # later purchase: 2 per USD
         with closing(credits.db()) as con:
             con.execute("UPDATE billing_orders SET provider_status='refunded' WHERE id=?", (o2,))
             con.commit()
         rewards.sweep_user(f)
         rewards.sweep_user(f)
         self.assertEqual(pts(f), 1000)
-        self.assertEqual(pts(a), 150)
+        self.assertEqual(pts(a), 100)
 
-    def test_a_referral_who_never_linked_deriv_earns_the_referrer_nothing_from_purchases(self):
+    def test_a_referral_who_never_onboarded_earns_the_referrer_nothing_from_purchases(self):
         a, f = mk_user(), mk_user()
         refer(a, f)
         mk_order(f, 100)
@@ -269,7 +290,7 @@ class Earning(Base):
         rewards.sweep_user(u)
         self.assertEqual(pts(u), 1)
 
-    def test_deriv_app_trades_count_by_account_type(self):
+    def test_trades_placed_through_the_deriv_button_earn_no_points(self):
         u = mk_user()
         with closing(deriv_trade.db()) as con:
             for i, t in enumerate(("real", "demo")):
@@ -277,7 +298,7 @@ class Earning(Base):
                             "VALUES(?,?,?,?,?,?,'placed',?)", (u, i, "A", t, "R_25", "MULTUP", int(time.time())))
             con.commit()
         rewards.sweep_user(u)
-        self.assertEqual(pts(u), 4)
+        self.assertEqual(pts(u), 0)                             # Deriv activity is never rewarded
 
     def test_purchase_points_and_a_refund_reverses_them(self):
         u = mk_user()
@@ -356,145 +377,41 @@ class Api(Base):
         self.assertEqual(self.ca.get("/api/admin/rewards").status_code, 200)
 
 
-class Bonus(Base):
-    """Phase 2: free signals and free MT5 + Copy trading for the referrer. Needs REWARDS_BONUS_ON=1 as well."""
-    def setUp(self):
-        super().setUp()
-        os.environ["REWARDS_BONUS_ON"] = "1"
-        self.a = mk_user()
-
-    def tearDown(self):
+class Retired(Base):
+    """Nov 2026: referral purchase rewards (free signals / free connections) are switched off for good, and commission is gone."""
+    def test_bonus_rewards_cannot_be_switched_on(self):
+        for v in ("1", "true", "yes"):
+            os.environ["REWARDS_BONUS_ON"] = v
+            self.assertFalse(rewards.bonus_enabled())
         os.environ.pop("REWARDS_BONUS_ON", None)
 
-    def friend(self, qualified=True):
-        f = mk_user()
-        refer(self.a, f)
-        if qualified:
-            link_deriv(f, f"CR{f}")
-            rewards.sweep_user(f)
-        return f
-
-    def signals(self, uid=None):
-        with closing(credits.db()) as con:
-            r = con.execute("SELECT COALESCE(SUM(delta),0) AS s FROM credit_ledger WHERE user_id=? AND kind='ref_signals'", (uid or self.a,)).fetchone()
-        return r["s"]
-
-    def buy(self, f, product):
-        mk_order(f, credits.CATALOG[product]["usd"], product=product)
-        rewards.sweep_user(f)
-
-    def free_rows(self):
-        with closing(credits.db()) as con:
-            return [dict(r) for r in con.execute("SELECT * FROM billing_subs WHERE user_id=? AND plan='ref_mt5' ORDER BY id", (self.a,)).fetchall()]
-
-    def copy_end(self):
-        with closing(ea.db()) as con:
-            r = con.execute("SELECT ends_at FROM copy_subs WHERE user_id=?", (self.a,)).fetchone()
-        return r["ends_at"] if r else 0
-
-    def test_off_by_default_even_with_rewards_on(self):
-        os.environ.pop("REWARDS_BONUS_ON")
-        f = self.friend()
-        self.buy(f, "vault")
-        self.assertEqual((self.signals(), self.free_rows()), (0, []))
-
-    def test_five_percent_of_the_signals_of_a_vault_or_vault_lite(self):
-        f = self.friend()
-        self.buy(f, "vault")
-        self.buy(f, "vaultlite")
-        rewards.sweep_referrer(self.a)
-        rewards.sweep_referrer(self.a)
-        self.assertEqual(self.signals(), 275 + 125)
-        with closing(credits.db()) as con:
-            self.assertEqual(con.execute("SELECT COUNT(*) AS n FROM credit_ledger WHERE user_id=? AND kind='ref_signals'", (self.a,)).fetchone()["n"], 2)
-
-    def test_other_plans_give_no_signals(self):
-        f = self.friend()
-        for p in ("pro", "copy", "plus", "topup", "boost"):
-            self.buy(f, p)
-        self.assertEqual(self.signals(), 0)
-
-    def test_a_friend_who_has_not_linked_deriv_earns_nothing(self):
-        f = self.friend(qualified=False)
-        self.buy(f, "vault")
-        self.assertEqual((self.signals(), self.free_rows()), (0, []))
-        link_deriv(f, "LATE1")                              # linking later counts what they already bought
-        rewards.sweep_user(f)
-        self.assertEqual(self.signals(), 275)
-
-    def test_a_refunded_or_unpaid_order_does_not_count(self):
-        f = self.friend()
-        mk_order(f, 100, product="vault", provider_status="refunded")
-        mk_order(f, 100, product="vault", status="pending")
-        rewards.sweep_user(f)
-        self.assertEqual(self.signals(), 0)
-
-    def test_every_third_buying_friend_earns_a_free_30_day_connection_with_copy_trading(self):
-        f1, f2, f3 = self.friend(), self.friend(), self.friend()
-        self.buy(f1, "copy")
-        self.buy(f2, "pro")
-        self.assertEqual(self.free_rows(), [])
-        self.buy(f3, "vaultlite")
-        rows = self.free_rows()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["ends_at"] - rows[0]["starts_at"], 30 * 86400)
-        self.assertEqual(self.copy_end(), rows[0]["ends_at"])
-        rewards.sweep_referrer(self.a)
-        rewards.sweep_referrer(self.a)
-        self.assertEqual(len(self.free_rows()), 1)           # repeating never gives another
-
-    def test_the_same_friend_buying_twice_counts_once_and_signal_plans_alone_do_not_count(self):
-        f1, f2, f3 = self.friend(), self.friend(), self.friend()
-        self.buy(f1, "copy")
-        self.buy(f1, "copy")
-        self.buy(f2, "copy")
-        self.buy(f3, "boost")
-        self.buy(f3, "plus")
-        self.assertEqual(self.free_rows(), [])
-
-    def test_six_friends_stack_two_rewards_back_to_back(self):
-        for _ in range(6):
-            self.buy(self.friend(), "copy")
-        rows = self.free_rows()
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[1]["starts_at"], rows[0]["ends_at"])
-        self.assertEqual(self.copy_end(), rows[1]["ends_at"])
-
-    def test_the_reward_gives_the_mt5_connection_and_never_shortens_a_longer_copy_grant(self):
-        long_end = int(time.time()) + 200 * 86400
-        with closing(ea.db()) as con:
-            con.execute("INSERT INTO copy_subs(user_id,ends_at,note,admin_id,updated_at) VALUES(?,?,?,?,?)", (self.a, long_end, "gift", None, 0))
-            con.commit()
-        for _ in range(3):
-            self.buy(self.friend(), "pro")
-        self.assertEqual(self.copy_end(), long_end)
-        os.environ["BILLING_ON"] = "1"
-        old = credits.billing_on
-        credits.billing_on = lambda: True
+    def test_a_buying_friend_gives_the_referrer_no_signals_and_no_connection(self):
+        os.environ["REWARDS_BONUS_ON"] = "1"
         try:
-            u = {"id": self.a, "tier": "free"}
-            self.assertTrue(credits.entitled(u, "mt5"))
-            self.assertTrue(credits.entitled(u, "notify"))
+            a = mk_user()
+            for _ in range(3):
+                f = mk_user()
+                refer(a, f)
+                onboard(f)
+                mk_order(f, 100, product="vault")
+                rewards.sweep_user(f)
+            with closing(credits.db()) as con:
+                self.assertEqual(con.execute("SELECT COUNT(*) AS n FROM credit_ledger WHERE user_id=? AND kind='ref_signals'", (a,)).fetchone()["n"], 0)
+                self.assertEqual(con.execute("SELECT COUNT(*) AS n FROM billing_subs WHERE user_id=? AND plan='ref_mt5'", (a,)).fetchone()["n"], 0)
         finally:
-            credits.billing_on = old
+            os.environ.pop("REWARDS_BONUS_ON", None)
 
-    def test_the_billing_page_still_loads_with_the_reward_plan_active(self):
-        for _ in range(3):
-            self.buy(self.friend(), "copy")
-        c = TestClient(main.app)
-        c.cookies.set(auth.COOKIE, auth.make_token(self.a, "h"))
-        r = c.get("/api/billing")
-        self.assertEqual(r.status_code, 200)
-        self.assertIn("ref_mt5", json.dumps(r.json()))
+    def test_the_rewards_view_has_no_commission_and_no_deriv_points(self):
+        a = mk_user()
+        v = rewards.member_view(a, "https://tradelens.test")
+        self.assertNotIn("commission", v)
+        self.assertNotIn("deriv", str(rewards.RULES).lower())
 
-    def test_the_rewards_page_shows_progress(self):
-        f1, f2 = self.friend(), self.friend()
-        self.buy(f1, "copy")
-        self.buy(f2, "vault")
-        c = TestClient(main.app)
-        c.cookies.set(auth.COOKIE, auth.make_token(self.a, "h"))
-        b = c.get("/api/rewards").json()["bonus"]
-        self.assertEqual((b["on"], b["buyers"], b["free_earned"], b["next_in"], b["signals_earned"]), (True, 2, 0, 1, 275))
+    def test_the_commission_module_is_read_only_history(self):
+        from app import commission
+        self.assertEqual([r.path for r in commission.routes], ["/api/admin/commission"])
+        for name in ("view", "apply_import", "request_payout", "preview"):
+            self.assertFalse(hasattr(commission, name), name)
 
 
 if __name__ == "__main__":

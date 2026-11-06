@@ -1,17 +1,20 @@
-"""Referrals, points and levels (Phase 1). Money rewards (free signals, free connections, commission, prizes) come in later phases.
+"""Referrals, points and levels. TradeLens points reward TradeLens activity ONLY (Nov 2026 restructuring).
+
+  * Points never reward Deriv activity: not referring anyone to Deriv, not linking or opening a Deriv account, not recruiting Deriv
+    partners, not Deriv trading volume or performance, and not any Deriv partner commission. Commission sharing is retired
+    (commission.py). Deriv-button trades no longer earn points; trades closed on a connected MT5 account (reported by the EA) still do.
+  * Phase 2 bonus rewards (free signals / free connections for referrals' purchases) are SWITCHED OFF in code: bonus_enabled() is False.
 
   * Referral: every member has a permanent code and link (/login.html?rc=CODE). static/track.js keeps the code in a cookie for 30 days
     (first touch wins) and signup attaches it to the new member. One referrer per member, never changeable, no self-referral. A
-    referral QUALIFIES once the referred member has a Deriv account linked, which is what pays the referrer.
+    referral QUALIFIES once the referred member has completed TradeLens onboarding (used at least one AI analysis). It is a TradeLens
+    activity only; nothing about Deriv is involved. (Partner referral links for Deriv sign-ups live in partners.py, separately.)
   * Points: one ledger (points_ledger, unique per member + kind + ref, so a retry can never award twice). Points are collected by
-    sweeps that READ what the app already records (usage, journal, Deriv trades, orders, MT5 accounts, copy members), so the payment,
+    sweeps that READ what the app already records (usage, journal, orders, MT5 accounts, copy members), so the payment,
     trade and login flows are never touched or slowed. A sweep runs when a member opens the app (at most every 10 minutes), and when
     a referrer opens the Rewards page. Only activity from the day Rewards was switched on counts (rewards_meta.start).
   * Level = LIFETIME points (never goes down). Spendable points are kept apart for prizes (Phase 3), so redeeming never lowers a level.
-  * Phase 2 (bonus rewards) only runs when ALSO REWARDS_BONUS_ON=1, so points can go live before anything of value is given away:
-      - free signals: 5% of the signals of a Signal Vault / Vault Lite a qualified referral buys (credited through the credits ledger)
-      - a free 30-day MT5 connection (+ notifications + copy trading) for every 3 DIFFERENT qualified referrals who bought a plan
-        that includes MT5 or Copy trading. Both are granted when the purchase is confirmed (no hold: the terms say no refunds).
+  * The old Phase 2 code (free signals and free connections for a referral's purchases) is kept but cannot run; see bonus_enabled().
   * Everything is OFF unless REWARDS_ON=1. Tables are new and additive (migrations/2026_11_rewards.sql); nothing existing changes.
 Days are UTC days. Failures inside a sweep are logged by type only and never reach the member."""
 import asyncio
@@ -54,7 +57,7 @@ SCHEMA = """
 # ------------------------------------------------------------------ the rules (approved by the owner, Nov 2026)
 LEVELS = [("Bronze", 0), ("Silver", 1000), ("Gold", 5000), ("Diamond", 20000), ("Platinum", 60000)]
 POINTS = {"daily": 2, "streak7": 10, "streak30": 50, "analysis": 1, "trade_live": 3, "trade_demo": 1, "mt5_conn": 50,
-          "copy_first": 100, "copy_month": 20, "ref_qualify": 50, "ref_first_buy": 100}
+          "copy_first": 100, "copy_month": 20, "ref_first_buy": 100}
 PER_USD = 10               # points per USD of a confirmed purchase
 REF_PER_USD = 2            # referrer's points per USD of a referral's later purchases
 ANALYSIS_DAILY_CAP = 5
@@ -69,12 +72,11 @@ THROTTLE = 600             # seconds between automatic sweeps of one member
 RULES = [
     {"what": "Open the app each day", "points": "2 (+10 at a 7-day streak, +50 at 30 days)"},
     {"what": "AI analysis done", "points": "1 each, up to 5 a day"},
-    {"what": "Trade closed or placed", "points": "3 on a live account, 1 on demo; up to 5 trades a day"},
+    {"what": "Trade closed on your connected MT5 account", "points": "3 on a live account, 1 on demo; up to 5 trades a day"},
     {"what": "Connect an MT5 account", "points": "50 per account, up to 2"},
     {"what": "Start Copy Trading", "points": "100 once, then 20 each month it is active"},
     {"what": "Buy a bundle or subscription", "points": "10 per USD paid"},
-    {"what": "A friend you referred links their Deriv account", "points": "50"},
-    {"what": "That friend's first purchase", "points": "100"},
+    {"what": "A friend you referred buys a TradeLens bundle or subscription for the first time", "points": "100"},
     {"what": "That friend's later purchases", "points": "2 per USD"},
 ]
 CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
@@ -89,8 +91,9 @@ def enabled() -> bool:
 
 
 def bonus_enabled() -> bool:
-    """Phase 2: real rewards (signals, free connections). Needs REWARDS_ON=1 too."""
-    return enabled() and os.environ.get("REWARDS_BONUS_ON", "").strip() == "1"
+    """Retired (Nov 2026): free signals and free connections for a referral's purchases are switched off for good. REWARDS_BONUS_ON
+    no longer has any effect. Rewards that already exist in the ledger or in billing_subs are not touched."""
+    return False
 
 
 def db():
@@ -239,20 +242,17 @@ def _live_logins(uid: int) -> set:
 
 
 def _qualify(uid: int):
-    """If this member was referred and now has a Deriv account linked, the referral counts and the referrer is paid."""
-    from . import deriv_login
+    """A referred member counts once they have completed TradeLens onboarding: at least one AI analysis. No points are paid for this
+    step, and Deriv is not involved. (It only unlocks the referrer's points from that friend's purchases.)"""
     with closing(db()) as con:
-        ref = con.execute("SELECT referrer_id FROM referrals WHERE referred_id=? AND status='pending'", (uid,)).fetchone()
-        if not ref:
+        if not con.execute("SELECT 1 FROM referrals WHERE referred_id=? AND status='pending'", (uid,)).fetchone():
             return
-        with closing(deriv_login.db()) as d:
-            linked = d.execute("SELECT 1 FROM deriv_accounts WHERE user_id=?", (uid,)).fetchone()
-        if not linked:
+        with closing(auth.db()) as a:
+            used = a.execute("SELECT 1 FROM usage WHERE user_id=? AND n>0", (uid,)).fetchone()
+        if not used:
             return
-        cur = con.execute("UPDATE referrals SET status='qualified', qualified_at=? WHERE referred_id=? AND status='pending'", (_now(), uid))
+        con.execute("UPDATE referrals SET status='qualified', qualified_at=? WHERE referred_id=? AND status='pending'", (_now(), uid))
         con.commit()
-        if cur.rowcount == 1:
-            award(con, ref["referrer_id"], "ref_qualify", f"u{uid}", POINTS["ref_qualify"], "A referral linked their Deriv account")
 
 
 def _analyses(uid: int, st: int):
@@ -271,17 +271,14 @@ def _trade_points(con, uid: int, ref: str, day: str, live: bool):
 
 
 def _trades(uid: int, st: int):
-    from . import deriv_trade, journal
+    """Trades the EA reported as closed. Trades placed through the Deriv button earn nothing (Deriv activity)."""
+    from . import journal
     live = _live_logins(uid)
     iso = datetime.fromtimestamp(st, timezone.utc).isoformat(timespec="seconds")
     with closing(journal.db()) as j:
         mt5 = j.execute("SELECT mt5_id, closed_at FROM trades WHERE user_id=? AND status='closed' AND mt5_id IS NOT NULL AND closed_at>=? "
                         "ORDER BY closed_at", (uid, iso)).fetchall()
-    with closing(deriv_trade.db()) as d:
-        dv = d.execute("SELECT id, account_type, created_at FROM deriv_trades WHERE user_id=? AND status='placed' AND created_at>=? "
-                       "ORDER BY created_at", (uid, st)).fetchall()
     events = [(str(r["closed_at"])[:10], f"m:{r['mt5_id']}", str(r["mt5_id"]).split(":", 1)[0] in live, str(r["closed_at"])) for r in mt5]
-    events += [(_day(r["created_at"]), f"d:{r['id']}", str(r["account_type"] or "").lower() == "real", f"{_day(r['created_at'])}T00") for r in dv]
     events.sort(key=lambda e: e[3])
     with closing(db()) as con:
         for day, ref, is_live, _ in events:
@@ -529,7 +526,6 @@ def member_view(uid: int, base: str) -> dict:
             "referrals": {"total": len(refs), "qualified": sum(1 for r in refs if r["status"] == "qualified"),
                           "list": [{"name": mask(emails.get(r["referred_id"])), "status": r["status"], "at": r["created_at"]} for r in refs]},
             "recent": recent, "month": _board("month", uid), "all": _board("all", uid), "bonus": bonus_view(uid),
-            "commission": _safe(lambda: __import__("app.commission", fromlist=["view"]).view(uid), {"on": False}),
             "prizes": _safe(lambda: __import__("app.prizes", fromlist=["view"]).view(uid), {"on": False})}
 
 

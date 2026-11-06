@@ -54,7 +54,15 @@ def _cfg() -> dict:
     with closing(credits.db()) as con:
         s = credits.settings(con)
     on = s.get("deriv_enabled") == "1" and bool(s.get("deriv_app_id"))
-    return {"on": on, "app_id": s.get("deriv_app_id", ""), "ib": s.get("deriv_ib_link", ""),
+    ib = s.get("deriv_ib_link", "")
+    if ib:                  # the old universal partner link is behind the partner-programme switch (partners.py): off until it is public
+        try:
+            from . import partners
+            if not partners.legacy_link_allowed():
+                ib = ""
+        except Exception:
+            ib = ""
+    return {"on": on, "app_id": s.get("deriv_app_id", ""), "ib": ib,
             "cashier": s.get("deriv_cashier_url", "")}
 
 

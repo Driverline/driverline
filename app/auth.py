@@ -233,6 +233,11 @@ async def signup(request):
         rewards.on_signup(uid, request)
     except Exception as e:
         print(f"[rewards] could not record referral: {type(e).__name__}", flush=True)
+    try:                                       # TradeLens partner referral code (partners.py); only when the programme is switched on
+        from . import partners
+        partners.on_signup(uid, request)
+    except Exception as e:
+        print(f"[partners] could not record partner referral: {type(e).__name__}", flush=True)
     return _session(JSONResponse({"ok": True}), uid, ph)
 
 

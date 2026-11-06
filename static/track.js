@@ -11,6 +11,11 @@
     if (/^[a-z0-9]{6,12}$/.test(rc) && document.cookie.indexOf('dl_rc=') < 0)
       document.cookie = 'dl_rc=' + rc + ';path=/;max-age=' + (LIFE / 1000) + ';SameSite=Lax' + (location.protocol === 'https:' ? ';Secure' : '');
   } catch (e) {}
+  try {                                                              // a TradeLens partner's referral code (partners.py): first touch wins
+    var pr = (q.get('ref') || '').toUpperCase();
+    if (/^[A-Z0-9]{6,12}$/.test(pr) && document.cookie.indexOf('dl_pr=') < 0)
+      document.cookie = 'dl_pr=' + pr + ';path=/;max-age=' + (LIFE / 1000) + ';SameSite=Lax' + (location.protocol === 'https:' ? ';Secure' : '');
+  } catch (e) {}
   var cur = null; try { cur = JSON.parse(localStorage.getItem(K) || 'null'); } catch (e) {}
   var host = ''; try { host = document.referrer ? new URL(document.referrer).hostname : ''; } catch (e) {}
   if (host === location.hostname) host = '';

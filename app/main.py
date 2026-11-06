@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, rewards, commission, prizes, pending_orders, tg_bot, copy_trading, copy_plan, mt5_requests, inbox, recap
+from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, rewards, commission, prizes, partners, pending_orders, tg_bot, copy_trading, copy_plan, mt5_requests, inbox, recap
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -144,6 +144,11 @@ async def lifespan(app):
         auth.bootstrap_admin()
     except Exception as e:
         print(f"[startup] admin bootstrap failed: {e}", flush=True)
+    for _name, _db in (("commission retirement guard", commission.db), ("partner tables", partners.db)):   # additive; idempotent
+        try:
+            await asyncio.to_thread(lambda f=_db: f().close())
+        except Exception as e:
+            print(f"[startup] {_name} failed: {type(e).__name__}: {e}", flush=True)
     tasks = await radar.background_loops() if os.environ.get("DRIVERLINE_RADAR", "1") != "0" else []
     if os.environ.get("DRIVERLINE_SIGNALS", "1") != "0":
         tasks.append(asyncio.create_task(signal_feed.signal_loop()))
@@ -193,6 +198,7 @@ routes = [
     *recap.routes,
     *rewards.routes,
     *commission.routes,
+    *partners.routes,
     *prizes.routes,
     Mount("/", app=StaticFiles(directory=str(STATIC_DIR), html=True), name="static"),
 ]

@@ -232,12 +232,19 @@ async def admin_decide(request):
     if not ok:
         raise HTTPException(409, "This request has already been decided")
     try:
-        from . import commission
-        commission._notify(red["user_id"], admin["id"], (f"Your prize ({red['prize_name']}) has been sent. {note}" if action == "shipped"
-                                                         else f"Your prize request ({red['prize_name']}) could not be fulfilled: {note}. Your points are back."))
+        _notify(red["user_id"], admin["id"], (f"Your prize ({red['prize_name']}) has been sent. {note}" if action == "shipped"
+                                              else f"Your prize request ({red['prize_name']}) could not be fulfilled: {note}. Your points are back."))
     except Exception as e:
         print(f"[prizes] could not message the member: {type(e).__name__}", flush=True)
     return JSONResponse({"ok": True})
+
+
+def _notify(uid: int, admin_id: int, body: str):
+    """A message in the member's TradeLens inbox."""
+    from . import inbox
+    with closing(inbox.db()) as con:
+        con.insert("INSERT INTO inbox_messages(user_id,sender,admin_id,body,created_at) VALUES(?,?,?,?,?)", (uid, "admin", admin_id, body[:1000], _now()))
+        con.commit()
 
 
 routes = [

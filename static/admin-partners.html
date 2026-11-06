@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Partners (admin)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+<style>
+.row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.row:first-of-type{border-top:0}
+.row span{color:var(--mut);text-align:right}
+.item{border-top:1px solid var(--line);padding:10px 0;overflow-wrap:anywhere}
+.item:first-of-type{border-top:0}
+.item input,.item select,.item textarea{margin-top:6px}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.btns button{width:auto;padding:8px 14px}
+.pick{cursor:pointer}
+.small{font-size:13px}
+</style>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main>
+<div class="mut" id="me"></div>
+<div id="denied" class="card" hidden><h2>Partners</h2><div class="mut">Not available.</div></div>
+<div id="app" hidden>
+<div class="card" id="ro" hidden><h2>Read-only review view</h2><div class="mut">You can inspect everything but change nothing. Member e-mail addresses are masked.</div></div>
+
+<div class="card"><h2>Partner programme</h2>
+  <div class="mut">Deriv is the authority for partner approval, client tagging and commissions. TradeLens only keeps its own referral records and routes members to official Deriv links. Nothing here is verified automatically.</div>
+  <label>Mode</label>
+  <select id="mode"><option value="off">Off: admins only, nothing recorded, old universal Deriv link hidden</option><option value="review">Review: admins and listed reviewers only</option><option value="public">Public: every member (needs Deriv's written approval recorded below)</option></select>
+  <label>Master Partner link (used ONLY when a member chooses to become a Deriv partner)</label>
+  <input id="master" placeholder="https://t.deriv.link?t=..." autocomplete="off">
+  <div id="adminonly">
+    <label>Reviewer accounts (e-mails, comma separated; they must already have a TradeLens account)</label>
+    <textarea id="rev" rows="2" placeholder="reviewer1@example.com, reviewer2@example.com"></textarea>
+  </div>
+  <label>Record of Deriv's written approval and any conditions (required before Public)</label>
+  <textarea id="appr" rows="3" maxlength="600" placeholder="Who at Deriv approved, on what date, reference, and the conditions"></textarea>
+  <div class="btns"><button id="ssave">Save settings</button></div><div id="smsg" class="mut small" style="margin-top:6px"></div>
+  <div class="mut small" id="legacy" style="margin-top:8px"></div>
+</div>
+
+<div class="card" id="housecard"><h2>Your own (house) link</h2>
+  <div class="mut">Used for members nobody introduced. It is the owner's own Deriv trader referral link and needs the same approval and link verification as any partner. Create it once.</div>
+  <input id="hlink" placeholder="https://t.deriv.link?t=..." autocomplete="off"><input id="hid" placeholder="Your Deriv partner ID (optional)" autocomplete="off" style="margin-top:6px">
+  <div class="btns"><button id="hmake" class="ghost">Create house partner</button></div><div id="hmsg" class="mut small" style="margin-top:6px"></div></div>
+
+<div class="card"><h2>Partners</h2>
+  <input id="q" placeholder="Search e-mail, partner ID, referral code or Deriv partner ID">
+  <div class="btns"><button id="qgo">Search</button></div>
+  <div id="list" style="margin-top:8px"></div></div>
+
+<div class="card" id="detail" hidden><h2 id="dtitle"></h2><div id="dbody"></div></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function row(a,b){const r=el('div','row');r.append(el('b','',a),el('span','',String(b==null?'-':b)));return r}
+async function api(path,method,body){
+  const r=await fetch('/api/admin/partners'+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
+const when=t=>t?new Date(t*1000).toLocaleString(undefined,{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'-';
+let W=null,cur=null;
+function msg(box,cls,t){box.className=cls+' small';box.textContent=t}
+async function init(){
+  try{W=await api('/whoami')}catch(e){$('denied').hidden=false;return}
+  $('app').hidden=false;$('ro').hidden=!W.read_only;
+  document.querySelectorAll('#ssave,#hmake').forEach(b=>b.hidden=W.read_only);
+  $('housecard').hidden=W.read_only;$('adminonly').hidden=W.read_only;
+  await loadSettings();await list();
+}
+async function loadSettings(){
+  const s=await api('/settings');$('mode').value=s.mode;$('master').value=s.master_link||'';$('appr').value=s.approval_record||'';
+  if(!W.read_only){$('rev').value=s.review_emails||'';
+    $('legacy').textContent=s.legacy_link?('The old universal Deriv link in Billing settings ('+s.legacy_link+') is hidden and unused until the programme is public. It can be entered above as your house link.'):'';
+    if(s.legacy_link&&!$('hlink').value)$('hlink').value=s.legacy_link}
+  [...document.querySelectorAll('#mode,#master,#appr,#rev')].forEach(i=>i.disabled=W.read_only);
+}
+$('ssave').onclick=async()=>{
+  try{await api('/settings','POST',{mode:$('mode').value,master_link:$('master').value,review_emails:$('rev').value,approval_record:$('appr').value});msg($('smsg'),'win','Saved');await loadSettings()}
+  catch(e){msg($('smsg'),'err',e.message)}};
+$('hmake').onclick=async()=>{
+  try{await api('/house','POST',{deriv_referral_link:$('hlink').value,deriv_partner_id:$('hid').value});msg($('hmsg'),'win','Created. Approve it below, then verify the link.');await list()}
+  catch(e){msg($('hmsg'),'err',e.message)}};
+async function list(){
+  const d=await api('?q='+encodeURIComponent($('q').value||'')),box=$('list');box.textContent='';
+  if(!d.partners.length)box.append(el('div','mut','No partners yet.'));
+  d.partners.forEach(p=>{const x=el('div','item pick');
+    x.append(row(p.email+(p.is_house?' (house)':''),p.status_label),el('div','mut small',p.partner_id+' · '+p.referral_code+' · link '+p.link_status));
+    x.onclick=()=>open(p.id);box.append(x)});
+}
+$('qgo').onclick=list;
+async function open(id){
+  const d=await api('/'+id);cur=id;const p=d.partner,b=$('dbody');b.textContent='';$('detail').hidden=false;$('dtitle').textContent=p.partner_id+' · '+p.email;
+  b.append(row('Status',p.status_label),row('Referral code',p.referral_code),row('Applied via',p.applied_via),row('Deriv partner ID',p.deriv_partner_id),
+    row('Deriv trader link',p.deriv_referral_link),row('Link verification',p.link_status),
+    row('Approval verified by hand',p.verification_source?(p.verification_source+' on '+p.verification_date):'not yet'));
+  b.append(el('div','mut small','"Verified" only ever means an admin checked it by hand. TradeLens never checks Deriv by itself.'));
+  if(!W.read_only){
+    const f=el('div','item');f.append(el('b','','Decision'));
+    const did=el('input');did.placeholder='Deriv partner ID';did.value=p.deriv_partner_id||'';
+    const src=el('input');src.placeholder='Where you checked (e.g. Deriv Partners Hub)';
+    const on=el('input');on.type='date';on.value=new Date().toISOString().slice(0,10);
+    const nt=el('input');nt.placeholder='Note or reason (needed to reject, suspend, activate)';
+    const bt=el('div','btns');
+    [['Approve','approve',''],['Reject','reject','ghost'],['Suspend','suspend','ghost'],['Activate','activate','ghost']].forEach(([t,a,c])=>{
+      const k=el('button',c,t);k.onclick=async()=>{try{await api('/'+id+'/status','POST',{action:a,deriv_partner_id:did.value,source:src.value,verified_on:on.value,note:nt.value});await list();await open(id)}catch(e){alert(e.message)}};bt.append(k)});
+    f.append(did,src,on,nt,bt);b.append(f);
+    const l=el('div','item');l.append(el('b','','Deriv trader referral link'));
+    const lk=el('input');lk.placeholder='https://t.deriv.link?t=...';lk.value=p.deriv_referral_link||'';
+    const lb=el('button','','Save link (resets verification)');lb.onclick=async()=>{try{await api('/'+id+'/link','POST',{deriv_referral_link:lk.value,deriv_partner_id:did.value});await open(id)}catch(e){alert(e.message)}};
+    const ls=el('input');ls.placeholder='Where you checked the link';const lo=el('input');lo.type='date';lo.value=on.value;
+    const vb=el('button','ghost','Mark link verified');vb.onclick=async()=>{try{await api('/'+id+'/verify-link','POST',{source:ls.value,verified_on:lo.value});await open(id)}catch(e){alert(e.message)}};
+    const bt2=el('div','btns');bt2.append(lb,vb);l.append(lk,ls,lo,bt2);b.append(l);
+    const c=el('div','item');c.append(el('b','','Record a client tagging you checked by hand'));
+    const ci=el('input');ci.placeholder='Deriv client ID or reference';const cs=el('input');cs.placeholder='Where you checked (e.g. Active Trader Breakdown)';const co=el('input');co.type='date';co.value=on.value;
+    const cb=el('button','ghost','Record');cb.onclick=async()=>{try{await api('/'+id+'/verify-client','POST',{client:ci.value,source:cs.value,verified_on:co.value});await open(id)}catch(e){alert(e.message)}};
+    const bt3=el('div','btns');bt3.append(cb);c.append(ci,cs,co,bt3);b.append(c);
+  }
+  const sec=(t,items,fn)=>{const w=el('div','item');w.append(el('b','',t+' ('+items.length+')'));items.forEach(i=>w.append(fn(i)));b.append(w)};
+  sec('Referred TradeLens members',d.referred,r=>row(r.email,r.status+' · '+when(r.at)));
+  sec('Referral activity',d.events,e=>row(e.kind+(e.email!=='-'?' · '+e.email:''),when(e.at)));
+  sec('Manual verifications',d.verifications,v=>row(v.kind+' · '+(v.subject||''),v.source+' · '+v.verified_on));
+  sec('Audit history',d.audit,a=>row(a.action+' (admin '+a.admin_id+')',when(a.at)));
+  $('detail').scrollIntoView({behavior:'smooth'});
+}
+init();
+</script>
+</body>
+</html>

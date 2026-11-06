@@ -12,6 +12,7 @@
       if(e)e.textContent=u.email+' · '+u.tier+' · AI analyses today '+u.used+'/'+u.limit;
       if(u.tier==='admin')adminTab();
       if(u.rewards)rewardsTab();
+      partnerTab();
       window.dlBadge()}catch(x){}
   };
   // Unread counters on the Messages tabs: the member's own (announcements + replies) and, for an admin, members' unread messages.
@@ -42,6 +43,13 @@
     if(location.pathname==='/rewards.html')a.className='on';
     const m=n.querySelector('a[href="/inbox.html"]');if(m)m.after(a);else n.append(a);
   }
+  async function partnerTab(){          // the Partner tab only appears for people who may use the programme (admins, reviewers, or everyone once public)
+    try{const r=await f('/api/partners/access');if(!r.ok||!(await r.json()).access)return;
+      const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-partner]'))return;
+      const a=document.createElement('a');a.href='/partner.html';a.textContent='Partner';a.dataset.partner='1';
+      if(location.pathname==='/partner.html')a.className='on';
+      const m=n.querySelector('[data-rewards]')||n.querySelector('a[href="/inbox.html"]');if(m)m.after(a);else n.append(a)}catch(x){}
+  }
   function adminTab(){
     const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-admin]'))return;
     const a=document.createElement('a');a.href='/admin.html';a.textContent='Admin';a.dataset.admin='1';
@@ -50,7 +58,9 @@
     if(location.pathname==='/admin-messages.html')m.className='on';n.append(m);
     const p=document.createElement('a');p.href='/admin-payments.html';p.textContent='Payments';p.dataset.admin='1';
     if(location.pathname==='/admin-payments.html')p.className='on';n.append(p);
-    const w=document.createElement('a');w.href='/admin-rewards.html';w.textContent='Payouts';w.dataset.admin='1';
+    const q=document.createElement('a');q.href='/admin-partners.html';q.textContent='Partners';q.dataset.admin='1';
+    if(location.pathname==='/admin-partners.html')q.className='on';n.append(q);
+    const w=document.createElement('a');w.href='/admin-rewards.html';w.textContent='Rewards';w.dataset.admin='1';
     if(location.pathname==='/admin-rewards.html')w.className='on';n.append(w);
   }
   document.addEventListener('DOMContentLoaded',()=>{

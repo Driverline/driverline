@@ -1,3 +1,5 @@
+> **UPDATE Nov 2026: commission, Phase 2 referral purchase rewards, "referral links Deriv" points and Deriv-button trade points are RETIRED.** See `docs/PARTNER_PROGRAMME.md`. The sections below describe the old design and are kept for history.
+
 # Referrals, points and levels (Phase 1), referral rewards (Phase 2), commission and prizes (Phase 3)
 
 Switched OFF until `REWARDS_ON=1` is set in Render. Nothing existing changes: new tables only (`migrations/2026_11_rewards.sql`, the app also creates them itself).

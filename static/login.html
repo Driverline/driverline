@@ -15,6 +15,7 @@
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
 <main>
 <img class="hero" src="/logo-full.png" alt="TradeLens by Driverline">
+<div class="card" id="prbox" hidden><div id="prtxt" class="mut"></div></div>
 <div class="card">
 <h2 id="ttl">Sign in</h2>
 <label>Email</label><input id="em" type="email" autocomplete="email">
@@ -58,6 +59,11 @@ $('go').onclick=async()=>{
 ['em','pw','inv'].forEach(i=>$(i).addEventListener('keydown',e=>{if(e.key==='Enter')$('go').click()}));
 setMode('login');
 fetch('/api/public/deriv').then(r=>r.json()).then(c=>{if(!c.enabled)return;$('dv').hidden=false;if(c.ib_link){$('dvib').href=c.ib_link;$('dvnew').hidden=false}}).catch(()=>{});
+(function(){ // a partner referral code (kept by track.js): say whether it is usable. Nothing about Deriv is promised.
+  const m=/(?:^|; )dl_pr=([A-Za-z0-9]{6,12})/.exec(document.cookie);if(!m)return;
+  fetch('/api/public/partner-ref?code='+encodeURIComponent(m[1])).then(r=>r.json()).then(d=>{if(!d.active)return;
+    $('prbox').hidden=false;$('prtxt').textContent=d.valid?'You were invited by a TradeLens partner. A TradeLens invitation is a TradeLens record only. It does not create any relationship with Deriv, and TradeLens is not owned or operated by Deriv.':'This referral code is not valid, so it will not be used. You can still create an account with an invite code.'}).catch(()=>{});
+})();
 (function(){const m=/[#&]invite=([A-Za-z0-9_-]{4,40})/.exec(location.hash);if(m){setMode('create');$('inv').value=m[1];history.replaceState(null,'',location.pathname)}})();
 </script>
 </body>

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Partner</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+<style>
+.row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.row:first-of-type{border-top:0}
+.row span{color:var(--mut);text-align:right}
+.link{background:#030918;border:1px solid var(--line);border-radius:10px;padding:10px;overflow-wrap:anywhere;margin:8px 0;font-size:14px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.btns button{width:auto;padding:10px 16px}
+.note{border:1px solid var(--line);border-radius:10px;padding:10px;margin:10px 0;background:#030918}
+.note p{margin:6px 0;font-size:14px}
+label.chk{display:flex;gap:8px;align-items:flex-start;margin-top:10px;color:var(--tx);font-size:14px}
+label.chk input{width:auto;margin-top:3px}
+.badge{display:inline-block;border:1px solid var(--gold);color:var(--gold);border-radius:99px;padding:2px 10px;font-size:12px;margin-left:6px}
+</style>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main>
+<div class="mut" id="me"></div>
+<div id="off" class="card" hidden><h2>Partner programme</h2><div class="mut">This section is not open yet.</div></div>
+<div id="app" hidden>
+  <div class="card" id="reviewbar" hidden><h2>Review access</h2>
+    <div class="mut">You are viewing the TradeLens partner programme in review mode. It is not public. Nothing here claims Deriv approval.</div>
+    <div class="btns"><a id="adminlink" href="/admin-partners.html" style="color:var(--gold)">Open the partner administration view</a></div></div>
+
+  <div class="card"><h2>About this programme</h2>
+    <div class="mut">TradeLens is independent of Deriv. It is not owned, operated or endorsed by Deriv. Deriv alone decides partner approval, client tagging and commissions. TradeLens only keeps its own referral records and routes members to official Deriv referral links. A TradeLens referral is not proof of Deriv attribution, and TradeLens does not share any Deriv commission or give points or rewards for Deriv sign-ups, partner recruitment, trading volume or trading results.</div></div>
+
+  <div class="card" id="dash" hidden><h2>Your partner dashboard <span class="badge" id="dstatus"></span></h2>
+    <div id="dnot" class="mut"></div>
+    <div id="dlive" hidden>
+      <div class="mut">Your TradeLens referral link</div><div class="link" id="durl"></div>
+      <div class="row"><b>Partner ID</b><span id="did"></span></div>
+      <div class="row"><b>Referral code</b><span id="dcode"></span></div>
+      <div class="row"><b>Your Deriv trader link</b><span id="dlink"></span></div>
+      <div class="btns"><button id="dcopy">Copy referral link</button></div><div class="mut" id="dcopied"></div>
+      <h2 style="margin-top:16px">What TradeLens can see</h2>
+      <div id="dcounts"></div>
+      <div class="mut" id="dexplain" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <div class="card" id="ja"><h2>Open a new Deriv trading account</h2>
+    <div class="mut" id="jatxt"></div>
+    <div id="jaform" hidden>
+      <div class="note" id="janote"></div>
+      <label class="chk"><input type="checkbox" id="jac1"><span>I have read the notice above and I agree to continue to Deriv.</span></label>
+      <label class="chk"><input type="checkbox" id="jac2"><span>I want to open a NEW Deriv account. I understand this does not change any account I already have.</span></label>
+      <div class="btns"><button id="jago">Continue to Deriv</button></div>
+    </div>
+    <div class="err" id="jamsg" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card" id="jb"><h2>Become a Deriv partner</h2>
+    <div class="mut" id="jbstatus"></div>
+    <div id="jbform" hidden>
+      <div class="note" id="jbnote"></div>
+      <label class="chk"><input type="radio" name="jbp" value="master_link" checked><span>Apply through TradeLens's Master Partner link (opens Deriv).</span></label>
+      <label class="chk"><input type="radio" name="jbp" value="already_tagged"><span>I am already a Deriv client tagged under TradeLens and have become a Deriv partner. Do not send me to Deriv again.</span></label>
+      <label class="chk"><input type="checkbox" id="jbc"><span>I have read the notice above and I consent to continue.</span></label>
+      <div class="btns"><button id="jbgo">Continue</button></div>
+    </div>
+    <div id="jbsub" hidden>
+      <div class="mut">When you have applied on Deriv, enter your Deriv partner ID if you have one and tell us. An admin will check it by hand against Deriv Partners Hub. You cannot operate as a TradeLens partner until Deriv has approved you and we have verified it.</div>
+      <label>Deriv partner ID (optional)</label><input id="jbid" autocomplete="off" maxlength="40">
+      <div class="btns"><button id="jbsend">I have applied at Deriv</button></div>
+    </div>
+    <div class="err" id="jbmsg" style="margin-top:8px"></div>
+  </div>
+  <small class="dis">Education and risk analysis only, not financial advice. Trading carries a high risk of loss.</small>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function row(a,b){const r=el('div','row');r.append(el('b','',a),el('span','',String(b)));return r}
+async function api(path,method,body){
+  const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok){const e=new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));e.status=r.status;throw e}return d}
+function fill(box,lines){box.textContent='';lines.forEach(t=>box.append(el('p','',t)))}
+let M=null;
+async function load(){
+  try{M=await api('/api/partners/me')}catch(e){$('off').hidden=false;return}
+  $('app').hidden=false;
+  $('reviewbar').hidden=!M.review;
+  // Journey A
+  const T=M.trader;
+  if(!T.available){$('jatxt').textContent=T.reason||'Not available right now.';$('jaform').hidden=true}
+  else{
+    $('jatxt').textContent=T.via==='partner'?'You joined TradeLens through a TradeLens partner. Their official Deriv link will be used.':'You will be sent to the official Deriv link of TradeLens.';
+    fill($('janote'),M.disclosures.trader.concat(['Partner: '+T.partner_ref+(T.via==='house'?' (TradeLens)':'')]));
+    if(T.has_deriv_account)$('janote').append(el('p','warn','You already have a Deriv account linked to TradeLens. Opening another account is optional.'));
+    $('jaform').hidden=false;
+  }
+  // Journey B
+  const P=M.partner,st=P?P.status:'none';
+  $('jbstatus').textContent='Status: '+(P?P.status_label:'Not applied')+'. Deriv runs its own approval. TradeLens cannot approve you.';
+  const canApply=!P||['rejected','application_initiated'].includes(st);
+  $('jbform').hidden=!canApply;
+  fill($('jbnote'),M.disclosures.partner);
+  $('jbsub').hidden=!(P&&['application_initiated','awaiting_deriv_approval','rejected'].includes(st));
+  if(P&&st==='awaiting_deriv_approval')$('jbstatus').textContent+=' We are waiting for Deriv and for a TradeLens admin to verify it.';
+  if(P&&st==='suspended')$('jbstatus').textContent+=' Your partner access is suspended. Please contact support.';
+  if(P&&st==='approved')$('jbstatus').textContent+=' You can refer new members from your dashboard below.';
+  if(!M.master_link_set&&canApply)$('jbmsg').textContent='The Master Partner link has not been set up yet, so only the "already a partner" option works.';
+  // dashboard
+  if(P){
+    const D=await api('/api/partners/dashboard');$('dash').hidden=false;$('dstatus').textContent=P.status_label;
+    if(st!=='approved'){$('dnot').textContent='Your referral link appears here once Deriv has approved you and a TradeLens admin has verified it.';$('dlive').hidden=true}
+    else{
+      $('dnot').textContent='';$('dlive').hidden=false;
+      $('durl').textContent=D.partner.referral_url;$('did').textContent=D.partner.partner_id;$('dcode').textContent=D.partner.referral_code;
+      $('dlink').textContent=D.partner.can_refer_traders?'Verified':(D.partner.has_trader_link?'Added, not verified yet':'Not added yet');
+      $('dcopy').onclick=async()=>{try{await navigator.clipboard.writeText(D.partner.referral_url);$('dcopied').textContent='Copied'}catch(e){$('dcopied').textContent='Press and hold the link to copy it'}};
+      const c=D.counts,n=D.notes,box=$('dcounts');box.textContent='';
+      [['TradeLens registrations','tradelens_registrations'],['Completed TradeLens onboarding','completed_onboarding'],['Deriv hand-offs started from TradeLens','deriv_handoffs_started'],
+       ['Deriv account registrations','deriv_account_registrations'],['Deriv-confirmed client tagging (checked by hand)','deriv_confirmed_tagging']].forEach(([l,k])=>{
+        box.append(row(l,c[k]===null?'Not available':c[k]),el('div','mut',n[k]))});
+      $('dexplain').textContent=D.explain;
+    }
+  }
+}
+$('jago').onclick=async()=>{$('jamsg').textContent='';
+  if(!$('jac1').checked||!$('jac2').checked){$('jamsg').textContent='Please tick both boxes to continue.';return}
+  $('jago').disabled=true;
+  try{const d=await api('/api/partners/trader/handoff','POST',{consent:true,version:M.disclosures.version,new_account:true});window.open(d.redirect,'_blank','noopener,noreferrer')}
+  catch(e){$('jamsg').textContent=e.message}$('jago').disabled=false};
+$('jbgo').onclick=async()=>{$('jbmsg').textContent='';
+  if(!$('jbc').checked){$('jbmsg').textContent='Please tick the box to continue.';return}
+  const path=document.querySelector('input[name=jbp]:checked').value;$('jbgo').disabled=true;
+  try{const d=await api('/api/partners/become/start','POST',{consent:true,version:M.disclosures.version,path});
+    if(d.redirect)window.open(d.redirect,'_blank','noopener,noreferrer');await load()}
+  catch(e){$('jbmsg').textContent=e.message}$('jbgo').disabled=false};
+$('jbsend').onclick=async()=>{$('jbmsg').textContent='';
+  try{await api('/api/partners/become/submit','POST',{deriv_partner_id:$('jbid').value.trim()});await load()}catch(e){$('jbmsg').textContent=e.message}};
+load();
+</script>
+</body>
+</html>
