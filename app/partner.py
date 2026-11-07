@@ -101,6 +101,12 @@ def capture_on() -> bool:
     return os.environ.get("DERIV_CAPTURE_CLIENT_ID", "1") != "0"
 
 
+def api_on() -> bool:
+    """Deriv's Partners API check (client-tags/check) is OFF unless DERIV_PARTNER_API_ON=1. While a Deriv review is open it must stay off:
+    TradeLens verifies partners and clients by hand, so no call to that API is made, whatever else is configured."""
+    return os.environ.get("DERIV_PARTNER_API_ON", "") == "1"
+
+
 def trade_scope() -> str:
     return "trade"
 
@@ -248,6 +254,8 @@ async def check_ids(headers: dict, ids: list):
 
 async def check_clients(headers: dict, ids: list):
     """Calls Deriv for up to 100 ids. Returns ({id: {is_tagged, resolved, display_id}}, raw json)."""
+    if not api_on():
+        raise PartnerAuthError("The Deriv Partners API check is switched off. Partners and clients are verified by hand.")
     async with httpx.AsyncClient(timeout=30) as cl:
         for attempt in (0, 1):
             r = await cl.post(CHECK_URL, headers={**headers, "Content-Type": "application/json", "accept": "application/json"},
@@ -313,6 +321,8 @@ async def partner_start(request):
         auth.require_admin(request)
     except HTTPException:
         return deriv_login._again("Only the owner can start a partner check.", 403)
+    if not api_on():
+        return deriv_login._again("The Deriv Partners API check is switched off. Partners and clients are verified by hand.", 403)
     app_id = deriv_login._cfg()["app_id"]
     if not app_id:
         return deriv_login._again("Deriv is not set up in Admin yet.", 503)
@@ -444,6 +454,8 @@ def _pat_headers():
 
 async def api_check(request):
     auth.require_admin(request)
+    if not api_on():
+        raise HTTPException(403, "The Deriv Partners API check is switched off. Partners and clients are verified by hand.")
     h = _pat_headers()
     if not h:
         raise HTTPException(409, "No partner token is set. Use 'Check with Deriv' to sign in as the partner instead.")
@@ -465,7 +477,7 @@ async def api_summary(request):
         captured = con.execute("SELECT COUNT(*) AS c FROM partner_tags WHERE client_uuid IS NOT NULL").fetchone()["c"]
     return JSONResponse({"capture_on": capture_on(), "captured": captured, "last_probe": json.loads(pr["value"]) if pr else None, "counts": {s: counts.get(s, 0) for s in STATUSES}, "gate": gate_on(),
                          "signup_via_oauth": os.environ.get("DERIV_SIGNUP_VIA_OAUTH") == "1",
-                         "token_set": bool(_pat_headers()), "values_carried": sorted(p.keys()),
+                         "api_on": api_on(), "token_set": bool(_pat_headers()), "values_carried": sorted(p.keys()),
                          "last_check": json.loads(last["value"]) if last else None})
 
 

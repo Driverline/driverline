@@ -58,3 +58,9 @@ Unless `PARTNER_PERKS_ON=1` is set in Render (leave it unset), all of these are 
 ## Open decisions
 - `deriv_trades.markup_pct` (TradeLens earns a markup on Deriv-button trades) is not changed here.
 - Login page "Verify your Deriv account" card: the wording no longer mentions free welcome signals. The 3 welcome signals are given to every new member (`credits.ensure_welcome`), so no behaviour changed. It can be switched off with "Deriv enabled" in Admin > Payments.
+
+## Deriv Partners API check: off by default
+
+`partner.api_on()` is false unless `DERIV_PARTNER_API_ON=1`. While it is off, `check_clients` refuses before any request is made, the admin
+"Check with Deriv" sign-in and the saved-token check return 403, and the admin page says verification is by hand. Leave it unset during any Deriv review.
+Separately, `DERIV_CAPTURE_CLIENT_ID` (default on) reads a member's Deriv client ID from Deriv's userinfo endpoint at Deriv sign-in; set it to `0` to stop that.

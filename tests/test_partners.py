@@ -534,5 +534,42 @@ class ExistingFeaturesUntouched(unittest.TestCase):
             partners.on_signup = orig
 
 
+class PartnersApiSwitchedOff(unittest.TestCase):
+    """The Deriv Partners API check must never run unless DERIV_PARTNER_API_ON=1 (it is off during a Deriv review)."""
+    def setUp(self):
+        self._old = {k: os.environ.pop(k, None) for k in ("DERIV_PARTNER_API_ON",)}
+        os.environ["DERIV_PARTNER_TOKEN"] = "x" * 20   # even with a token configured it stays off
+
+    def tearDown(self):
+        os.environ.pop("DERIV_PARTNER_TOKEN", None)
+        for k, v in self._old.items():
+            if v is not None:
+                os.environ[k] = v
+
+    def test_off_by_default(self):
+        from app import partner
+        self.assertFalse(partner.api_on())
+
+    def test_the_http_call_is_refused_before_any_request_is_made(self):
+        import asyncio
+        from app import partner
+        with self.assertRaises(partner.PartnerAuthError):
+            asyncio.run(partner.check_clients({"Authorization": "Bearer x"}, ["CR1234567"]))
+
+    def test_admin_routes_refuse(self):
+        admin = client(mk_user("admin"))
+        self.assertEqual(admin.post("/api/admin/partner/check").status_code, 403)
+        self.assertEqual(admin.get("/auth/deriv/partner/start", follow_redirects=False).status_code, 403)
+        self.assertFalse(admin.get("/api/admin/partner/summary").json()["api_on"])
+
+    def test_can_be_switched_on_explicitly(self):
+        from app import partner
+        os.environ["DERIV_PARTNER_API_ON"] = "1"
+        try:
+            self.assertTrue(partner.api_on())
+        finally:
+            os.environ.pop("DERIV_PARTNER_API_ON", None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
