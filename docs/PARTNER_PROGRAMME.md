@@ -46,9 +46,15 @@ First valid touch at sign-up wins. `?ref=CODE` is kept 30 days by `static/track.
 ## Going public (Stage 2, only after Deriv's written approval)
 Record the approval and its conditions in Admin > Partners (required), apply any conditions, set Mode = Public. Keep manual verification until Deriv confirms an authorised automated mechanism. Rollback: Mode = Off.
 
+## Benefits tied to Deriv tagging: CLOSED for the Deriv review (Nov 2026)
+Unless `PARTNER_PERKS_ON=1` is set in Render (leave it unset), all of these are off: the Signals Pro price of $15 for tagged members (`perks.price_for`), the Copy trading mode of Signals Plus (`copy_plan.ib_linked`, and the note on the Billing page), new partner bonus signals, and new founding-member places. Nothing already granted is taken back. On 7 Nov 2026 nobody held an active Plus or Pro plan, so no paying member was affected.
+
+## Privacy and consent
+`static/privacy.html` is the public Privacy Notice (data collected, purposes, recipients such as Anthropic, NOWPayments, Telegram, Render/Supabase, cookies, retention, rights). It is linked from the sign-in page, the Terms, and both consent screens. Consent records carry the notice version (`2026-11-v2`); consent to an older version is refused. Have it reviewed by a lawyer before relying on it.
+
+## Existing Deriv API check
+`app/partner.py` can call Deriv's Partners API (`client-tags/check`) when an admin triggers it, or automatically if `DERIV_PARTNER_TOKEN` is set. On 7 Nov 2026 `DERIV_PARTNER_TOKEN`, `PARTNER_GATE` and `DERIV_SIGNUP_VIA_OAUTH` were NOT set in Render. Do not press the check button in Admin while Deriv's review is open. It was disclosed to Deriv.
+
 ## Open decisions
-- `partner.py` "check with Deriv" (owner signs in, token used once) is existing and owner-triggered. It is not scheduled and the partner module does not use it. It still marks `partner_tags` as "confirmed". Decide whether to leave it off during review.
-- Signals Pro is $15 instead of $30 for members confirmed as tagged to TradeLens (`credits.price_for`). It rewards Deriv attribution. Left unchanged; decide before going public.
 - `deriv_trades.markup_pct` (TradeLens earns a markup on Deriv-button trades) is not changed here.
-- Free Copy Trading access for members whose Deriv account is confirmed as tagged to TradeLens (`copy_plan.ib_linked`, the "plus" path) is also a benefit tied to Deriv attribution. It is left unchanged because it is existing production behaviour; decide before going public.
-- Login page "Verify your Deriv account" card: the wording no longer mentions free welcome signals (Nov 2026). The 3 welcome signals are given to every new member (`credits.ensure_welcome`), not only to Deriv-verified ones, so no behaviour changed. The Deriv-verify sign-in itself is unchanged; it can be switched off with "Deriv enabled" in Admin > Payments.
+- Login page "Verify your Deriv account" card: the wording no longer mentions free welcome signals. The 3 welcome signals are given to every new member (`credits.ensure_welcome`), so no behaviour changed. It can be switched off with "Deriv enabled" in Admin > Payments.

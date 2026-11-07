@@ -326,7 +326,7 @@ class CreateOrderTests(unittest.TestCase):
             self.assertEqual(r.status_code, 502, override)
             self.assertEqual([x["status"] for x in sql("SELECT status FROM billing_orders WHERE user_id=?", uid)], ["failed"])
 
-    def test_partner_member_pays_partner_price(self):
+    def test_partner_price_is_closed_by_default_and_works_when_opened(self):
         try:
             from app import perks  # noqa: F401
         except Exception:
@@ -336,8 +336,15 @@ class CreateOrderTests(unittest.TestCase):
         with closing(partner.db()) as con:
             con.execute("INSERT INTO partner_tags(account_id,user_id,status,first_seen) VALUES(?,?,?,?)", (f"CR{uid}", uid, "confirmed", 1))
             con.commit()
+        os.environ.pop("PARTNER_PERKS_ON", None)       # Nov 2026: the Deriv-tagged price is closed by default (perks.grants_on)
         o = client(uid).post("/api/pay/crypto/order", json={"product": "pro", "accepted": True}).json()["order"]
-        self.assertEqual(o["amount_usd"], 15.0)
+        self.assertEqual(o["amount_usd"], 30.0)
+        os.environ["PARTNER_PERKS_ON"] = "1"
+        try:
+            o = client(uid).post("/api/pay/crypto/order", json={"product": "pro", "accepted": True}).json()["order"]
+            self.assertEqual(o["amount_usd"], 15.0)     # the mechanism still works when explicitly opened
+        finally:
+            os.environ.pop("PARTNER_PERKS_ON", None)
 
 
 # ---------------------------------------------------------------- 3. paying and fulfilment

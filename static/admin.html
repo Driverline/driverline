@@ -175,7 +175,7 @@ async function loadGrowth(box){
 async function loadPerks(box){
   box.textContent='';
   let d;try{d=await api('/perks')}catch(e){box.append(el('div','err',e.message));return}
-  box.append(el('div','mut','Members whose Deriv account Deriv confirms as tagged to you get '+d.signals+' free signals in total (welcome included) and Pro at $15. The first '+d.slots+' to fund a live Deriv MT5 account with at least $'+d.min_balance+' also get notifications and the MT5 connection free for 30 days. A place is taken when the balance is seen, not when the member signs up.'));
+  box.append(el('div','mut','(These offers are closed unless PARTNER_PERKS_ON=1 is set in Render.) Members whose Deriv account Deriv confirms as tagged to you get '+d.signals+' free signals in total (welcome included) and Pro at $15. The first '+d.slots+' to fund a live Deriv MT5 account with at least $'+d.min_balance+' also get notifications and the MT5 connection free for 30 days. A place is taken when the balance is seen, not when the member signs up.'));
   box.append(kv('Partner members',d.partners),kv('Founder places left',d.slots_left+' of '+d.slots),kv('Founders verified',d.verified));
   const sy=el('button','ghost','Give perks now');sy.style.cssText='width:auto;padding:6px 12px;margin:8px 0';
   sy.onclick=async()=>{sy.disabled=true;try{const r=await api('/perks/sync','POST');alert('Checked '+r.synced+' partner members.');loadPerks(box)}catch(e){alert(e.message);sy.disabled=false}};box.append(sy);

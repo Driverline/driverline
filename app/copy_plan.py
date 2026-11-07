@@ -37,9 +37,12 @@ def _now() -> int:
 
 
 def ib_linked(uid: int) -> bool:
-    """True when Deriv's partner records CONFIRM this member's account as tagged to us (the same test the partner perks use)."""
+    """True when Deriv's partner records CONFIRM this member's account as tagged to us (the same test the partner perks use).
+    Always False unless PARTNER_PERKS_ON=1: the Copy trading mode of Signals Plus is a benefit tied to Deriv tagging and is closed."""
     try:
         from . import perks
+        if not perks.grants_on():
+            return False
         return bool(perks._confirmed(uid))
     except Exception as e:
         print(f"[copy-plan] IB check failed: {type(e).__name__}", flush=True)

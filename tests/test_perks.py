@@ -283,5 +283,54 @@ class FoundingMembers(unittest.TestCase):
         self.assertFalse(credits.entitled({"id": u, "tier": "free"}, "mt5"))
 
 
+class ClosedByDefault(unittest.TestCase):
+    """Nov 2026: every benefit tied to Deriv tagging is closed unless PARTNER_PERKS_ON=1 (the rest of this file turns it on to test the mechanism)."""
+    def setUp(self):
+        self._old = os.environ.pop("PARTNER_PERKS_ON", None)
+
+    def tearDown(self):
+        if self._old is not None:
+            os.environ["PARTNER_PERKS_ON"] = self._old
+
+    def test_the_flag_is_off_when_unset_or_not_exactly_one(self):
+        self.assertFalse(perks.grants_on())
+        os.environ["PARTNER_PERKS_ON"] = "true"
+        self.assertFalse(perks.grants_on())
+        os.environ["PARTNER_PERKS_ON"] = "1"
+        self.assertTrue(perks.grants_on())
+
+    def test_a_confirmed_member_pays_the_normal_pro_price(self):
+        u = partner()
+        self.assertEqual(perks.price_for({"id": u, "tier": "free"}, "pro", 30.0), 30.0)
+
+    def test_a_confirmed_member_gets_no_bonus_signals_and_no_founding_place(self):
+        u = partner()
+        before = ledger(u)
+        self.assertFalse(perks.sync(u))
+        self.assertEqual(ledger(u), before)
+        self.assertEqual(perk(u), None)
+        self.assertFalse(perks.founder_pending(u))
+
+    def test_copy_trading_mode_of_signals_plus_needs_the_flag(self):
+        from app import copy_plan
+        u = partner()
+        self.assertFalse(copy_plan.ib_linked(u))
+        os.environ["PARTNER_PERKS_ON"] = "1"
+        self.assertTrue(copy_plan.ib_linked(u))
+
+    def test_the_billing_catalog_no_longer_advertises_the_deriv_linked_copy_mode(self):
+        from starlette.testclient import TestClient
+        from app import main
+        u = mk_user()
+        c = TestClient(main.app)
+        c.cookies.set(auth.COOKIE, auth.make_token(u, "h"))
+        cat = c.get("/api/billing").json()["catalog"]
+        plus = [p for p in cat if p["key"] == "plus"]
+        self.assertEqual(len(plus), 1)
+        self.assertFalse(plus[0]["copy_ib"])
+        os.environ["PARTNER_PERKS_ON"] = "1"
+        self.assertTrue([p for p in c.get("/api/billing").json()["catalog"] if p["key"] == "plus"][0]["copy_ib"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

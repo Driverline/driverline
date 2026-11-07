@@ -468,6 +468,31 @@ class Access(unittest.TestCase):
         self.assertEqual(admin.get("/api/admin/partners", params={"q": "nobody"}).json()["partners"], [])
 
 
+class PrivacyAndConsent(unittest.TestCase):
+    def setUp(self):
+        reset("public")
+
+    def test_the_privacy_notice_is_public_and_linked_from_login_terms_and_consent_screens(self):
+        c = TestClient(main.app)
+        r = c.get("/privacy.html")
+        self.assertEqual(r.status_code, 200)
+        for word in ("Anthropic", "NOWPayments", "Deriv", "consent", "Cookies", "not owned, operated or endorsed by Deriv"):
+            self.assertIn(word, r.text)
+        for page in ("/login.html", "/terms.html", "/partner.html"):
+            self.assertIn("/privacy.html", c.get(page).text, page)
+
+    def test_the_consent_notices_point_to_the_privacy_notice_and_use_the_new_version(self):
+        self.assertEqual(partners.CONSENT_VERSION, "2026-11-v2")
+        self.assertTrue(any("/privacy.html" in t for t in partners.TRADER_DISCLOSURE))
+        self.assertTrue(any("/privacy.html" in t for t in partners.PARTNER_DISCLOSURE))
+        m = client(mk_user()).get("/api/partners/me").json()
+        self.assertEqual(m["disclosures"]["version"], "2026-11-v2")
+
+    def test_consent_given_to_the_old_notice_version_is_refused(self):
+        r = client(mk_user()).post("/api/partners/become/start", json={"consent": True, "version": "2026-11-v1", "path": "master_link"})
+        self.assertEqual(r.status_code, 422)
+
+
 class ExistingFeaturesUntouched(unittest.TestCase):
     def setUp(self):
         reset("off")

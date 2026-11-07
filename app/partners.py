@@ -61,7 +61,7 @@ MODES = ("off", "review", "public")
 STATUSES = ("application_initiated", "awaiting_deriv_approval", "approved", "rejected", "suspended")
 STATUS_LABEL = {"none": "Not applied", "application_initiated": "Application initiated", "awaiting_deriv_approval": "Awaiting Deriv approval",
                 "approved": "Approved", "rejected": "Rejected", "suspended": "Suspended"}
-CONSENT_VERSION = "2026-11-v1"
+CONSENT_VERSION = "2026-11-v2"
 COOKIE = "dl_pr"
 REF_RE = re.compile(r"^[A-Za-z0-9]{6,12}$")
 DERIV_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{3,40}$")
@@ -76,7 +76,7 @@ TRADER_DISCLOSURE = [
     "Deriv alone decides whether an account is tagged to a partner. A TradeLens referral is not proof of tagging and tagging is not guaranteed.",
     "Deriv's own terms, fees and checks apply to the account. Trading leveraged products and synthetic indices is high risk, you can lose all your money, and nothing in TradeLens is advice or a promise of profit.",
     "If you already have a Deriv account, this does not change how it is tagged. TradeLens never changes the attribution of an existing account.",
-    "We keep a record that you chose to continue (date, version of this notice and the partner) for our referral records.",
+    "We keep a record that you chose to continue (date, version of this notice and the partner) for our referral records. How we handle your personal data is described in the TradeLens Privacy Notice (/privacy.html).",
 ]
 PARTNER_DISCLOSURE = [
     "Deriv runs its own independent partner application and approval process. Signing up to TradeLens is not Deriv partner approval, and TradeLens cannot approve you.",
@@ -84,7 +84,7 @@ PARTNER_DISCLOSURE = [
     "To apply you will be taken to Deriv through TradeLens's Master Partner link. TradeLens may receive a commission from Deriv on partners it introduces. This is a financial interest in your decision.",
     "TradeLens gives no points, prizes or payments for becoming a partner, for introducing Deriv clients, for trading volume or for partner commissions.",
     "If you are already a Deriv client tagged under TradeLens and have become a Deriv partner, you do not need to apply again through the link: Deriv has told us such a client becomes a sub-partner. Please confirm this with Deriv. Choose the second option below.",
-    "You can operate as a TradeLens partner only after Deriv has approved you and a TradeLens admin has verified it by hand. We store your application status, the Deriv partner ID you enter and this consent.",
+    "You can operate as a TradeLens partner only after Deriv has approved you and a TradeLens admin has verified it by hand. We store your application status, the Deriv partner ID you enter and this consent. How we handle your personal data is described in the TradeLens Privacy Notice (/privacy.html).",
 ]
 
 _rl: dict = {}

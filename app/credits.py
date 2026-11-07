@@ -389,7 +389,7 @@ async def billing_view(request):
         "partner": _partner_view(user), "crypto": crypto, "naira": naira,
         "copy_plan": cp,
         "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")},
-                     "copy": bool(v.get("copy")), "copy_ib": bool(v.get("copy_ib")), **_price_fields(user, k)}
+                     "copy": bool(v.get("copy")), "copy_ib": bool(v.get("copy_ib")) and __import__("app.perks", fromlist=["x"]).grants_on(), **_price_fields(user, k)}
                     for k, v in CATALOG.items()],
         "plans": [{"plan": p["plan"], "label": _label(p["plan"]), "ends_at": p["ends_at"]} for p in plans],
         "pay": pay, "methods": METHODS, "orders": orders, "ledger": ledger})

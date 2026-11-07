@@ -24,7 +24,7 @@ Everything takes effect only while billing is switched on, exactly like paid pla
 NEW GRANTS ARE OFF (Nov 2026). These perks reward Deriv account status and Deriv funding, which TradeLens must not incentivise. Unless
 PARTNER_PERKS_ON=1 is set (leave it unset), no new partner bonus signals are given, no new founding-member place can be claimed, and
 nobody new waits for one. Everything already granted keeps working and nothing is taken back. The $15 Signals Pro price for confirmed
-partner members (price_for) is unchanged and is listed as an open decision in docs/PARTNER_PROGRAMME.md.
+partner members (price_for) and the Copy trading mode of Signals Plus (copy_plan.ib_linked) are ALSO closed unless PARTNER_PERKS_ON=1.
 """
 import os
 import time
@@ -83,7 +83,10 @@ def _confirmed(uid: int) -> bool:
 
 
 def price_for(user: dict, product: str, base: float) -> float:
-    """What this member pays for a product: Pro is $15 for a confirmed partner member."""
+    """What this member pays for a product: Pro is $15 for a confirmed partner member. That discount is closed (the normal price) unless
+    PARTNER_PERKS_ON=1, because it rewards Deriv tagging."""
+    if not grants_on():
+        return base
     if product == "pro" and not credits.grandfathered(user) and _confirmed(user["id"]):
         return PARTNER_PRO_USD
     return base
