@@ -283,8 +283,7 @@ async def _callback_inner(request):
                  f"<div class='btns'><a href='/login.html#invite={safe}' style='flex:1;text-align:center;padding:13px;"
                  "border-radius:12px;background:linear-gradient(135deg,var(--gold2),var(--gold));color:#0a0a0a;"
                  "text-decoration:none;font-weight:700'>Continue to create your account</a></div>"
-                 "<p class='mut'>New members get free welcome signals when they sign up with this code. "
-                 "This sign-in step only reads your Deriv account ID once to check it is real. It does not keep your Deriv "
+                 "<p class='mut'>This sign-in step only reads your Deriv account ID once to check it is real. It does not keep your Deriv "
                  "access token and does not place trades. TradeLens never moves your money.</p>")
 
 

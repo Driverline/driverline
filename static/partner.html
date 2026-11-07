@@ -30,8 +30,8 @@ label.chk input{width:auto;margin-top:3px}
 <div class="mut" id="me"></div>
 <div id="off" class="card" hidden><h2>Partner programme</h2><div class="mut">This section is not open yet.</div></div>
 <div id="app" hidden>
-  <div class="card" id="reviewbar" hidden><h2>Review access</h2>
-    <div class="mut">You are viewing the TradeLens partner programme in review mode. It is not public. Nothing here claims Deriv approval.</div>
+  <div class="card" id="reviewbar" hidden><h2 id="rvh">Review access</h2>
+    <div class="mut" id="rvt"></div>
     <div class="btns"><a id="adminlink" href="/admin-partners.html" style="color:var(--gold)">Open the partner administration view</a></div></div>
 
   <div class="card"><h2>About this programme</h2>
@@ -94,6 +94,8 @@ async function load(){
   try{M=await api('/api/partners/me')}catch(e){$('off').hidden=false;return}
   $('app').hidden=false;
   $('reviewbar').hidden=!M.review;
+  $('rvh').textContent=M.mode==='off'?'Admin preview':'Review access';
+  $('rvt').textContent=M.mode==='off'?'The partner programme is switched off, so members cannot see this page. You are previewing it as an admin. Nothing here claims Deriv approval.':'You are viewing the TradeLens partner programme in review mode. It is not public. Nothing here claims Deriv approval.';
   // Journey A
   const T=M.trader;
   if(!T.available){$('jatxt').textContent=T.reason||'Not available right now.';$('jaform').hidden=true}
