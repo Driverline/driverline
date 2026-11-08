@@ -81,7 +81,7 @@ class Settings(unittest.TestCase):
 
     def test_off_by_default_with_the_agreed_numbers(self):
         m = mg(self.c, self.a)
-        self.assertEqual((m["prot_mode"], m["prot_risk_pct"], m["prot_cap_pct"], m["prot_grace"]), ("off", 4.5, 5.0, 45))
+        self.assertEqual((m["prot_mode"], m["prot_risk_pct"], m["prot_cap_pct"], m["prot_grace"]), ("off", 4.5, 4.5, 45))
 
     def test_existing_auto_manage_is_untouched(self):
         self.assertEqual(save(self.c, self.a, be_on=True).status_code, 200)
@@ -118,7 +118,7 @@ class Settings(unittest.TestCase):
         save(self.c, self.a, prot_mode="stop")
         save(self.c, self.a, prot_risk_pct=4.9, prot_cap_pct=9.0, prot_grace=120)
         m = mg(self.c, self.a)
-        self.assertEqual((m["prot_risk_pct"], m["prot_cap_pct"], m["prot_grace"]), (4.5, 5.0, 45))
+        self.assertEqual((m["prot_risk_pct"], m["prot_cap_pct"], m["prot_grace"]), (4.5, 4.5, 45))
         self.assertEqual(set(m["prot_pending"]), {"prot_risk_pct", "prot_cap_pct", "prot_grace"})
 
     def test_asking_for_the_current_value_again_cancels_a_pending_change(self):
@@ -201,6 +201,45 @@ class Events(unittest.TestCase):
         self.assertEqual(self.c.delete(f"/api/ea/accounts/{self.a}").status_code, 200)
         with closing(ea.db()) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) AS n FROM ea_protect_log WHERE account_id=?", (self.a,)).fetchone()["n"], 0)
+
+
+class PreCheck(unittest.TestCase):
+    """The app refuses a trade that protection would close straight after it opens."""
+    SPEC = {"symbol": "V25", "tick_size": 0.01, "tick_value": 0.01, "vol_min": 1.0, "contract_size": 1}
+    ON = {"prot_mode": "stop", "prot_cap_pct": 4.5}
+
+    def acc(self, balance, allowed=True):
+        return {"balance": balance, "equity": balance, "currency": "USD", "protect_allowed": allowed}
+
+    def test_a_small_account_cannot_take_a_symbol_whose_smallest_trade_risks_too_much(self):
+        m = ea.protect_precheck(self.acc(10), self.ON, self.SPEC, 0, 0.5, "Volatility 25")          # 0.5 of 10 = 5%
+        self.assertIn("5.0%", m)
+        self.assertIn("4.5%", m)
+        self.assertIn("about 11.11 USD", m)
+
+    def test_the_same_account_can_take_a_cheaper_symbol(self):
+        self.assertIsNone(ea.protect_precheck(self.acc(10), self.ON, self.SPEC, 0, 0.25, "Volatility 50"))   # 2.5%
+
+    def test_a_bigger_account_can_take_it(self):
+        self.assertIsNone(ea.protect_precheck(self.acc(100), self.ON, self.SPEC, 0, 0.5, "Volatility 25"))
+
+    def test_a_too_big_lot_gets_a_lot_size_hint(self):
+        spec = {**self.SPEC, "vol_min": 0.1}
+        m = ea.protect_precheck(self.acc(100), self.ON, spec, 2.0, 5.0, "X")                          # 2 lots x 5 = 10 = 10%
+        self.assertIn("lot size of about 0.90", m)
+
+    def test_only_in_stop_or_close_mode_and_only_when_the_ea_allows_it(self):
+        for m in ({"prot_mode": "off"}, {"prot_mode": "breakeven"}):
+            self.assertIsNone(ea.protect_precheck(self.acc(10), m, self.SPEC, 0, 0.5, "V"))
+        self.assertIsNone(ea.protect_precheck(self.acc(10, allowed=False), self.ON, self.SPEC, 0, 0.5, "V"))
+        self.assertIsNone(ea.protect_precheck(self.acc(10), self.ON, None, 0, 0.5, "V"))             # unknown contract: never block on a guess
+
+    def test_close_mode_uses_the_same_rule(self):
+        self.assertIsNotNone(ea.protect_precheck(self.acc(10), {"prot_mode": "close", "prot_cap_pct": 4.5}, self.SPEC, 0, 0.5, "V"))
+
+    def test_uses_the_lower_of_balance_and_equity(self):
+        a = {**self.acc(100), "equity": 10}
+        self.assertIsNotNone(ea.protect_precheck(a, self.ON, self.SPEC, 0, 0.5, "V"))
 
 
 if __name__ == "__main__":

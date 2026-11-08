@@ -54,7 +54,7 @@
 <div class="btns"><button id="mgsave">Save auto-manage</button></div><div id="mgmsg" class="mut"></div></div>
 <div class="card" id="protcard"><h2>Equity protection</h2>
 <div class="mut" id="protnote">Loading...</div>
-<div class="mut">For a trade with no stop loss, or a stop loss that risks too much of your account. It applies only to trades that have been open longer than the waiting time below, and never to a trade you switched off with the Auto button.</div>
+<div class="mut">For a trade with no stop loss, or a stop loss that risks too much of your account. It applies only to trades that have been open longer than the waiting time below, and never to a trade you switched off with the Auto button. When you switch it on, it also applies to trades that are already open. In the protective-stop and close modes, the app will not send a trade whose smallest size already risks more than your limit, and tells you how much account or what lot size it would need.</div>
 <label>When that happens</label>
 <select id="prot_mode"><option value="off">Do nothing (off)</option><option value="stop">Set a protective stop loss (recommended)</option><option value="close">Close the trade</option><option value="breakeven">Breakeven only (does not limit the loss)</option></select>
 <div class="row"><div><label>A protective stop risks (% of account)</label><input id="prot_risk_pct" type="number" step="any" inputmode="decimal"></div>

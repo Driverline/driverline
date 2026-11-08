@@ -17,9 +17,14 @@
 //| orders (limit, stop, stop limit) that you set from a NO TRADE    |
 //| card. MT5 itself fires them if price reaches the level, even if  |
 //| the app is closed. Each has a stop, target and an expiry.        |
+//| With InpAllowProtect on it can also protect your account from a  |
+//| position with NO stop loss, or a stop that risks too much of the |
+//| account: it sets a protective stop, closes the position, or moves|
+//| the stop to breakeven, as you chose in the TradeLens app. It     |
+//| never widens a stop. It limits risk but cannot guarantee it.     |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.53"
+#property version     "1.54"
 #property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
@@ -35,6 +40,7 @@ input double InpMaxLotsPerTrade = 0.0;                           // Extra safety
 input bool   InpAllowManage = false;                              // Allow auto-manage: breakeven, trailing stop and trailing take-profit chosen in the app (never widens a stop)
 input bool   InpAllowPending = false;                            // Allow PLACING and CANCELLING pending orders (limit, stop, stop limit) that you set in the app. MT5 opens the trade later by itself if price reaches the level
 input bool   InpAllowRemoteClose = false;                        // Allow CLOSING positions from the TradeLens app (never opens trades)
+input bool   InpAllowProtect = false;                            // Allow EQUITY PROTECTION: for a position with no stop loss, or a stop that risks too much of the account, set a protective stop, close it, or move to breakeven, as chosen in the app (may close positions by itself)
 
 // ---- Telegram: post my trades to a channel (off by default)
 input bool   InpTgEnable       = false;                          // Telegram: post my trades to a Telegram channel
@@ -79,9 +85,14 @@ bool     g_be_on = false;   double g_be_trigger = 1.0;  double g_be_offset = 0.1
 bool     g_tsl_on = false;  double g_tsl_start = 1.5;   double g_tsl_dist = 1.0;
 bool     g_ttp_on = false;  double g_ttp_near = 0.3;    double g_ttp_step = 1.0;
 string   g_excl = "";
+// Equity protection settings, sent by the app (only used when InpAllowProtect is on). Off until the app says otherwise.
+string   g_prot_mode = "off";   double g_prot_risk = 4.5;   double g_prot_cap = 4.5;   double g_prot_be = 1.0;   int g_prot_grace = 45;
+string   g_events[];            // JSON objects describing what protection did, sent with the next report
+datetime g_lastProtect = 0;
 CTrade   g_trade;
 
 string BuildOrders();   // defined further down; Sync() uses it
+bool ClosePos(const ulong ticket, string &err);   // defined further down; ProtectPositions() uses it
 string OrderStateText(const long st);   // defined further down; PlacePending() uses it
 
 //+------------------------------------------------------------------+
@@ -410,6 +421,7 @@ bool Sync()
       + ",\"demo\":" + (demo ? "true" : "false")
       + ",\"remote_close\":" + (InpAllowRemoteClose ? "true" : "false")
       + ",\"manage_allowed\":" + (InpAllowManage ? "true" : "false")
+      + ",\"protect_allowed\":" + (InpAllowProtect ? "true" : "false")
       + ",\"execute_allowed\":" + (InpAllowExecute ? "true" : "false")
       + ",\"pending_allowed\":" + (InpAllowPending ? "true" : "false")
       + ",\"server_offset\":" + (string)((int)MathRound((double)(TimeCurrent() - TimeGMT()) / 900.0) * 900) + "}"
@@ -424,6 +436,14 @@ bool Sync()
       string closedRows = BuildClosed(newestClosed);
       if(StringLen(closedRows) > 0)
          body += ",\"closed\":[" + closedRows + "]";
+   }
+   int sentEvents = ArraySize(g_events);
+   if(sentEvents > 0)
+   {
+      string ev = "";
+      for(int e = 0; e < sentEvents; e++)
+         ev += (e > 0 ? "," : "") + g_events[e];
+      body += ",\"protect_events\":[" + ev + "]";
    }
    body += "}";
 
@@ -455,6 +475,7 @@ bool Sync()
       return false;
    }
 
+   ArrayResize(g_events, 0);     // the server has them now (it ignores a repeat anyway)
    g_status   = JsonGet(resp, "status");
    g_l1       = JsonGet(resp, "line1");
    g_l2       = JsonGet(resp, "line2");
@@ -582,6 +603,201 @@ void ManagePositions()
       g_trade.SetTypeFillingBySymbol(sym);
       if(g_trade.PositionModify(tk, newSL, newTP) && g_trade.ResultRetcode() == TRADE_RETCODE_DONE)
          g_mgMsg = "Auto-manage: #" + (string)tk + " " + what;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Equity protection (only when InpAllowProtect is on)              |
+//| A position is "in scope" when it has NO stop loss, or its stop   |
+//| risks more than prot_cap % of the account (the lower of balance  |
+//| and equity). The mode chosen in the app says what happens:       |
+//|   stop       set a stop that risks prot_risk % (never widens);   |
+//|              if that stop cannot be placed, close the position   |
+//|   close      close the position                                  |
+//|   breakeven  once profit reaches prot_be % of the account, move  |
+//|              the stop to the entry (does NOT limit the loss)     |
+//| Positions younger than prot_grace seconds, and positions switched|
+//| off with the Auto button in the app, are left alone.             |
+//+------------------------------------------------------------------+
+void ParseProtect(const string resp)
+{
+   string m = JsonGet(resp, "prot_mode");
+   if(m == "off" || m == "stop" || m == "close" || m == "breakeven")
+      g_prot_mode = m;
+   else
+      return;                    // an old server that knows nothing about protection: stay off
+   double v;
+   v = StringToDouble(JsonGet(resp, "prot_risk_pct")); if(v > 0.0) g_prot_risk = v;
+   v = StringToDouble(JsonGet(resp, "prot_cap_pct"));  if(v > 0.0) g_prot_cap  = v;
+   v = StringToDouble(JsonGet(resp, "prot_be_pct"));   if(v > 0.0) g_prot_be   = v;
+   int g = (int)StringToInteger(JsonGet(resp, "prot_grace")); if(g >= 10) g_prot_grace = g;
+   g_excl = JsonGet(resp, "excluded");
+}
+
+void ProtectEvent(const ulong ticket, const string sym, const string action, const double pct, const string detail)
+{
+   string o = "{\"ticket\":" + (string)ticket + ",\"symbol\":\"" + JsonEscape(sym) + "\",\"action\":\"" + action + "\""
+            + ",\"pct\":" + DoubleToString(pct, 2) + ",\"detail\":\"" + JsonEscape(detail) + "\"}";
+   int n = ArraySize(g_events);
+   if(n >= 10)                   // keep the newest ten
+   {
+      for(int i = 1; i < n; i++)
+         g_events[i - 1] = g_events[i];
+      n--;
+   }
+   ArrayResize(g_events, n + 1);
+   g_events[n] = o;
+   g_mgMsg = "Protection: #" + (string)ticket + " " + action;
+}
+
+// Money lost if the position's stop is hit (0 if the stop is at or beyond break-even), or -1 if MT5 cannot tell.
+double RiskAtStop(const long type, const string sym, const double vol, const double open, const double sl)
+{
+   double p = 0.0;
+   ENUM_ORDER_TYPE ot = (type == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcProfit(ot, sym, vol, open, sl, p))
+      return -1.0;
+   return (p < 0.0) ? -p : 0.0;
+}
+
+// The stop price whose loss is (just under) targetMoney, measured from the entry, rounded to the tick. 0 if it cannot be worked out.
+double ProtectiveStop(const long type, const string sym, const double vol, const double open, const double targetMoney)
+{
+   double dir  = (type == POSITION_TYPE_BUY) ? 1.0 : -1.0;
+   double tick = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   if(tick <= 0.0)
+      tick = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(tick <= 0.0 || targetMoney <= 0.0)
+      return 0.0;
+   int    dg    = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double probe = 100.0 * tick;
+   double lossP = RiskAtStop(type, sym, vol, open, NormalizeDouble(open - dir * probe, dg));
+   if(lossP <= 0.0)
+      return 0.0;
+   double dist = MathFloor((probe * targetMoney / lossP) / tick) * tick;   // rounded DOWN, so the risk never exceeds the target
+   if(dist < tick)
+      return 0.0;
+   double sl = NormalizeDouble(open - dir * dist, dg);
+   double chk = RiskAtStop(type, sym, vol, open, sl);                      // check the result with MT5's own calculation
+   if(chk < 0.0 || chk > targetMoney * 1.05)
+      return 0.0;
+   return sl;
+}
+
+void ProtectPositions()
+{
+   if(!InpAllowProtect || g_prot_mode == "off")
+      return;
+   if(TimeLocal() - g_lastProtect < 2)
+      return;                    // every two seconds is plenty
+   g_lastProtect = TimeLocal();
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return;
+   double size = MathMin(AccountInfoDouble(ACCOUNT_BALANCE), AccountInfoDouble(ACCOUNT_EQUITY));
+   if(size <= 0.0)
+      return;
+   int total = PositionsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0 || IsExcluded(tk))
+         continue;
+      if(GlobalVariableCheck("TL_PD_" + (string)tk))
+         continue;               // closed, or gave up after three refused tries (reported once)
+      long age = (long)(TimeCurrent() - (datetime)PositionGetInteger(POSITION_TIME));
+      if(age < (long)g_prot_grace)
+         continue;
+      string sym  = PositionGetString(POSITION_SYMBOL);
+      long   type = PositionGetInteger(POSITION_TYPE);
+      double vol  = PositionGetDouble(POSITION_VOLUME);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   = PositionGetDouble(POSITION_SL);
+      double tp   = PositionGetDouble(POSITION_TP);
+      double dir  = (type == POSITION_TYPE_BUY) ? 1.0 : -1.0;
+      double px   = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
+      if(px <= 0.0 || vol <= 0.0)
+         continue;
+      int    dg   = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+
+      bool   noStop = (sl <= 0.0);
+      double risk   = 0.0;
+      if(!noStop)
+      {
+         risk = RiskAtStop(type, sym, vol, open, sl);
+         if(risk < 0.0)
+            continue;            // MT5 cannot price this position: do nothing rather than guess
+         if(risk <= size * g_prot_cap / 100.0 + 0.0000001)
+            continue;            // the stop is reasonable: not in scope
+      }
+      // in scope from here
+
+      string tries = "TL_PT_" + (string)tk;
+      double nTry  = GlobalVariableCheck(tries) ? GlobalVariableGet(tries) : 0.0;
+
+      if(g_prot_mode == "breakeven")
+      {
+         if(PositionGetDouble(POSITION_PROFIT) < size * g_prot_be / 100.0)
+            continue;            // not in profit enough yet
+         double be = NormalizeDouble(open, dg);
+         if(!noStop && dir * (be - sl) <= 0.0)
+            continue;            // never widen
+         if(!StopsAllowed(sym, type, px, be, tp))
+            continue;
+         g_trade.SetTypeFillingBySymbol(sym);
+         if(g_trade.PositionModify(tk, be, tp) && g_trade.ResultRetcode() == TRADE_RETCODE_DONE)
+         {
+            ProtectEvent(tk, sym, "breakeven", 0.0, "");
+         }
+         continue;
+      }
+
+      bool doClose = (g_prot_mode == "close");
+      string why = "";
+      if(g_prot_mode == "stop")
+      {
+         double newSL = ProtectiveStop(type, sym, vol, open, size * g_prot_risk / 100.0);
+         bool tighter = (newSL > 0.0) && (noStop || dir * (newSL - sl) > 0.0);
+         if(tighter && StopsAllowed(sym, type, px, newSL, tp))
+         {
+            g_trade.SetTypeFillingBySymbol(sym);
+            if(g_trade.PositionModify(tk, newSL, tp) && g_trade.ResultRetcode() == TRADE_RETCODE_DONE)
+            {
+               GlobalVariableSet("TL_R_" + (string)tk, MathAbs(open - newSL));   // the protective distance is now 1R for breakeven and trailing
+               ProtectEvent(tk, sym, noStop ? "stop_set" : "stop_tightened", g_prot_risk, "");
+               continue;
+            }
+            why = g_trade.ResultRetcodeDescription();
+            nTry += 1.0;
+            GlobalVariableSet(tries, nTry);
+            if(nTry >= 3.0)
+            {
+               GlobalVariableSet("TL_PD_" + (string)tk, 1.0);
+               ProtectEvent(tk, sym, "failed", 0.0, "stop refused: " + why);
+            }
+            continue;            // try again on a later cycle
+         }
+         doClose = true;         // a stop at the protective level cannot be placed (too close to the price, past it, or too small to price)
+      }
+      if(doClose)
+      {
+         string err = "";
+         if(ClosePos(tk, err))
+         {
+            GlobalVariableSet("TL_PD_" + (string)tk, 1.0);
+            ProtectEvent(tk, sym, g_prot_mode == "close" ? "closed_mode" : (noStop ? "closed_no_stop" : "closed_big_stop"), 0.0, "");
+            g_lastFull = 0;      // report soon
+         }
+         else
+         {
+            nTry += 1.0;
+            GlobalVariableSet(tries, nTry);
+            if(nTry >= 3.0)
+            {
+               GlobalVariableSet("TL_PD_" + (string)tk, 1.0);
+               ProtectEvent(tk, sym, "failed", 0.0, "close refused: " + err);
+            }
+         }
+      }
    }
 }
 
@@ -955,7 +1171,7 @@ void TidyPending()
 
 void PollCommand()
 {
-   if(!InpAllowRemoteClose && !InpAllowManage && !InpAllowExecute && !InpAllowPending)
+   if(!InpAllowRemoteClose && !InpAllowManage && !InpAllowExecute && !InpAllowPending && !InpAllowProtect)
       return;
    char data[];
    char result[];
@@ -968,6 +1184,8 @@ void PollCommand()
    string resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
    if(InpAllowManage)
       ParseManage(resp);
+   if(InpAllowProtect)
+      ParseProtect(resp);
    string cmd  = JsonGet(resp, "cmd");
    if(StringLen(cmd) == 0)
       return;
@@ -1870,8 +2088,9 @@ void OnTimer()
          g_lastFull = now;
          Sync();
       }
-      else if((InpAllowRemoteClose || InpAllowManage || InpAllowExecute || InpAllowPending) && g_net == "Connected")
+      else if((InpAllowRemoteClose || InpAllowManage || InpAllowExecute || InpAllowPending || InpAllowProtect) && g_net == "Connected")
          PollCommand();
+      ProtectPositions();   // before ManagePositions, so breakeven and trailing work from a protective stop at once
       ManagePositions();
       TidyPending();
    }

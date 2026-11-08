@@ -1,6 +1,6 @@
 # Equity protection (trades with no stop loss, or an oversized one)
 
-Status: stage 1 (server, app screen, event log) built. Stage 2 (MT5 companion EA) NOT built yet: nothing acts on any trade until it is.
+Status: stage 1 (server, app screen, event log) LIVE. Stage 2 (MT5 companion EA 1.54 with `InpAllowProtect`, and the Open-trade / pending-order pre-check) written, NOT yet compiled or trialled: needs a Deriv demo account trial before any member uses it.
 
 ## Problem
 Auto-manage (breakeven, trailing) skips a trade with no stop loss, because there is no 1R to measure from. A stop that risks most of the
@@ -11,7 +11,7 @@ account is just as dangerous. Both blow accounts.
 |---|---|---|
 | `prot_mode` | off | off, stop (recommended), close, breakeven |
 | `prot_risk_pct` what a protective stop risks, % of account | 4.5 (so small accounts can trade Volatility 10, 25 and 50 at the minimum lot) | 0.25 to 10 |
-| `prot_cap_pct` a stop riskier than this is "unreasonable", % of account | 5 | 0.5 to 25 (not below risk) |
+| `prot_cap_pct` a stop riskier than this is "unreasonable", % of account | 4.5 (same as the protective risk, so a trade risking 5.0% on a $10 account is refused) | 0.5 to 25 (not below risk) |
 | `prot_grace` seconds to wait after the trade opened | 45 | 10 to 300 |
 | `prot_be_pct` profit (% of account) that triggers breakeven in breakeven mode | 1 | 0.25 to 10 |
 
@@ -59,4 +59,21 @@ For each open position that is not excluded and older than `prot_grace`:
 ## Default risk of 4.5% (decided by the owner)
 The protective-stop risk defaults to 4.5% of the account, not 2%, so small accounts can trade the Volatility indices at their minimum lot:
 a $10 account allows $0.45, enough for Volatility 50 (minimum about $0.25, 2.5%) but not Volatility 25 (about $0.50, 5%). Members therefore see
-that some symbols are not tradeable with a small balance. The "unreasonable stop" limit stays at 5%.
+that some symbols are not tradeable with a small balance. The "unreasonable stop" limit also defaults to 4.5%, so the smallest Volatility 25 trade on a $10 account (5.0%) is refused.
+
+## Pre-check (built with stage 2)
+`ea.protect_precheck()` runs before the app queues an Open-trade (`signal_feed.execute_signal`) or a pending order (`pending_orders.place`). In stop or
+close mode, and only when the EA reports `protect_allowed`, a trade whose stop would risk more than `prot_cap_pct` of the account (lower of balance and
+equity; empty lot size = the symbol's minimum lot) is refused with a 409 and a reason: the lot size that would fit, or the account size needed. It never blocks
+when the contract specs are unknown. Trades opened by hand in MT5 are not pre-checked: the EA handles them after the waiting time.
+
+## Stage 2 trial checklist (demo account, `InpAllowProtect = true`)
+1. No stop, stop mode: protective stop appears after the waiting time; inbox message; breakeven/trailing then use the new 1R.
+2. Oversized stop, stop mode: stop moves closer, never wider.
+3. Protective level inside the broker's minimum distance, or already passed by price: trade closes, message says why.
+4. close mode closes; breakeven mode moves to entry only after the profit threshold and only if tighter.
+5. A trade switched off with the Auto button is untouched. A trade younger than the waiting time is untouched.
+6. Restart the EA and MT5: no repeated actions (GlobalVariables TL_PT_/TL_PD_/TL_R_).
+7. Hedged or several positions on one symbol, a symbol with a large minimum stop distance (Volatility indices, Boom/Crash), a JPY or cross pair.
+8. Manually widening a protective stop: it is tightened again.
+9. Connection lost: the last settings keep working; weakening a setting in the app only reaches the EA after the 24-hour wait.

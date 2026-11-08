@@ -479,6 +479,10 @@ async def execute_signal(request):
                 if r["payload"] and json.loads(r["payload"]).get("signal_id") == sid:
                     raise HTTPException(409, "You already sent this setup to MT5.")
             sd = abs(sig["entry"] - sig["stop"])
+            blocked = ea.protect_precheck(state["account"], ea.get_manage(ec, acct["id"]), next((x for x in specs if x.get("symbol") == symbol), None),
+                                          lots, sd, name)
+            if blocked:
+                raise HTTPException(409, blocked)
             cid = ea.queue_open(ec, acct, {
                 "symbol": symbol, "dir": "BUY" if sig["direction"] > 0 else "SELL", "lots": lots, "sl_dist": sd,
                 "tp_dist": abs(sig["target"] - sig["entry"]), "ref": sig["entry"], "maxdev": CFG["exec_max_dev_r"] * sd,

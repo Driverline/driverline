@@ -447,7 +447,7 @@ MANAGE_DEFAULT = {"be_on": False, "be_trigger": 1.0, "be_offset": 0.1,
                   "tsl_on": False, "tsl_start": 1.5, "tsl_dist": 1.0,
                   "ttp_on": False, "ttp_near": 0.3, "ttp_step": 1.0, "excluded": [],
                   # Equity protection for trades with NO stop loss, or a stop that risks too much of the account (off unless chosen)
-                  "prot_mode": "off", "prot_risk_pct": 4.5, "prot_cap_pct": 5.0, "prot_grace": 45, "prot_be_pct": 1.0, "prot_pending": {}}
+                  "prot_mode": "off", "prot_risk_pct": 4.5, "prot_cap_pct": 4.5, "prot_grace": 45, "prot_be_pct": 1.0, "prot_pending": {}}
 PROT_MODES = {"off": 0, "breakeven": 1, "stop": 2, "close": 3}     # higher = stricter
 PROT_RANGES = {"prot_risk_pct": (0.25, 10.0), "prot_cap_pct": (0.5, 25.0), "prot_grace": (10, 300), "prot_be_pct": (0.25, 10.0)}
 PROT_LOOSEN_DELAY = 24 * 3600   # a setting that makes protection weaker only takes effect this long after it was asked for
@@ -680,6 +680,33 @@ async def account_rename(request):
                 raise HTTPException(409, "You already have an account with that name")
             raise
     return JSONResponse({"id": a["id"], "label": label})
+
+
+def protect_precheck(account: dict, manage: dict, spec, lots: float, dist: float, name: str):
+    """Called before the app queues a new trade or pending order. When equity protection is on in "stop" or "close" mode and the EA allows it,
+    a trade that would be in scope the moment it opens (its stop risks more than the member's limit) is refused here with a clear reason,
+    instead of being opened and then closed by the EA. Returns None when the trade is fine, otherwise the message to show."""
+    if manage.get("prot_mode") not in ("stop", "close") or not account.get("protect_allowed") or not spec:
+        return None
+    from .pending_orders import _risk_pct
+    size = min(_f(account.get("balance")), _f(account.get("equity"), _f(account.get("balance"))))
+    per_lot = _risk_pct(spec, 1.0, dist, size)
+    if per_lot is None or per_lot <= 0:
+        return None
+    lot = lots if lots > 0 else _f(spec.get("vol_min"))
+    cap = _f(manage.get("prot_cap_pct"), 4.5)
+    pct = per_lot * lot
+    if pct <= cap + 1e-9:
+        return None
+    cur = account.get("currency") or ""
+    need = size * pct / cap
+    msg = (f"Equity protection would not allow this trade. At {lot:g} lots {name} risks {pct:.1f}% of your account, above your limit of {cap:g}%.")
+    best = cap / per_lot
+    if lots > 0 and best >= _f(spec.get("vol_min")):
+        msg += f" A lot size of about {best:.2f} or less would fit."
+    else:
+        msg += f" You would need about {need:.2f} {cur} in the account to trade {name} with this protection."
+    return msg + " To allow it, loosen the limit under Equity protection on the MT5 page (a weaker setting takes effect 24 hours after you save it)."
 
 
 PROT_TEXT = {

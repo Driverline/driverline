@@ -340,6 +340,9 @@ async def place(request):
         if not spec:
             raise HTTPException(409, f"{name} was not found in your MT5 Market Watch. Add it there first.")
         symbol = spec["symbol"]
+        blocked = ea.protect_precheck(acc, ea.get_manage(ec, acct["id"]), spec, lots, abs(entry - p["s"]), name)
+        if blocked:
+            raise HTTPException(409, blocked)
         pct = _risk_pct(spec, lots, abs(entry - p["s"]), float(acc.get("balance") or 0))
         # Like "Open trade in MT5": an empty lot size means the symbol's smallest lot, and the member is WARNED (in the app) when the
         # risk is above their own rule, never blocked. The risk is returned so the app can say so.

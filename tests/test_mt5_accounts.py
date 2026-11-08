@@ -285,6 +285,23 @@ class ExplicitAccountTests(Two, unittest.TestCase):
         self.assertEqual(again.status_code, 200, again.text)                                                      # but Live is a different account
         self.assertEqual(sorted(c["account_id"] for c in q("SELECT account_id FROM ea_commands WHERE kind='open'")[-2:]), sorted([self.demo, self.live]))
 
+    def test_equity_protection_refuses_an_order_it_would_close_straight_away(self):
+        now = int(time.time())
+        with closing(signal_feed.db()) as con:
+            sid = con.insert("INSERT INTO signals(created_at,bar_epoch,instrument,style,setup,direction,entry,stop,target,rr,risk,status,expires_at) "
+                             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (now, now + 7, "eurusd", "day", "ema_pullback", 1, 1.1, 1.09, 1.12, 2.0, "normal", "open", now + 3600))
+            con.execute("INSERT INTO signal_opens(user_id,signal_id,day,created_at,counted) VALUES(?,?,?,?,1)", (self.u, sid, "2026-10-30", now))
+            con.commit()
+        url = f"/api/signals/{sid}/execute"
+        self.assertEqual(cl(self.u).post("/api/ea/manage", json={"account": self.demo, "prot_mode": "stop", "prot_risk_pct": 0.25, "prot_cap_pct": 0.5}).status_code, 200)
+        eareport(self.kd, "1001", True, positions=1, protect_allowed=True)           # the EA says protection is allowed: 0.01 lot risks 1% here
+        r = cl(self.u).post(url, json={"lots": 0, "account": self.demo})
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("Equity protection would not allow", r.json()["detail"])
+        self.assertEqual(q("SELECT COUNT(*) AS n FROM ea_commands WHERE account_id=? AND kind='open'", self.demo)[0]["n"], 0)
+        eareport(self.kd, "1001", True, positions=1, protect_allowed=False)          # the EA does not allow protection: nothing is blocked
+        self.assertEqual(cl(self.u).post(url, json={"lots": 0, "account": self.demo}).status_code, 200)
+
     def test_a_single_account_member_needs_to_say_nothing(self):
         u = mk_user()
         a, k = add(u, "Main")
