@@ -47,6 +47,8 @@ EA_SCHEMA = """
         daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_acct_manage(account_id INTEGER PRIMARY KEY, settings TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_meta(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE IF NOT EXISTS ea_protect_log(id {ID}, account_id INTEGER NOT NULL, user_id INTEGER NOT NULL, ticket BIGINT NOT NULL,
+        action TEXT NOT NULL, symbol TEXT, detail TEXT, created_at BIGINT NOT NULL);
     CREATE TABLE IF NOT EXISTS mt5_requests(id {ID}, user_id INTEGER NOT NULL, label TEXT NOT NULL, login TEXT NOT NULL, server TEXT NOT NULL,
         pw_enc TEXT, status TEXT NOT NULL, note TEXT, account_id INTEGER, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, pw_wiped_at BIGINT);
     CREATE TABLE IF NOT EXISTS mt5_request_log(id {ID}, request_id INTEGER NOT NULL, admin_id INTEGER, action TEXT NOT NULL, created_at BIGINT NOT NULL);
@@ -69,6 +71,7 @@ def _migrate(con):
     con.add_column("ea_commands", "account_id", "INTEGER")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_ea_accounts_label ON ea_accounts(user_id, label)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_ea_commands_account ON ea_commands(account_id, status)")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_ea_protect_once ON ea_protect_log(account_id, ticket, action)")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_copy_jobs_flag_acct ON copy_jobs(flag_id, account_id)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_jobs_acct ON copy_jobs(account_id, status)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_flags_status ON copy_flags(status)")
@@ -263,7 +266,7 @@ async def report(request):
         _last_report[aid] = now
         state = {
             "account": {k: acc.get(k) for k in ("login", "server", "currency", "balance", "equity", "margin_free", "demo",
-                                           "remote_close", "manage_allowed", "execute_allowed", "pending_allowed", "server_offset")},
+                                           "remote_close", "manage_allowed", "protect_allowed", "execute_allowed", "pending_allowed", "server_offset")},
             "today": d.get("today") if isinstance(d.get("today"), dict) else {},
             "positions": [p for p in (d.get("positions") or []) if isinstance(p, dict)][:100],
             "orders": [o for o in (d.get("orders") or []) if isinstance(o, dict)][:100],   # pending orders waiting at the broker
@@ -294,6 +297,11 @@ async def report(request):
         except Exception as e:
             print(f"[perks] founder check failed: {type(e).__name__}", flush=True)
         rules = get_rules(con, aid)
+        try:
+            _protect_events(con, uid, aid, d.get("protect_events"))
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[protect] events failed: {type(e).__name__}", flush=True)
     closed = [c for c in (d.get("closed") or []) if isinstance(c, dict)] if isinstance(d.get("closed"), list) else []
     out = risk_check(state, rules)
     fresh: list = []
@@ -402,7 +410,9 @@ async def poll(request):
     flat = {"be_on": "1" if m["be_on"] else "0", "be_trigger": str(m["be_trigger"]), "be_offset": str(m["be_offset"]),
             "tsl_on": "1" if m["tsl_on"] else "0", "tsl_start": str(m["tsl_start"]), "tsl_dist": str(m["tsl_dist"]),
             "ttp_on": "1" if m["ttp_on"] else "0", "ttp_near": str(m["ttp_near"]), "ttp_step": str(m["ttp_step"]),
-            "excluded": ",".join(str(t) for t in m["excluded"])}
+            "excluded": ",".join(str(t) for t in m["excluded"]),
+            "prot_mode": m["prot_mode"], "prot_risk_pct": str(m["prot_risk_pct"]), "prot_cap_pct": str(m["prot_cap_pct"]),
+            "prot_grace": str(m["prot_grace"]), "prot_be_pct": str(m["prot_be_pct"])}
     if r and r["kind"] == "open" and r["payload"]:
         p = json.loads(r["payload"])
         flat.update(sym=p["symbol"], dir=p["dir"], lots=str(p["lots"]), sl_dist=str(p["sl_dist"]),
@@ -435,14 +445,50 @@ async def result(request):
 
 MANAGE_DEFAULT = {"be_on": False, "be_trigger": 1.0, "be_offset": 0.1,
                   "tsl_on": False, "tsl_start": 1.5, "tsl_dist": 1.0,
-                  "ttp_on": False, "ttp_near": 0.3, "ttp_step": 1.0, "excluded": []}
+                  "ttp_on": False, "ttp_near": 0.3, "ttp_step": 1.0, "excluded": [],
+                  # Equity protection for trades with NO stop loss, or a stop that risks too much of the account (off unless chosen)
+                  "prot_mode": "off", "prot_risk_pct": 4.5, "prot_cap_pct": 5.0, "prot_grace": 45, "prot_be_pct": 1.0, "prot_pending": {}}
+PROT_MODES = {"off": 0, "breakeven": 1, "stop": 2, "close": 3}     # higher = stricter
+PROT_RANGES = {"prot_risk_pct": (0.25, 10.0), "prot_cap_pct": (0.5, 25.0), "prot_grace": (10, 300), "prot_be_pct": (0.25, 10.0)}
+PROT_LOOSEN_DELAY = 24 * 3600   # a setting that makes protection weaker only takes effect this long after it was asked for
 MANAGE_RANGES = {"be_trigger": (0.3, 3.0), "be_offset": (0.0, 0.5), "tsl_start": (0.5, 5.0), "tsl_dist": (0.3, 3.0),
                  "ttp_near": (0.1, 1.5), "ttp_step": (0.3, 3.0)}
 
 
+def _now() -> int:
+    return int(time.time())
+
+
+def _prot_looser(k, new, old) -> bool:
+    """True when the new value gives LESS protection than the old one."""
+    if k == "prot_mode":
+        return PROT_MODES[new] < PROT_MODES[old]
+    return new > old                     # a bigger risk, cap, grace period or breakeven threshold protects less
+
+
+def _settle_pending(s: dict) -> bool:
+    """Apply loosening requests whose waiting time is over. Returns True when s changed."""
+    pend = s.get("prot_pending") or {}
+    now, changed = _now(), False
+    for k in list(pend):
+        if k in ("prot_mode", *PROT_RANGES) and isinstance(pend[k], dict) and now >= int(pend[k].get("at", 0)):
+            s[k] = pend[k]["v"]
+            del pend[k]
+            changed = True
+    if changed:
+        s["prot_cap_pct"] = max(s["prot_cap_pct"], s["prot_risk_pct"])
+    s["prot_pending"] = pend
+    return changed
+
+
 def get_manage(con, aid) -> dict:
     r = con.execute("SELECT settings FROM ea_acct_manage WHERE account_id=?", (aid,)).fetchone()
-    return {**MANAGE_DEFAULT, **(json.loads(r["settings"]) if r else {})}
+    s = {**MANAGE_DEFAULT, **(json.loads(r["settings"]) if r else {})}
+    if s["prot_mode"] not in PROT_MODES:
+        s["prot_mode"] = "off"
+    if r and _settle_pending(s):
+        _save_manage(con, aid, s)
+    return s
 
 
 def _save_manage(con, aid, s):
@@ -479,8 +525,42 @@ async def manage_save(request):
                 s[k] = v
         if s["tsl_dist"] > s["tsl_start"]:
             raise HTTPException(422, "The trailing distance cannot be larger than the profit needed to start trailing")
+        _apply_protection(s, d)
         _save_manage(con, a["id"], s)
     return JSONResponse(s)
+
+
+def _apply_protection(s: dict, d: dict):
+    """Equity-protection settings. Making protection STRICTER takes effect at once. Making it WEAKER (switching it off, a mode that
+    protects less, a bigger risk or cap) is queued and only takes effect PROT_LOOSEN_DELAY later, so it cannot be switched off in the
+    heat of a losing trade. Asking for the current value again cancels a queued change."""
+    want = {}
+    if "prot_mode" in d:
+        if d["prot_mode"] not in PROT_MODES:
+            raise HTTPException(422, "prot_mode must be off, breakeven, stop or close")
+        want["prot_mode"] = d["prot_mode"]
+    for k, (lo, hi) in PROT_RANGES.items():
+        if k in d:
+            v = _f(d[k], None)
+            if v is None or not lo <= v <= hi:
+                raise HTTPException(422, f"{k} must be between {lo:g} and {hi:g}")
+            want[k] = int(v) if k == "prot_grace" else v
+    if not want:
+        return
+    final = {k: s[k] for k in ("prot_mode", *PROT_RANGES)}
+    final.update(want)
+    if final["prot_cap_pct"] < final["prot_risk_pct"]:
+        raise HTTPException(422, "The unreasonable-stop limit cannot be smaller than the risk of the protective stop")
+    pend, now, active = dict(s.get("prot_pending") or {}), _now(), s["prot_mode"] != "off"
+    for k, v in want.items():
+        if v == s[k]:
+            pend.pop(k, None)                                        # same as today: cancels any queued change
+        elif not active or not _prot_looser(k, v, s[k]):
+            s[k] = v                                                 # stricter (or protection is off anyway): at once
+            pend.pop(k, None)
+        elif not (isinstance(pend.get(k), dict) and pend[k].get("v") == v):
+            pend[k] = {"v": v, "at": now + PROT_LOOSEN_DELAY}
+    s["prot_pending"] = pend
 
 
 async def manage_exclude(request):
@@ -602,9 +682,47 @@ async def account_rename(request):
     return JSONResponse({"id": a["id"], "label": label})
 
 
+PROT_TEXT = {
+    "stop_set": "{sym} #{t} had no stop loss. TradeLens set one that risks about {pct}% of your account.",
+    "stop_tightened": "{sym} #{t} had a stop loss that risked more than your limit. TradeLens moved it closer, to risk about {pct}% of your account.",
+    "closed_no_stop": "{sym} #{t} had no stop loss and a protective stop could not be placed, so TradeLens closed it to protect your account.",
+    "closed_big_stop": "{sym} #{t} risked more than your limit and a protective stop could not be placed, so TradeLens closed it to protect your account.",
+    "closed_mode": "{sym} #{t} had no stop loss or an oversized one, so TradeLens closed it, as you chose.",
+    "breakeven": "{sym} #{t} reached your profit threshold, so TradeLens moved its stop to breakeven. This does not limit the loss if the trade turns.",
+    "failed": "{sym} #{t} has no stop loss or an oversized one, and TradeLens could not protect it ({why}). Please check it yourself.",
+}
+
+
+def _protect_events(con, uid: int, aid: int, events):
+    """Record what the EA did to protect trades, once per trade and kind, and tell the member in their TradeLens inbox."""
+    if not isinstance(events, list):
+        return
+    from . import inbox
+    for e in events[:10]:
+        if not isinstance(e, dict) or e.get("action") not in PROT_TEXT:
+            continue
+        try:
+            ticket = int(e.get("ticket"))
+        except (TypeError, ValueError):
+            continue
+        sym = re.sub(r"[^A-Za-z0-9 ._#-]", "", str(e.get("symbol") or ""))[:24]
+        pct = round(min(max(_f(e.get("pct")), 0.0), 100.0), 2)
+        why = re.sub(r"[^A-Za-z0-9 ,.()-]", "", str(e.get("detail") or ""))[:80] or "unknown reason"
+        if con.execute("SELECT 1 FROM ea_protect_log WHERE account_id=? AND ticket=? AND action=?", (aid, ticket, e["action"])).fetchone():
+            continue
+        now = _now()
+        con.execute("INSERT INTO ea_protect_log(account_id,user_id,ticket,action,symbol,detail,created_at) VALUES(?,?,?,?,?,?,?)",
+                    (aid, uid, ticket, e["action"], sym, why, now))
+        con.commit()                     # release this write before the inbox connection writes (SQLite allows one writer)
+        body = "Equity protection: " + PROT_TEXT[e["action"]].format(sym=sym or "Trade", t=ticket, pct=f"{pct:g}", why=why)
+        with closing(inbox.db()) as ic:
+            ic.insert("INSERT INTO inbox_messages(user_id,sender,admin_id,body,created_at) VALUES(?,?,?,?,?)", (uid, "admin", 0, body[:1000], now))
+            ic.commit()
+
+
 def _remove(con, a: dict):
     aid = a["id"]
-    for t in ("ea_acct_state", "ea_acct_rules", "ea_acct_manage", "copy_members"):
+    for t in ("ea_acct_state", "ea_acct_rules", "ea_acct_manage", "copy_members", "ea_protect_log"):
         con.execute(f"DELETE FROM {t} WHERE account_id=?", (aid,))
     con.execute("UPDATE copy_jobs SET status='closed', note='Account removed' WHERE account_id=? AND status IN ('waiting','sent','open')", (aid,))
     con.execute("DELETE FROM ea_meta WHERE k='copy_master' AND v=?", (str(aid),))
@@ -687,6 +805,7 @@ async def status(request):
         out.update(account=st["account"], today=st["today"], positions=st["positions"], check=risk_check(st, rules))
         out["can_close"] = bool(out["connected"] and st["account"].get("remote_close"))
         out["can_manage"] = bool(out["connected"] and st["account"].get("manage_allowed"))
+        out["can_protect"] = bool(out["connected"] and st["account"].get("protect_allowed"))
         out["can_execute"] = bool(out["connected"] and st["account"].get("execute_allowed"))
         out["can_pending"] = bool(out["connected"] and st["account"].get("pending_allowed"))
         out["orders"] = st.get("orders") or []

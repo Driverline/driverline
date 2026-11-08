@@ -52,6 +52,17 @@
 <div><label>Extend it by (R)</label><input id="ttp_step" type="number" step="any" inputmode="decimal"></div></div>
 <div class="mut" style="margin-top:10px">1R is the distance from your entry to your original stop loss. Stops only ever move in your favour, never wider. The take-profit is extended only once your stop protects the trade (breakeven or better). Trades with no stop loss are skipped. This needs auto-manage to be enabled on your account.</div>
 <div class="btns"><button id="mgsave">Save auto-manage</button></div><div id="mgmsg" class="mut"></div></div>
+<div class="card" id="protcard"><h2>Equity protection</h2>
+<div class="mut" id="protnote">Loading...</div>
+<div class="mut">For a trade with no stop loss, or a stop loss that risks too much of your account. It applies only to trades that have been open longer than the waiting time below, and never to a trade you switched off with the Auto button.</div>
+<label>When that happens</label>
+<select id="prot_mode"><option value="off">Do nothing (off)</option><option value="stop">Set a protective stop loss (recommended)</option><option value="close">Close the trade</option><option value="breakeven">Breakeven only (does not limit the loss)</option></select>
+<div class="row"><div><label>A protective stop risks (% of account)</label><input id="prot_risk_pct" type="number" step="any" inputmode="decimal"></div>
+<div><label>A stop is too big above (% of account)</label><input id="prot_cap_pct" type="number" step="any" inputmode="decimal"></div></div>
+<div class="row"><div><label>Wait before acting (seconds)</label><input id="prot_grace" type="number" step="1" inputmode="numeric"></div>
+<div><label>Breakeven after profit of (% of account)</label><input id="prot_be_pct" type="number" step="any" inputmode="decimal"></div></div>
+<div class="mut" style="margin-top:10px">Stricter settings apply at once. Anything that gives you less protection, such as switching it off or allowing a bigger risk, takes effect 24 hours after you ask, so it cannot be changed in the middle of a losing trade. A protective stop that cannot be placed (for example too close to the price for your broker) leads to the trade being closed, and you are told in your inbox. This limits risk, it does not guarantee it: prices can gap past a stop. Education and risk analysis only, not financial advice.</div>
+<div class="btns"><button id="protsave">Save equity protection</button></div><div id="protmsg" class="mut"></div></div>
 
 <div class="card" id="copycard"><h2>Copy trading</h2><div id="copybody"><span class="mut">Loading...</span></div></div>
 
@@ -67,8 +78,8 @@ function kv(k,v,c){const d=el('div','kv');d.append(el('span','',k),el('span',c||
 async function api(path,method,body){
   const r=await fetch('/api/ea'+path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
-let first=true,mgFirst=true,shown=null;
-function switched(){first=true;mgFirst=true;load()}
+let first=true,mgFirst=true,protFirst=true,shown=null;
+function switched(){first=true;mgFirst=true;protFirst=true;load()}
 let keyTimer=null;
 function hideKey(){clearTimeout(keyTimer);const b=$('keybox');b.textContent=''}
 function showKey(title,key){const b=$('keybox');hideKey();
@@ -103,13 +114,19 @@ function renderAccounts(s){
 async function load(){
   try{
     const s=await dlAcct.status();
-    if(shown!==s.account_id){shown=s.account_id;first=true;mgFirst=true;loadCopy(s.account_id)}
+    if(shown!==s.account_id){shown=s.account_id;first=true;mgFirst=true;protFirst=true;loadCopy(s.account_id)}
     renderAccounts(s);
     loadReqs();
     const old=$('pickhere');if(old)old.remove();
     const pk=dlAcct.picker(s,()=>switched());if(pk){pk.id='pickhere';$('conn').parentNode.insertBefore(pk,$('conn'))}
     const mg=s.manage||{};
     if(mgFirst){['be_on','tsl_on','ttp_on'].forEach(k=>{$(k).checked=!!mg[k]});['be_trigger','be_offset','tsl_start','tsl_dist','ttp_near','ttp_step'].forEach(k=>{$(k).value=mg[k]});mgFirst=false}
+    const pc=$('protcard');pc.hidden=!s.connected;
+    $('protnote').textContent=s.can_protect?'Equity protection is ready for this account.':'Equity protection is not enabled on your account yet. Ask TradeLens support to enable it.';
+    ['prot_mode','prot_risk_pct','prot_cap_pct','prot_grace','prot_be_pct'].forEach(k=>{if(protFirst)$(k).value=mg[k]!==undefined?mg[k]:'';$(k).disabled=!s.can_protect});
+    $('protsave').disabled=!s.can_protect;protFirst=false;
+    const pend=mg.prot_pending||{},pk=Object.keys(pend);
+    if(pk.length){const t=Math.min(...pk.map(k=>pend[k].at));$('protmsg').className='mut';$('protmsg').textContent='A change that gives you less protection is waiting and takes effect on '+new Date(t*1000).toLocaleString()+'. Saving the current values again cancels it.'}
     $('mgnote').textContent=s.can_manage?'Auto-manage is ready for this account.':(s.connected?'Auto-manage is not enabled on your account yet.'+' Ask TradeLens support to enable it.':'Connect your MT5 first (see Connect your MT5 above).');
     const c=$('conn');c.textContent='';
     if(s.mt5_allowed===false){const w=el('div','warn','The MT5 connection is part of Signals Pro. Buy or renew it in the Billing tab.');w.style.marginBottom='8px';c.append(w)}
@@ -221,6 +238,15 @@ $('mgsave').onclick=async()=>{
     await api('/manage','POST',dlAcct.body({be_on:$('be_on').checked,be_trigger:num('be_trigger'),be_offset:num('be_offset'),tsl_on:$('tsl_on').checked,tsl_start:num('tsl_start'),tsl_dist:num('tsl_dist'),ttp_on:$('ttp_on').checked,ttp_near:num('ttp_near'),ttp_step:num('ttp_step')}));
     $('mgmsg').className='win';$('mgmsg').textContent='Saved. It applies to your account within a few seconds.';load();
   }catch(e){$('mgmsg').className='err';$('mgmsg').textContent=e.message}
+};
+$('protsave').onclick=async()=>{
+  const num=k=>Number($(k).value);
+  try{
+    const d=await api('/manage','POST',dlAcct.body({prot_mode:$('prot_mode').value,prot_risk_pct:num('prot_risk_pct'),prot_cap_pct:num('prot_cap_pct'),prot_grace:num('prot_grace'),prot_be_pct:num('prot_be_pct')}));
+    protFirst=true;await load();
+    const pk=Object.keys(d.prot_pending||{});
+    $('protmsg').className='win';$('protmsg').textContent=pk.length?'Saved. Part of it gives you less protection, so it takes effect in 24 hours.':'Saved. It applies to your account within a few seconds.';
+  }catch(e){$('protmsg').className='err';$('protmsg').textContent=e.message}
 };
 async function closeCmd(body,question){
   if(!confirm(question+(body.kind==='cancel_order'?'\n\nThis removes the waiting order from your MT5.':'\n\nThis sends a close order to your MT5.')))return;
