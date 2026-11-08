@@ -125,8 +125,8 @@ async function load(){
     $('protnote').textContent=s.can_protect?'Equity protection is ready for this account.':'Equity protection is not enabled on your account yet. Ask TradeLens support to enable it.';
     ['prot_mode','prot_risk_pct','prot_cap_pct','prot_grace','prot_be_pct'].forEach(k=>{if(protFirst)$(k).value=mg[k]!==undefined?mg[k]:'';$(k).disabled=!s.can_protect});
     $('protsave').disabled=!s.can_protect;protFirst=false;
-    const pend=mg.prot_pending||{},pk=Object.keys(pend);
-    if(pk.length){const t=Math.min(...pk.map(k=>pend[k].at));$('protmsg').className='mut';$('protmsg').textContent='A change that gives you less protection is waiting and takes effect on '+new Date(t*1000).toLocaleString()+'. Saving the current values again cancels it.'}
+    const pend=mg.prot_pending||{},pkeys=Object.keys(pend);
+    if(pkeys.length){const t=Math.min(...pkeys.map(k=>pend[k].at));$('protmsg').className='mut';$('protmsg').textContent='A change that gives you less protection is waiting and takes effect on '+new Date(t*1000).toLocaleString()+'. Saving the current values again cancels it.'}
     $('mgnote').textContent=s.can_manage?'Auto-manage is ready for this account.':(s.connected?'Auto-manage is not enabled on your account yet.'+' Ask TradeLens support to enable it.':'Connect your MT5 first (see Connect your MT5 above).');
     const c=$('conn');c.textContent='';
     if(s.mt5_allowed===false){const w=el('div','warn','The MT5 connection is part of Signals Pro. Buy or renew it in the Billing tab.');w.style.marginBottom='8px';c.append(w)}
