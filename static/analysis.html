@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/track.js"></script>
+<script src="/auth.js"></script>
+<script src="/acct.js"></script>
+<script src="/ticket.js"></script>
+<style>
+@keyframes dlspin{to{transform:rotate(360deg)}}
+button.spin::before{content:"";display:inline-block;width:14px;height:14px;margin-right:8px;vertical-align:-2px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:dlspin .8s linear infinite}
+#radar .busy{margin:8px 0;padding:8px 10px;border:1px solid var(--gold);border-radius:10px;color:var(--gold2)}
+</style>
+</head>
+<body class="chat">
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a><select class="chip" id="sym"></select></header>
+<main id="feed"><div id="radar"></div><div class="msg hello">Pick an instrument, then tap Analyze to pull live candles (D1 to M15), compute the structure, and get a Trade Card.</div></main>
+<footer>
+<button id="go" disabled>Analyze</button>
+<small class="dis"><span id="me"></span> <a href="#" id="signout" style="color:var(--gold)">Sign out</a></small>
+<small class="dis">Education and risk analysis only, not financial advice. Synthetic indices are RNG-generated. Forex and gold follow real markets and can gap on news.</small>
+</footer>
+<script>
+const feed=document.getElementById('feed'),btn=document.getElementById('go'),sym=document.getElementById('sym');
+function label(){btn.textContent='Analyze '+(sym.selectedOptions[0]?sym.selectedOptions[0].text:'')}
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+function section(title,body){const c=el('div','card');c.append(el('h2','',title));if(typeof body==='string')c.append(el('div','',body));else c.append(body);return c}
+function factsBlock(d){const det=el('details');det.append(el('summary','','Computed facts'),el('pre','',JSON.stringify(d.facts,null,1)));return det}
+function renderFallback(d){
+  const box=el('div','msg'),s=d.summary||{};
+  const w=el('div','card');w.append(el('h2','',d.market_closed?'Market closed':'AI analysis unavailable'),el('div','',d.card_error||'Claude did not respond.'),el('div','hello','Showing computed facts only. This is not a trade signal.'));
+  box.append(w,section('Bias (computed)',s.bias||'-'));
+  const tfs=el('div');for(const [k,v] of Object.entries(s.timeframes||{})){const r=el('div','tf');r.append(el('b','',k),el('span','',v));tfs.append(r)}
+  box.append(section('Timeframes',tfs));
+  const lv=el('div');for(const [k,v] of Object.entries(s.levels||{})){const r=el('div','tf');r.append(el('b','',k),el('span','','price '+v.price+', swing high '+v.swing_high+', swing low '+v.swing_low));lv.append(r)}
+  box.append(section('Key levels',lv),factsBlock(d));feed.append(box);showResult(box);
+}
+function trow(k,v,copy){
+  const r=el('div','kv'),sp=el('span','',v);r.append(el('span','',k));
+  if(copy){const w=el('span');w.style.cssText='display:flex;gap:8px;align-items:center';const b=el('button','ghost','Copy');b.style.cssText='width:auto;padding:5px 10px';
+    b.onclick=async()=>{try{await navigator.clipboard.writeText(sp.textContent);b.textContent='Copied'}catch(e){prompt('Copy this:',sp.textContent)}};
+    w.append(sp,b);r.append(w)}else r.append(sp);
+  return [r,sp];
+}
+function ticketSection(c){
+  const box=el('div'),name=sym.selectedOptions[0].text,L=window.dlLots&&dlLots(sym.value,c.entry,c.stop);
+  const [r1,s1]=trow('Symbol',name,true);window.dlSymbolName&&dlSymbolName(name,sym.value).then(n=>{s1.textContent=n});
+  box.append(r1,trow('Order',c.direction+' (market)',false)[0],trow('Volume (lots)',L?String(L.lots):'Set up the Risk page',!!L)[0],
+    trow('Stop loss',String(c.stop),true)[0],trow('Take profit',String(c.target),true)[0]);
+  if(L&&L.warn)box.append(el('div','warn','The minimum lot already risks more than your risk %. Consider skipping.'));
+  const a=el('a','','Open MT5 app');a.href='intent://#Intent;package=net.metaquotes.metatrader5;S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dnet.metaquotes.metatrader5;end';
+  a.style.cssText='display:block;text-align:center;margin-top:10px;padding:12px;border-radius:12px;border:1px solid var(--gold);color:var(--gold);text-decoration:none;font-weight:600';
+  box.append(a,el('div','mut','MT5 cannot be filled in from a link. Open it, tap New Order, and enter these values yourself. The Open button works on Android only.'));
+  return section('Enter this in MT5',box);
+}
+/*watch-chart-v1*/
+function wEsc(s){return String(s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]))}
+function wFmt(x){x=Number(x);const d=Math.abs(x)>=1000?2:Math.abs(x)>=50?3:Math.abs(x)>=1?4:5;return x.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})}
+function watchSvg(v,ov){
+  ov=ov||[];
+  const W=340,H=ov.length?250:220,L=6,R=86,T=12,B=12,pw=W-L-R,ph=H-T-B,cs=v.candles,n=cs.length;
+  let lo=Math.min(...cs.map(c=>c[3])),hi=Math.max(...cs.map(c=>c[2]));
+  v.levels.forEach(l=>{lo=Math.min(lo,l.price);hi=Math.max(hi,l.price)});
+  ov.forEach(l=>{lo=Math.min(lo,l.price);hi=Math.max(hi,l.price)});
+  if(v.zone){lo=Math.min(lo,v.zone.low);hi=Math.max(hi,v.zone.high)}
+  const pad=(hi-lo)*0.08||1;lo-=pad;hi+=pad;
+  const y=p=>T+ph*(1-(p-lo)/(hi-lo)),step=pw/n,bw=Math.max(1.6,step*0.62),x=i=>L+step*(i+0.5);
+  const col={ceiling:'#ffb454',floor:'#5cc8ff',ema:'#b49cff',entry:'#ffd166',sl:'#ff7b7b',tp:'#46d6a4'},o=[];
+  const aria='Chart of the last '+n+' '+(v.tf==='H1'?'hourly':'15-minute')+' candles. Price now '+wFmt(v.price)+'.'
+    +v.levels.map(l=>' '+l.label+' at '+wFmt(l.price)+'.').join('');
+  o.push('<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="'+wEsc(aria)+'" style="display:block;max-width:100%;height:auto;font-family:inherit">');
+  o.push('<rect x="0" y="0" width="'+W+'" height="'+H+'" rx="10" fill="#07102a" stroke="#16305f"/>');
+  if(v.zone){const zy=y(v.zone.high),zh=y(v.zone.low)-zy;
+    o.push('<rect x="'+L+'" y="'+zy+'" width="'+pw+'" height="'+zh+'" fill="rgba(92,200,255,.12)" stroke="#5cc8ff" stroke-dasharray="3 3" stroke-opacity=".6"/>');
+    o.push('<text x="'+(L+5)+'" y="'+(zy+11)+'" fill="#8fd8ff" font-size="9.5" font-weight="700">'+wEsc(v.zone.label)+'</text>')}
+  cs.forEach((c,i)=>{const up=c[4]>=c[1],k=up?'#46d6a4':'#ff7b7b',xx=x(i),t=y(Math.max(c[1],c[4])),b=y(Math.min(c[1],c[4]));
+    o.push('<line x1="'+xx+'" x2="'+xx+'" y1="'+y(c[2])+'" y2="'+y(c[3])+'" stroke="'+k+'" stroke-width="1"/>');
+    o.push('<rect x="'+(xx-bw/2)+'" y="'+t+'" width="'+bw+'" height="'+Math.max(1,b-t)+'" fill="'+(up?'#07102a':k)+'" stroke="'+k+'" stroke-width="1"/>')});
+  (v.spikes||[]).forEach(i=>{if(cs[i])o.push('<circle cx="'+x(i)+'" cy="'+y(cs[i][2])+'" r="4" fill="none" stroke="#ffd166" stroke-width="1.5"/>')});
+  const labs=[];
+  v.levels.concat(ov).forEach(l=>{const yy=y(l.price),k=col[l.kind]||'#ccc';
+    o.push('<line x1="'+L+'" x2="'+(L+pw)+'" y1="'+yy+'" y2="'+yy+'" stroke="'+k+'" stroke-width="1.4" stroke-dasharray="5 3"/>');
+    labs.push({y:yy,k:k,a:l.label,b:wFmt(l.price)})});
+  const py=y(v.price);o.push('<line x1="'+L+'" x2="'+(L+pw)+'" y1="'+py+'" y2="'+py+'" stroke="#ffffff" stroke-opacity=".55" stroke-width="1"/>');
+  o.push('<circle cx="'+x(n-1)+'" cy="'+py+'" r="3.2" fill="#ffffff"/>');
+  labs.push({y:py,k:'#ffffff',a:'You are here',b:wFmt(v.price)});
+  labs.sort((p,q)=>p.y-q.y);
+  for(let i=1;i<labs.length;i++)if(labs[i].y-labs[i-1].y<25)labs[i].y=labs[i-1].y+25;
+  const over=labs.length?labs[labs.length-1].y+12-(H-4):0;if(over>0)for(let i=labs.length-1;i>=0;i--){labs[i].y-=over;if(i&&labs[i].y-labs[i-1].y<25)labs[i-1].y=labs[i].y-25}
+  labs.forEach(l=>{o.push('<text x="'+(L+pw+5)+'" y="'+(l.y-1)+'" fill="'+l.k+'" font-size="9.5" font-weight="700">'+wEsc(l.a)+'</text>'
+    +'<text x="'+(L+pw+5)+'" y="'+(l.y+10)+'" fill="#cfd9f6" font-size="9.5">'+wEsc(l.b)+'</text>')});
+  o.push('</svg>');return o.join('')
+}
+function watchChart(w){
+  const box=el('div'),keys=Object.keys(w.views);let cur=w.default;
+  const ttl=el('div','',w.title);ttl.style.cssText='font-weight:700;margin-bottom:8px';box.append(ttl);
+  const bar=el('div'),holder=el('div'),cap=el('div','mut'),sc=el('div'),btns={};cap.style.cssText='margin-top:6px;font-size:13px';bar.style.cssText='display:flex;gap:8px;margin-bottom:8px';
+  if(w.chips&&w.chips.length){const r=el('div');r.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px';
+    w.chips.forEach(c=>{const s=el('span','',c.tf+' \u00b7 '+(c.dir==='up'?'Up':c.dir==='down'?'Down':'Mixed'));
+      s.style.cssText='padding:4px 10px;border-radius:999px;border:1px solid '+(c.dir==='up'?'#46d6a4':c.dir==='down'?'#ff7b7b':'#7d8bb3')+';font-size:13px';r.append(s)});box.append(r)}
+  let ovl=[];
+  function show(k){cur=k;holder.innerHTML=watchSvg(w.views[k],ovl);cap.textContent=w.views[k].caption||'';cap.style.display=w.views[k].caption?'block':'none';sc.textContent='';
+    w.views[k].scenarios.forEach(s=>{const r=el('div'),b=el('span','',s.kind==='buy'?'BUY':s.kind==='sell'?'SELL':'WAIT');
+      const kc=s.kind==='buy'?'#46d6a4':s.kind==='sell'?'#ff7b7b':'#9fb0d9';
+      r.style.cssText='display:flex;gap:10px;align-items:flex-start;margin:8px 0;padding:8px 10px;border-radius:10px;border:1px solid #16305f;border-left:4px solid '+kc;
+      b.style.cssText='font-size:11px;font-weight:700;letter-spacing:.06em;color:'+kc+';min-width:38px;padding-top:2px';
+      r.append(b,el('span','',s.text));sc.append(r)});
+    keys.forEach(q=>{btns[q].style.borderColor=q===k?'#5cc8ff':'#16305f';btns[q].style.color=q===k?'#fff':'#9fb0d9'})}
+  if(keys.length>1)keys.forEach(k=>{const b=el('button','ghost',k==='H1'?'1-hour candles':'15-minute candles');b.style.cssText='width:auto;padding:6px 12px;font-size:14px';
+    b.onclick=()=>show(k);btns[k]=b;bar.append(b)});else keys.forEach(k=>{btns[k]=el('span')});
+  box.append(bar,holder,cap,sc);show(cur);
+  const g=el('details');g.append(el('summary','','What do these words mean?'));
+  w.glossary.forEach(t=>{const d=el('div');d.style.cssText='margin:6px 0';const b=el('b','',t.term+': ');d.append(b,document.createTextNode(t.text));g.append(d)});
+  box.append(g);const n=el('div','mut',w.note);n.style.marginTop='8px';box.append(n);
+  box.setOverlay=l=>{ovl=l||[];show(cur)};          // pending-order lines drawn on top of the same picture
+  return box
+}
+
+/*pending-orders-v1*/
+const PCOL={BUY:'#46d6a4',SELL:'#ff7b7b'};
+const pNorm=x=>String(x).toLowerCase().replace(/index/g,'').replace(/[^a-z0-9]/g,'');
+async function eaApi(path,method,body){
+  const r=await fetch(path,{method:method||'GET',credentials:'same-origin',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
+function pendingSection(p,wbox,name,key){
+  const box=el('div');
+  if(!p.enabled){const w=el('div','warn',p.why_not||'Pending orders are not offered for this result.');box.append(w);return section('Pending orders',box)}
+  box.append(el('div','mut',p.note));
+  (p.warnings||[]).forEach(t=>box.append(el('div','warn',t)));
+  const status=el('div','mut'),pickBox=el('div'),list=el('div'),detail=el('div'),mine=el('div'),msgBox=el('div');let ea=null,sel=null;msgBox.style.margin='10px 0';
+  status.style.margin='8px 0';list.style.cssText='display:grid;gap:8px;margin:10px 0';
+  function eaNote(){
+    status.className='mut';
+    if(!ea)status.textContent='';
+    else if(ea.mt5_allowed===false){status.className='warn';status.textContent='Pending orders use your MT5 connection, which is part of Signals Pro. Renew it in the Billing tab.'}
+    else if(!ea.connected){status.className='warn';status.textContent='Your MT5 is not connected, so you can read these orders but not place them yet. Open the MT5 page to connect it.'}
+    else if(!ea.can_pending){status.className='warn';status.textContent='Pending orders are not enabled on your account yet. Ask TradeLens support to enable it.'}
+    else{status.className='win';status.textContent='MT5 connected. Pending orders are allowed.'}
+  }
+  function showMine(){
+    mine.textContent='';if(!ea)return;
+    const want=pNorm(name),rows=(ea.orders||[]).filter(o=>pNorm(o.symbol).startsWith(want));
+    if(!rows.length)return;
+    mine.append(el('h2','','Waiting in your MT5'));
+    rows.forEach(o=>{const r=el('div','kv');
+      const ml=Number(o.minutes_left),exp=ml>=0?(ml>=60?Math.floor(ml/60)+'h '+(ml%60)+'m':ml+'m')+' left':'no expiry';
+      r.append(el('span','',o.type.replace(/_/g,' ').toLowerCase()+' '+o.volume+' at '+o.price+(Number(o.limit)?' (limit '+o.limit+')':'')+' · SL '+o.sl+' · TP '+o.tp+' · '+exp));
+      if(ea.can_pending){const b=el('button','ghost','Cancel');b.style.cssText='width:auto;padding:6px 12px';
+        b.onclick=async()=>{if(!confirm('Cancel this waiting order?'))return;b.disabled=true;
+          try{const r2=await eaApi('/api/ea/command','POST',dlAcct.body({kind:'cancel_order',ticket:Number(o.ticket)}));await waitCmd(r2.id);await refresh()}catch(e){alert(e.message);b.disabled=false}};
+        r.append(b)}
+      mine.append(r)})}
+  let specs=[],specsFor=null;
+  function specFor(){return specs.find(x=>pNorm(x.symbol)===pNorm(name))||specs.find(x=>x.key===key)||specs.find(x=>pNorm(x.symbol).startsWith(pNorm(name)))}
+  function riskEst(o,lots){
+    const sp=specFor();if(!sp)return null;
+    const unit=(sp.tick_size>0&&sp.tick_value>0)?sp.tick_value/sp.tick_size:(sp.contract_size||0);
+    const l=lots>0?lots:sp.vol_min;if(!(unit>0&&l>0))return null;
+    const money=l*Math.abs(o.entry-o.sl)*unit,bal=ea&&ea.account&&ea.account.balance;
+    return{text:'Estimated risk if the stop loss is hit: about '+money.toFixed(2)+(bal>0?' ('+(money/bal*100).toFixed(2)+'% of your balance)':'')+'. This is an estimate.',
+      pct:bal>0?money/bal*100:null,lots:l}}
+  async function refresh(){try{ea=await dlAcct.status()}catch(e){ea=null}
+    if(ea&&(!specs.length||specsFor!==ea.account_id)){specs=await dlAcct.specs();specsFor=ea.account_id}
+    pickBox.textContent='';const pk=ea&&dlAcct.picker(ea,()=>{specs=[];refresh()});if(pk)pickBox.append(pk);eaNote();showMine();if(sel)pick(sel,true)}
+  async function waitCmd(id){
+    const m=el('div','mut','Sending to your MT5...');msgBox.textContent='';msgBox.append(m);
+    for(let i=0;i<20;i++){await new Promise(r=>setTimeout(r,1500));
+      try{const st=await dlAcct.status(),cm=st.command;
+        if(cm&&cm.id===id&&!['pending','sent'].includes(cm.status)){const ok=cm.status==='done';
+          m.className=ok?'win':'err';m.textContent=(cm.result&&cm.result.message)||(ok?'Done.':'Your EA did not confirm. Check MT5.');return ok}}catch(e){}}
+    m.className='warn';m.textContent='No reply from your EA yet. Check MT5 before trying again.';return false}
+  function pick(o,keep){
+    sel=o;wbox.setOverlay(o.levels);detail.textContent='';
+    [...list.children].forEach(c=>{c.style.borderColor=c.dataset.t===o.type?'#5cc8ff':'#16305f'});
+    const kc=PCOL[o.direction];
+    detail.style.cssText='border:1px solid #16305f;border-left:4px solid '+kc+';border-radius:10px;padding:10px;margin-top:6px';
+    detail.append(el('div','',o.what));const miss=el('div','mut',o.miss);miss.style.margin='6px 0';detail.append(miss);
+    detail.append(kv2(o.limit?'Trigger price':'Order price',wFmt(o.price)));
+    if(o.limit)detail.append(kv2('Limit price (entry)',wFmt(o.limit)));
+    detail.append(kv2('Stop loss',wFmt(o.sl)),kv2('Take profit',wFmt(o.tp)),kv2('Risk : Reward','1 : '+o.rr));
+    const hl=el('label','','Cancel this order if it has not filled after');const hs=document.createElement('select');
+    p.hours.forEach(h=>{const op=document.createElement('option');op.value=h;op.textContent=h+' hours';if(h===p.default_hours)op.selected=true;hs.append(op)});
+    const ll=el('label','','Lot size');const lot=document.createElement('input');lot.type='number';lot.step='any';lot.min='0';lot.inputMode='decimal';
+    const sp=specFor();
+    lot.placeholder='Lot size'+(sp&&sp.vol_min?' (empty = minimum '+sp.vol_min+')':' (empty = minimum lot)');
+    const hint=el('div','mut');const upd=()=>{const r=riskEst(o,Number(lot.value));hint.textContent=r?r.text:''};lot.oninput=upd;upd();
+    detail.append(hl,hs,ll,lot,hint);
+    const go=el('button','','Set pending order');go.style.marginTop='10px';
+    go.disabled=!(ea&&ea.connected&&ea.can_pending&&ea.mt5_allowed!==false);
+    go.onclick=async()=>{
+      const lots=lot.value===''?null:Number(lot.value),h=Number(hs.value),re=riskEst(o,lots||0);
+      if(!confirm('Set this PENDING order in your MT5'+((ea.accounts||[]).length>1?' account "'+ea.label+'" ('+(ea.account&&ea.account.demo?'DEMO':'LIVE')+')':'')+'?\n\n'+name+' '+o.label+'\n'+(o.limit?'Trigger '+wFmt(o.price)+', then limit '+wFmt(o.limit):'Price '+wFmt(o.price))+'\nStop loss '+wFmt(o.sl)+'  ·  Take profit '+wFmt(o.tp)+
+        '\nLot size: '+(lots?lots:(re&&re.lots?re.lots+' (the minimum lot)':'the minimum lot'))+(re?'\n'+re.text:'')+'\nCancels itself after '+h+' hours if not filled.\n\nIf price reaches the level, MT5 opens a REAL trade by itself, even if this app is closed. You can cancel it any time while it waits.'))return;
+      if(re&&re.pct!==null&&ea.rules&&re.pct>ea.rules.max_risk_pct&&!confirm('WARNING: if the stop loss is hit this risks about '+re.pct.toFixed(2)+'% of your balance, more than the '+ea.rules.max_risk_pct+'% you set as your own limit.\n\nSet it anyway?'))return;
+      go.disabled=true;msgBox.textContent='';
+      try{const r=await eaApi('/api/pending/place','POST',dlAcct.body({token:o.token,lots:lots,hours:h}));
+        await waitCmd(r.command_id)}catch(e){msgBox.textContent='';msgBox.append(el('div','err',e.message))}
+      await refresh()};
+    detail.append(go)}
+  function kv2(a,b){const r=el('div','kv');r.append(el('span','',a),el('span','',b));return r}
+  p.options.forEach(o=>{const b=document.createElement('button');b.type='button';b.dataset.t=o.type;b.className='ghost';
+    b.style.cssText='text-align:left;display:flex;justify-content:space-between;gap:10px;align-items:center;border-color:#16305f;color:#e9eefc';
+    const l=el('span');const t=el('b','',o.label);t.style.color=PCOL[o.direction];l.append(t,document.createTextNode('  at '+wFmt(o.price)));
+    b.append(l,el('span','mut','R:R '+o.rr));b.onclick=()=>pick(o);list.append(b)});
+  if(p.options.length)box.append(el('div','',''),pickBox,status,list,detail);else box.append(pickBox,status);
+  box.append(msgBox,mine);
+  if(p.unavailable.length){const u=el('details');u.append(el('summary','','Why aren’t the other order types shown?'));
+    p.unavailable.forEach(x=>{const d=el('div');d.style.margin='6px 0';d.append(el('b','',x.label+': '),document.createTextNode(x.reason));u.append(d)});box.append(u)}
+  const g=el('details');g.append(el('summary','','What do these order types mean?'));
+  p.glossary.forEach(t=>{const d=el('div');d.style.margin='6px 0';d.append(el('b','',t.term+': '),document.createTextNode(t.text));g.append(d)});box.append(g);
+  const eaNeed=el('div','mut','Pending orders are placed through your own MT5 and wait at your broker. They cannot be used with Deriv multiplier trades.');eaNeed.style.marginTop='8px';box.append(eaNeed);
+  refresh();return section('Pending orders',box)
+}
+let lastBox=null,busyKey=null,lastRadar=null;
+function showResult(box){lastBox=box;box.scrollIntoView({behavior:'smooth',block:'start'})}
+function render(d){
+  if(!d.card){renderFallback(d);return}
+  const c=d.card,box=el('div','msg');
+  box.append(section('Summary',c.headline));
+  const tfs=el('div');
+  for(const [k,v] of Object.entries(c.timeframes||{})){const r=el('div','tf');r.append(el('b','',k),el('span','',v));tfs.append(r)}
+  box.append(section('Timeframes',tfs));
+  box.append(section('In plain words',c.plain_words));
+  const t=el('div');
+  const st=el('div','status '+(c.status==='TRADE'?(c.direction||''):'NOTRADE'),c.status==='TRADE'?c.direction+' setup':'NO TRADE');
+  t.append(st,el('div','',c.why));
+  if(c.status==='TRADE'){
+    const lv=el('div','lv');
+    [['Entry',c.entry],['Stop',c.stop],['Target',c.target]].forEach(([n,v])=>{const x=el('div');x.append(el('small','',n),el('b','',v));lv.append(x)});
+    t.append(lv);
+    if(c.reward_risk)t.append(el('div','hello','Risk 1 : Reward '+c.reward_risk));
+    try{localStorage.setItem('dl_last',JSON.stringify({key:sym.value,direction:c.direction,entry:c.entry,stop:c.stop,target:c.target}))}catch(e){}
+    const a=el('a','', 'Size this trade');a.href='/risk.html';a.style.cssText='display:block;margin-top:10px;color:var(--acc)';t.append(a);
+    const j=el('a','', 'Log this trade');j.href='/journal.html';j.style.cssText='display:block;margin-top:6px;color:var(--acc)';t.append(j);
+  }
+  t.append(el('div','',''),el('div','hello','Next: '+c.next_step));
+  if(window.dlChat){const q=el('button','ghost','Ask TradeLens about this card');q.style.cssText='margin-top:10px;width:auto;padding:8px 14px;font-size:14px';
+    q.onclick=()=>{const w=d.watch&&d.watch.views&&d.watch.views[d.watch.default];
+      dlChat.open({name:d.name,card:c,watch:d.watch?{title:d.watch.title,levels:(w?w.levels:[]).map(l=>({label:l.label,price:l.price})),scenarios:(w?w.scenarios:[]).map(s=>s.text)}:undefined},
+        c.status==='TRADE'?'Explain this card in simple words.':'Why is this a NO TRADE, and what should I wait for?')};t.append(q)}
+  box.append(section('Trade Card',t));
+  let wbox=null;
+  if(d.watch){wbox=watchChart(d.watch);box.append(section('What to wait for',wbox))}      // NO TRADE only: the picture of the gray Next: line
+  if(d.pending&&wbox)box.append(pendingSection(d.pending,wbox,sym.selectedOptions[0].text,sym.value));   // NO TRADE only: orders that wait for the picture to change
+  if(c.status==='TRADE')box.append(ticketSection(c));
+  box.append(factsBlock(d));
+  feed.append(box);showResult(box);
+}
+btn.onclick=async()=>{
+  btn.disabled=true;btn.textContent='Analyzing...';
+  busyKey=sym.value;if(lastRadar)renderRadar(lastRadar);     // the matching Analyse button shows "Analysing..." at once
+  try{
+    const r=await fetch('/api/tradecard/'+sym.value);
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
+    render(d);
+  }catch(e){const m=el('div','msg err','Error: '+e.message);feed.append(m);showResult(m)}
+  btn.disabled=false;label();window.dlMe&&dlMe();
+  busyKey=null;await loadRadar();                            // the radar card above changes height, so scroll to the result again afterwards
+  if(lastBox)lastBox.scrollIntoView({behavior:'smooth',block:'start'});
+};
+(async()=>{
+  try{
+    const ir=await fetch('/api/instruments');
+    if(ir.status===401){location.href='/login.html';return}      // not signed in: go to the sign-in page
+    const list=await ir.json();
+    if(!Array.isArray(list))throw new Error((list&&list.detail)||('HTTP '+ir.status));
+    list.forEach(i=>{const o=document.createElement('option');o.value=i.key;o.textContent=i.name;sym.append(o)});
+    try{const k=localStorage.getItem('dl_sym');if(k)sym.value=k}catch(e){}
+    label();btn.disabled=false;
+  }catch(e){feed.append(el('div','msg err','Cannot reach backend: '+e.message))}
+})();
+sym.onchange=()=>{label();try{localStorage.setItem('dl_sym',sym.value)}catch(e){}};
+const radarBox=document.getElementById('radar');
+function markBusy(b,key){
+  if(!busyKey)return;
+  b.disabled=true;
+  if(key===busyKey){b.textContent='Analysing\u2026';b.classList.add('spin')}
+}
+function radarItem(s){
+  const d=el('div');d.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)';
+  const l=el('div'),t=el('div','',s.name+' \u00b7 '+s.score+'/100');t.style.fontWeight='600';
+  l.append(t,el('div','mut',s.condition+(s.preferred?' \u00b7 your usual symbol':'')));
+  if(s.cached)l.append(el('div','mut','A recent analysis is available, which uses no credit.'));
+  const b=el('button','ghost','Analyse');b.style.cssText='width:auto;padding:8px 12px';b.onclick=()=>analyse(s.key);markBusy(b,s.key);
+  d.append(l,b);return d;
+}
+function renderRadar(r){
+  lastRadar=r;radarBox.textContent='';
+  const c=el('div','card');c.append(el('h2','','Smart Analysis Timing'));
+  if(busyKey){const o=[...sym.options].find(x=>x.value===busyKey);
+    c.append(el('div','busy','Analysing '+(o?o.text:'')+'\u2026 this takes a few seconds. The result opens by itself at the bottom of the page.'))}
+  if(r.status!=='ok'){c.append(el('div','mut',r.message||'Not available right now. You can still analyse manually.'));radarBox.append(c);return}
+  const left=Math.max(0,r.credits.limit-r.credits.used);
+  c.append(el('div','mut','You have '+left+' of '+r.credits.limit+' analyses left today. An analysis is used only when you press Analyse and Claude runs a new one. Looking at this panel is free.'));
+  if(r.best){
+    const b=r.best;
+    c.append(el('div','mut','Best opportunity to analyse now'),el('div','big',b.name),el('div','',b.score+'/100 \u00b7 '+b.label),
+      el('div','mut','Current conditions: '+b.condition),el('h2','','Why this is recommended'));
+    const ul=el('ul');b.reasons.forEach(x=>ul.append(el('li','',x)));c.append(ul);
+    c.append(el('div','mut',b.time_note+' '+(b.notes||[]).join(' ')));
+    const go=el('button','','Analyse '+b.name);go.style.marginTop='10px';go.onclick=()=>analyse(b.key);markBusy(go,b.key);c.append(go);
+    if(b.cached)c.append(el('div','mut','A recent analysis is available, so opening it uses no credit.'));
+  }else if(r.wait){
+    c.append(el('div','status NOTRADE',r.wait.title),el('div','',r.wait.message));
+    if(r.wait.next_window)c.append(el('div','mut','Next historically favourable period ('+r.wait.next_window.name+'): '+r.wait.next_window.text+'. '+r.wait.next_window.note));
+  }
+  if(r.preferred_note)c.append(el('div','warn',r.preferred_note));
+  if((r.others||[]).length){c.append(el('h2','','Other opportunities'));r.others.forEach(s=>c.append(radarItem(s)))}
+  (r.notes||[]).forEach(n=>c.append(el('div','mut',n)));
+  c.append(el('div','mut','The score shows how worthwhile it is to spend an analysis request. It is not a probability that a trade will win.'));
+  radarBox.append(c);
+}
+function analyse(key){if(btn.disabled)return;sym.value=key;sym.dispatchEvent(new Event('change'));btn.click()}
+async function loadRadar(){try{const r=await fetch('/api/radar');if(!r.ok)return;renderRadar(await r.json())}catch(e){}}
+loadRadar();setInterval(loadRadar,180000);
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+<script src="/chat.js" defer></script>
+</body>
+</html>
