@@ -689,7 +689,7 @@ def protect_precheck(account: dict, manage: dict, spec, lots: float, dist: float
     if manage.get("prot_mode") not in ("stop", "close") or not account.get("protect_allowed") or not spec:
         return None
     from .pending_orders import _risk_pct
-    size = min(_f(account.get("balance")), _f(account.get("equity"), _f(account.get("balance"))))
+    size = _f(account.get("balance"))                      # the balance: same account size the EA uses
     per_lot = _risk_pct(spec, 1.0, dist, size)
     if per_lot is None or per_lot <= 0:
         return None
@@ -712,11 +712,11 @@ def protect_precheck(account: dict, manage: dict, spec, lots: float, dist: float
 PROT_TEXT = {
     "stop_set": "{sym} #{t} had no stop loss. TradeLens set one that risks about {pct}% of your account.",
     "stop_tightened": "{sym} #{t} had a stop loss that risked more than your limit. TradeLens moved it closer, to risk about {pct}% of your account.",
-    "closed_no_stop": "{sym} #{t} had no stop loss and a protective stop could not be placed, so TradeLens closed it to protect your account.",
-    "closed_big_stop": "{sym} #{t} risked more than your limit and a protective stop could not be placed, so TradeLens closed it to protect your account.",
+    "closed_no_stop": "{sym} #{t} had no stop loss and a protective stop could not be placed, so TradeLens closed it to protect your account. Reason: {why}",
+    "closed_big_stop": "{sym} #{t} risked more than your limit and a protective stop could not be placed, so TradeLens closed it to protect your account.",   # older EA versions only
     "closed_mode": "{sym} #{t} had no stop loss or an oversized one, so TradeLens closed it, as you chose.",
     "breakeven": "{sym} #{t} reached your profit threshold, so TradeLens moved its stop to breakeven. This does not limit the loss if the trade turns.",
-    "failed": "{sym} #{t} has no stop loss or an oversized one, and TradeLens could not protect it ({why}). Please check it yourself.",
+    "failed": "{sym} #{t} has no stop loss or an oversized one, and TradeLens could not protect it ({why}). It was left open. Please check it yourself.",
 }
 
 
@@ -734,7 +734,7 @@ def _protect_events(con, uid: int, aid: int, events):
             continue
         sym = re.sub(r"[^A-Za-z0-9 ._#-]", "", str(e.get("symbol") or ""))[:24]
         pct = round(min(max(_f(e.get("pct")), 0.0), 100.0), 2)
-        why = re.sub(r"[^A-Za-z0-9 ,.()-]", "", str(e.get("detail") or ""))[:80] or "unknown reason"
+        why = re.sub(r"[^A-Za-z0-9 ,.()-]", "", str(e.get("detail") or ""))[:200] or "unknown reason"
         if con.execute("SELECT 1 FROM ea_protect_log WHERE account_id=? AND ticket=? AND action=?", (aid, ticket, e["action"])).fetchone():
             continue
         now = _now()

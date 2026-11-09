@@ -34,12 +34,12 @@ queued for 24 hours (`prot_pending`, per field). Saving the current value again 
 New input `InpAllowProtect = false` (separate from `InpAllowManage`, so nobody gets auto-close by accident). Runs on each timer cycle, in its own
 function, independent of the breakeven/trailing switches.
 For each open position that is not excluded and older than `prot_grace`:
-1. Account size = the lower of balance and equity.
+1. Account size = the BALANCE (not equity: equity moves with the trade's own floating loss, which made an earlier version chase its own stop).
 2. Risk at the stop = `-OrderCalcProfit(type, symbol, volume, open, sl)` as a % of account size. No stop = unlimited.
-3. In scope if no stop, or risk % > `prot_cap_pct`.
+3. In scope if no stop, or risk % > `prot_cap_pct` plus a 5% tolerance for rounding.
 4. stop mode: protective distance = distance whose loss equals `prot_risk_pct` of account size (scale a probe distance through OrderCalcProfit,
    round to tick size). New stop = open -/+ distance. Place it only if it is tighter than any existing stop (never widen), is on the safe side of the
-   current price and respects the broker's stop and freeze levels (`StopsAllowed`). If it cannot be placed, close the trade and say why.
+   current price and respects the broker's stop and freeze levels (`StopsAllowed`). If the existing stop is already at or inside the protective level, do nothing (never close for that). Only if a protective stop truly cannot be placed (no stop and too close to the price, past it, or too small to price) close the trade and say why.
 5. After a stop is set or tightened, overwrite the remembered 1R (`TL_R_<ticket>`) with the new distance, so breakeven and trailing work from it.
 6. close mode: close at market. breakeven mode: when profit >= `prot_be_pct` of account size, move the stop to entry (only if tighter).
 7. Retry a failed modify at most 3 times, then report `failed`. Remember handled tickets (`TL_P_<ticket>`) so each action is taken and reported once.
@@ -63,8 +63,7 @@ that some symbols are not tradeable with a small balance. The "unreasonable stop
 
 ## Pre-check (built with stage 2)
 `ea.protect_precheck()` runs before the app queues an Open-trade (`signal_feed.execute_signal`) or a pending order (`pending_orders.place`). In stop or
-close mode, and only when the EA reports `protect_allowed`, a trade whose stop would risk more than `prot_cap_pct` of the account (lower of balance and
-equity; empty lot size = the symbol's minimum lot) is refused with a 409 and a reason: the lot size that would fit, or the account size needed. It never blocks
+close mode, and only when the EA reports `protect_allowed`, a trade whose stop would risk more than `prot_cap_pct` of the account (balance; empty lot size = the symbol's minimum lot) is refused with a 409 and a reason: the lot size that would fit, or the account size needed. It never blocks
 when the contract specs are unknown. Trades opened by hand in MT5 are not pre-checked: the EA handles them after the waiting time.
 
 ## Stage 2 trial checklist (demo account, `InpAllowProtect = true`)
@@ -77,3 +76,14 @@ when the contract specs are unknown. Trades opened by hand in MT5 are not pre-ch
 7. Hedged or several positions on one symbol, a symbol with a large minimum stop distance (Volatility indices, Boom/Crash), a JPY or cross pair.
 8. Manually widening a protective stop: it is tightened again.
 9. Connection lost: the last settings keep working; weakening a setting in the app only reaches the EA after the 24-hour wait.
+
+## Bug found in the first demo trial (EA 1.54, fixed in 1.55)
+Two demo trades with no stop were given a correct protective stop and then closed within minutes ("risked more than your limit and a protective stop could not be placed"),
+although nothing was wrong with the trades. Two causes in EA 1.54 are established by the reference model in `tests/test_protect_logic.py`; whether they are the whole story is
+confirmed only by repeating the trial with 1.55, which records the numbers behind every action in `ea_protect_log.detail`:
+1. The account size was min(balance, equity). Equity moves with the trade's own floating loss, so the target moved every cycle and the stop was re-tightened again and again.
+2. "Can a stop be placed?" (`StopsAllowed`) also checked the TAKE-PROFIT against the price. A take-profit near the price made the answer "no", and every "no" closed the trade.
+Rounding alone cannot cause a close (an oversize stop can always be tightened by a tick); that was ruled out in the model.
+1.55: size = balance; 5% tolerance on "too big"; only the stop is checked; a stop already at or inside the protective level means do nothing; a trade that has its own
+oversized stop and cannot be tightened is LEFT OPEN and reported ("failed" event with the reason); only a trade with no stop at all and no way to place one is closed.
+Every event now carries the numbers (risk, balance, price, open, stop, new stop, broker minimum) and closure messages show the reason.

@@ -191,9 +191,11 @@ class Events(unittest.TestCase):
         self.assertLess(len(body), 400)
 
     def test_the_close_and_failure_messages_say_what_happened(self):
-        report(self.k, [{"ticket": 5, "symbol": "EURUSD", "action": "closed_no_stop"}, {"ticket": 6, "symbol": "EURUSD", "action": "breakeven"}])
+        report(self.k, [{"ticket": 5, "symbol": "EURUSD", "action": "closed_no_stop", "detail": "no protective stop could be worked out risk none of 100.00"},
+                        {"ticket": 6, "symbol": "EURUSD", "action": "breakeven"}])
         msgs = " ".join(self.inbox_bodies())
         self.assertIn("closed it", msgs)
+        self.assertIn("Reason: no protective stop could be worked out", msgs)
         self.assertIn("does not limit the loss", msgs)
 
     def test_removing_the_account_removes_its_log(self):
@@ -237,9 +239,11 @@ class PreCheck(unittest.TestCase):
     def test_close_mode_uses_the_same_rule(self):
         self.assertIsNotNone(ea.protect_precheck(self.acc(10), {"prot_mode": "close", "prot_cap_pct": 4.5}, self.SPEC, 0, 0.5, "V"))
 
-    def test_uses_the_lower_of_balance_and_equity(self):
-        a = {**self.acc(100), "equity": 10}
+    def test_uses_the_balance_not_the_equity(self):
+        a = {**self.acc(10), "equity": 1000}
         self.assertIsNotNone(ea.protect_precheck(a, self.ON, self.SPEC, 0, 0.5, "V"))
+        b = {**self.acc(100), "equity": 10}
+        self.assertIsNone(ea.protect_precheck(b, self.ON, self.SPEC, 0, 0.5, "V"))
 
 
 if __name__ == "__main__":

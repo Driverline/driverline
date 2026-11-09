@@ -24,7 +24,7 @@
 //| never widens a stop. It limits risk but cannot guarantee it.     |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.54"
+#property version     "1.55"
 #property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
@@ -609,8 +609,10 @@ void ManagePositions()
 //+------------------------------------------------------------------+
 //| Equity protection (only when InpAllowProtect is on)              |
 //| A position is "in scope" when it has NO stop loss, or its stop   |
-//| risks more than prot_cap % of the account (the lower of balance  |
-//| and equity). The mode chosen in the app says what happens:       |
+//| risks more than prot_cap % of the account. The account size is  |
+//| the BALANCE, which does not move with a trade's floating profit  |
+//| or loss, and a 5% tolerance stops it reacting to rounding. The   |
+//| mode chosen in the app says what happens:                        |
 //|   stop       set a stop that risks prot_risk % (never widens);   |
 //|              if that stop cannot be placed, close the position   |
 //|   close      close the position                                  |
@@ -693,7 +695,7 @@ void ProtectPositions()
    g_lastProtect = TimeLocal();
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
       return;
-   double size = MathMin(AccountInfoDouble(ACCOUNT_BALANCE), AccountInfoDouble(ACCOUNT_EQUITY));
+   double size = AccountInfoDouble(ACCOUNT_BALANCE);   // the balance, not the equity: equity moves with the trade's own floating loss
    if(size <= 0.0)
       return;
    int total = PositionsTotal();
@@ -726,8 +728,8 @@ void ProtectPositions()
          risk = RiskAtStop(type, sym, vol, open, sl);
          if(risk < 0.0)
             continue;            // MT5 cannot price this position: do nothing rather than guess
-         if(risk <= size * g_prot_cap / 100.0 + 0.0000001)
-            continue;            // the stop is reasonable: not in scope
+         if(risk <= size * g_prot_cap / 100.0 * 1.05 + 0.0000001)
+            continue;            // the stop is reasonable (5% tolerance for rounding): not in scope
       }
       // in scope from here
 
@@ -741,7 +743,7 @@ void ProtectPositions()
          double be = NormalizeDouble(open, dg);
          if(!noStop && dir * (be - sl) <= 0.0)
             continue;            // never widen
-         if(!StopsAllowed(sym, type, px, be, tp))
+         if(!StopsAllowed(sym, type, px, be, 0.0))   // only the stop is checked: a take-profit near the price is not a reason to skip
             continue;
          g_trade.SetTypeFillingBySymbol(sym);
          if(g_trade.PositionModify(tk, be, tp) && g_trade.ResultRetcode() == TRADE_RETCODE_DONE)
@@ -753,17 +755,27 @@ void ProtectPositions()
 
       bool doClose = (g_prot_mode == "close");
       string why = "";
+      // Numbers that explain the decision. They go to the server with the event, so a surprise can be diagnosed afterwards.
+      string info = "risk " + (noStop ? "none" : DoubleToString(risk, 2)) + " of " + DoubleToString(size, 2) + " price " + DoubleToString(px, dg)
+                  + " open " + DoubleToString(open, dg) + " stop " + DoubleToString(sl, dg);
       if(g_prot_mode == "stop")
       {
          double newSL = ProtectiveStop(type, sym, vol, open, size * g_prot_risk / 100.0);
-         bool tighter = (newSL > 0.0) && (noStop || dir * (newSL - sl) > 0.0);
-         if(tighter && StopsAllowed(sym, type, px, newSL, tp))
+         if(newSL > 0.0 && !noStop && dir * (newSL - sl) <= 0.0)
+            continue;            // the stop is already at or inside the protective level: nothing to do, and never a reason to close
+         string reason = "";
+         if(newSL <= 0.0)
+            reason = "no protective stop could be worked out for this symbol";
+         else if(!StopsAllowed(sym, type, px, newSL, 0.0))   // only the stop is checked: a take-profit near the price is not a reason
+            reason = "the protective stop would be too close to the price or past it for this broker";
+         info += " new " + DoubleToString(newSL, dg) + " min " + (string)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+         if(reason == "")
          {
             g_trade.SetTypeFillingBySymbol(sym);
             if(g_trade.PositionModify(tk, newSL, tp) && g_trade.ResultRetcode() == TRADE_RETCODE_DONE)
             {
                GlobalVariableSet("TL_R_" + (string)tk, MathAbs(open - newSL));   // the protective distance is now 1R for breakeven and trailing
-               ProtectEvent(tk, sym, noStop ? "stop_set" : "stop_tightened", g_prot_risk, "");
+               ProtectEvent(tk, sym, noStop ? "stop_set" : "stop_tightened", g_prot_risk, info);
                continue;
             }
             why = g_trade.ResultRetcodeDescription();
@@ -772,11 +784,20 @@ void ProtectPositions()
             if(nTry >= 3.0)
             {
                GlobalVariableSet("TL_PD_" + (string)tk, 1.0);
-               ProtectEvent(tk, sym, "failed", 0.0, "stop refused: " + why);
+               ProtectEvent(tk, sym, "failed", 0.0, "stop refused " + why + " " + info);
             }
             continue;            // try again on a later cycle
          }
-         doClose = true;         // a stop at the protective level cannot be placed (too close to the price, past it, or too small to price)
+         if(!noStop)
+         {
+            // The trade already has a stop of its own that is too big, and a closer one cannot be placed. Do NOT close it for that:
+            // tell the member and leave the decision to them.
+            GlobalVariableSet("TL_PD_" + (string)tk, 1.0);
+            ProtectEvent(tk, sym, "failed", 0.0, reason + " " + info);
+            continue;
+         }
+         doClose = true;         // no stop at all and none can be placed: closing is the only protection left
+         why = reason;
       }
       if(doClose)
       {
@@ -784,7 +805,7 @@ void ProtectPositions()
          if(ClosePos(tk, err))
          {
             GlobalVariableSet("TL_PD_" + (string)tk, 1.0);
-            ProtectEvent(tk, sym, g_prot_mode == "close" ? "closed_mode" : (noStop ? "closed_no_stop" : "closed_big_stop"), 0.0, "");
+            ProtectEvent(tk, sym, g_prot_mode == "close" ? "closed_mode" : "closed_no_stop", 0.0, why + " " + info);
             g_lastFull = 0;      // report soon
          }
          else
