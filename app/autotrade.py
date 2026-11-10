@@ -295,7 +295,8 @@ def protection_view(con, aid: int) -> dict:
     m = ea.get_manage(con, aid)
     keys = [k for k in ea.MANAGE_DEFAULT if k not in ("excluded", "prot_pending")]
     changed = [{"key": k, "value": m.get(k), "recommended": ea.MANAGE_DEFAULT[k]} for k in keys if m.get(k) != ea.MANAGE_DEFAULT[k]]
-    return {"is_default": not changed, "changed": changed, "prot_mode": m.get("prot_mode")}
+    return {"is_default": not changed, "changed": changed, "prot_mode": m.get("prot_mode"),
+            "values": {k: m.get(k) for k in ("be_on", "tsl_on", "ttp_on", "prot_mode", "prot_risk_pct", "prot_cap_pct")}}
 
 
 # ---------------------------------------------------------------- 1. new signals -> waiting jobs

@@ -85,12 +85,18 @@ async function load(){
   card.append(el('small','mut','Lowering a limit or removing a choice applies at once. Anything that lets AutoTrading take more risk (more symbols or types, bigger size, higher limits) applies '+d.delay_hours+' hours after you save it.'));
   const pk=Object.keys(P);
   if(pk.length){const w=el('div','mut','Waiting to apply: '+pk.map(k=>k.replace(/_/g,' ')+' ('+ago(P[k].at)+')').join(', ')+'. Saving a lower value cancels it.');w.style.margin='8px 0';card.append(w)}
-  // Auto manage / Equity protection: AutoTrading uses whatever is set on the MT5 page. The recommended values are the defaults.
-  const pr=a.protection,pb=el('div');pb.style.cssText='border:1px solid var(--line,#24304f);border-radius:10px;padding:10px;margin:10px 0';
-  if(pr.is_default)pb.append(el('div','win','Using the recommended Auto manage and Equity protection settings.'));
-  else pb.append(el('div','warn','You have changed these protection settings from the recommended ones: '+pr.changed.map(c=>c.key.replace(/_/g,' ')+' ('+c.value+', recommended '+c.recommended+')').join(', ')));
-  if(pr.prot_mode==='off')pb.append(el('small','mut','Equity protection is off. Turn it on in the MT5 tab if you want trades with no stop, or a stop that risks too much, to be protected.'));
-  pb.append(el('small','mut',' Change them in the MT5 tab. AutoTrading never changes them.'));card.append(pb);
+  // Protection summary in plain words. The shipped defaults are all OFF, so "different from default" is not a warning by itself:
+  // only a weaker-than-default value (or protection being off) is shown in amber.
+  const pr=a.protection,V=pr.values||{},pb=el('div');pb.style.cssText='border:1px solid var(--line,#24304f);border-radius:10px;padding:10px;margin:10px 0';
+  pb.append(el('b','','Protection on your trades'));
+  const line=(name,on,txt)=>{const r=el('div',on?'win':'mut',name+': '+(on?'ON':'OFF')+(txt?' - '+txt:''));r.style.margin='4px 0';pb.append(r)};
+  const pm=V.prot_mode&&V.prot_mode!=='off';
+  line('Equity protection',pm,pm?'a trade with no stop loss, or a stop that risks too much, is made safe (mode: '+V.prot_mode+')':'a trade with no stop loss is not protected. AutoTrading trades always have a stop, but your other trades do not get this safety net');
+  line('Breakeven',!!V.be_on,V.be_on?'moves the stop to breakeven once a trade is in profit':'');
+  line('Trailing stop',!!V.tsl_on,V.tsl_on?'follows the price to lock in profit':'');
+  line('Take-profit trail',!!V.ttp_on,V.ttp_on?'keeps a trade open a little longer near its target':'');
+  if(pm&&(V.prot_risk_pct>4.5||V.prot_cap_pct>4.5)){const w=el('div','warn','Your Equity protection allows a loss of more than 4.5% of your account on one trade, which is above the recommended 4.5%.');w.style.margin='6px 0';pb.append(w)}
+  const lk=el('small','mut');lk.append('Change these in the ');const ma=el('a','','MT5 tab');ma.href='/mt5.html';lk.append(ma,'. AutoTrading only uses them; it never changes them.');pb.append(lk);card.append(pb);
   let ack=null;
   if(!a.acknowledged){const l=document.createElement('label');l.style.cssText='display:flex;gap:8px;align-items:flex-start;font-weight:400;margin-top:10px';
     ack=document.createElement('input');ack.type='checkbox';ack.style.width='auto';l.append(ack,el('span','','I understand AutoTrading places real trades on my MT5 account without asking me each time, that signals can lose, and that I can pause it here at any time.'));card.append(l)}
