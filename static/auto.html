@@ -20,15 +20,16 @@ const $=id=>document.getElementById(id);
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
 function field(label,input){const w=el('div');w.append(el('label','',label),input);return w}
 function num(v,ph){const i=document.createElement('input');i.type='number';i.inputMode='decimal';i.step='any';if(v!=null)i.value=v;if(ph)i.placeholder=ph;return i}
-function checks(list,chosen,keyf,labf){            // a list of tick boxes; returns {box, get()}
-  const box=el('div');box.style.cssText='display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 12px;margin:6px 0';
+function checks(list,chosen,keyf,labf,off){            // tick boxes; off(x) -> reason text makes one disabled and unticked
+  const box=el('div');box.style.cssText='display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px 12px;margin:6px 0';
   const ins=[];
-  list.forEach(x=>{const l=document.createElement('label');l.style.cssText='display:flex;gap:6px;align-items:center;margin:0;font-weight:400';
-    const c=document.createElement('input');c.type='checkbox';c.value=keyf(x);c.checked=chosen.includes(keyf(x));c.style.width='auto';ins.push(c);
-    l.append(c,el('span','',labf(x)));box.append(l)});
-  return{box,all(v){ins.forEach(c=>c.checked=v)},get:()=>ins.filter(c=>c.checked).map(c=>c.value)};
+  list.forEach(x=>{const why=off?off(x):'';const l=document.createElement('label');l.style.cssText='display:flex;gap:6px;align-items:center;margin:0;font-weight:400'+(why?';opacity:.5':'');
+    const c=document.createElement('input');c.type='checkbox';c.value=keyf(x);c.checked=!why&&chosen.includes(keyf(x));c.disabled=!!why;c.style.width='auto';ins.push(c);
+    if(why)l.title=why;l.append(c,el('span','',labf(x)));box.append(l)});
+  return{box,all(v){ins.forEach(c=>{if(!c.disabled)c.checked=v})},get:()=>ins.filter(c=>c.checked&&!c.disabled).map(c=>c.value)};
 }
 const when=t=>t?new Date(t*1000).toISOString().slice(0,16).replace('T',' ')+' UTC':'';
+const ago=t=>{const h=Math.max(0,Math.round((t*1000-Date.now())/360000)/10);return h<1?'in under an hour':'in about '+Math.ceil(h)+' hours'};
 let cur=null;
 async function load(){
   const root=$('root');let d;
@@ -39,23 +40,37 @@ async function load(){
     el('p','mut','TradeLens places trades from signals for you, but only the signal types and symbols you choose below, and only inside the limits you set. Every trade has its stop loss and target, goes through the same checks as the Open trade button, and is then looked after by Auto manage and Equity protection in MT5. Your EA must be connected, with AllowExecute on.'),
     el('p','mut','This is a private test: it is switched on only for the people TradeLens has invited. Trading is risky and you can lose money. Start on a demo account.'));
   root.append(head);
-  if(!cur||!d.accounts.some(a=>a.id===cur))cur=(window.dlAcct&&dlAcct.id())||d.accounts[0]&&d.accounts[0].id;
-  if(!d.accounts.some(a=>a.id===cur))cur=d.accounts[0]&&d.accounts[0].id;
   if(!d.accounts.length){root.append(el('div','card','Connect an MT5 account first (MT5 tab).'));return}
-  const a=d.accounts.find(x=>x.id===cur),s=a.settings;
+  if(!cur||!d.accounts.some(a=>a.id===cur))cur=(window.dlAcct&&dlAcct.id())||d.accounts[0].id;
+  if(!d.accounts.some(a=>a.id===cur))cur=d.accounts[0].id;
+  const a=d.accounts.find(x=>x.id===cur),s=a.form,E=a.eligibility,P=a.pending||{};
   const card=el('div','card');
   if(d.accounts.length>1){const sel=document.createElement('select');d.accounts.forEach(x=>{const o=document.createElement('option');o.value=x.id;o.textContent=x.label+(x.settings.enabled?' (on)':'');sel.append(o)});
     sel.value=String(cur);sel.onchange=()=>{cur=Number(sel.value);if(window.dlAcct)dlAcct.set(cur);load()};card.append(field('MT5 account',sel))}
-  const on=document.createElement('input');on.type='checkbox';on.checked=!!s.enabled;on.style.width='auto';
+  // what this account may trade
+  const el0=el('div');el0.style.cssText='border:1px solid var(--line,#24304f);border-radius:10px;padding:10px;margin:8px 0';
+  if(E.ok){
+    const n=E.keys.filter(k=>d.catalog.instruments.some(c=>c.key===k&&!c.paused)).length;
+    el0.append(el('div','','ACCOUNT EQUITY: $'+E.equity.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})),el('div','','ELIGIBILITY: TIER '+E.tier+' ('+n+' symbols)'),
+      el('small','mut','Tiers follow your live account equity (USD) and update by themselves. Higher tiers unlock more symbols, which are never switched on for you. A fall into a lower tier never closes a trade that is already open.'));
+  }else{el0.append(el('div','warn','Account equity not verified: '+E.why),el('small','mut','AutoTrading will not start new trades until your MT5 reports your equity again.'))}
+  card.append(el0);
+  const on=document.createElement('input');on.type='checkbox';on.checked=!!a.settings.enabled;on.style.width='auto';
   const onl=document.createElement('label');onl.style.cssText='display:flex;gap:8px;align-items:center;font-weight:600';onl.append(on,el('span','','AutoTrading is ON for '+a.label));
   card.append(onl);
+  let resume=null;
+  if(a.paused_reason==='losses'){const w=el('div','warn','AutoTrading paused itself after a run of losing trades. Open trades stay open and protected.');w.style.margin='8px 0';card.append(w);
+    const l=document.createElement('label');l.style.cssText='display:flex;gap:8px;align-items:center;font-weight:400';resume=document.createElement('input');resume.type='checkbox';resume.style.width='auto';
+    l.append(resume,el('span','','I want to resume AutoTrading (the losing run starts again from zero)'));card.append(l)}
   card.append(el('h3','','Signal types'));
   const st=checks(d.catalog.styles,s.styles,x=>x.key,x=>x.label);card.append(st.box);
   if(!d.catalog.styles.length)card.append(el('div','mut','No signal types are published right now.'));
   card.append(el('h3','','Symbols'));
-  const sy=checks(d.catalog.instruments,s.instruments,x=>x.key,x=>x.name);
-  const bar=el('div');const all=el('button','ghost','Select all'),none=el('button','ghost','Clear');all.style.marginRight='8px';
+  const goldName=E.gold||'XAUUSD';
+  const sy=checks(d.catalog.instruments.filter(x=>!x.paused),s.instruments,x=>x.key,x=>x.key==='xauusd'?goldName:x.name,x=>E.ok&&E.keys.includes(x.key)?'':E.locked);
+  const bar=el('div');const all=el('button','ghost','Select all eligible'),none=el('button','ghost','Clear');all.style.marginRight='8px';
   all.onclick=()=>sy.all(true);none.onclick=()=>sy.all(false);bar.append(all,none);card.append(bar,sy.box);
+  card.append(el('small','mut','Greyed-out symbols: '+E.locked+' Gold trades on the H4 signal type only.'));
   card.append(el('h3','','Trade size'));
   const md=document.createElement('select');[['risk','Risk a % of my balance per trade'],['fixed','Fixed lot size']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;md.append(o)});md.value=s.mode;
   const rp=num(s.risk_pct),fl=num(s.fixed_lots,'Empty = smallest lot'),cap=num(s.max_risk_pct);
@@ -63,20 +78,30 @@ async function load(){
   const sw=()=>{rw.hidden=md.value!=='risk';fw.hidden=md.value!=='fixed'};md.onchange=sw;sw();
   card.append(field('Sizing',md),rw,fw,field('Never risk more than this per trade (%). Bigger trades are skipped, not shrunk. Your own limit: '+a.own_limit_pct+'%',cap));
   card.append(el('h3','','Limits'));
-  const mo=num(s.max_open),pd=num(s.max_per_day),rt=document.createElement('select');
+  const mo=num(s.max_open),pd=num(s.max_per_day),ll=num(s.loss_limit),rt=document.createElement('select');
   d.ratings.forEach(r=>{const o=document.createElement('option');o.value=r;o.textContent=r;rt.append(o)});rt.value=s.max_rating;
-  card.append(field('Most auto trades open at once',mo),field('Most auto trades per day (UTC)',pd),field('Highest signal risk rating to trade (Low, Medium or High)',rt));
+  card.append(field('Most auto trades open at once',mo),field('Most auto trades per day (UTC)',pd),field('Pause AutoTrading after this many losing trades in a row (2 to 10)',ll),
+    field('Highest signal risk rating to trade (Low, Medium or High)',rt));
+  card.append(el('small','mut','Lowering a limit or removing a choice applies at once. Anything that lets AutoTrading take more risk (more symbols or types, bigger size, higher limits) applies '+d.delay_hours+' hours after you save it.'));
+  const pk=Object.keys(P);
+  if(pk.length){const w=el('div','mut','Waiting to apply: '+pk.map(k=>k.replace(/_/g,' ')+' ('+ago(P[k].at)+')').join(', ')+'. Saving a lower value cancels it.');w.style.margin='8px 0';card.append(w)}
+  // Auto manage / Equity protection: AutoTrading uses whatever is set on the MT5 page. The recommended values are the defaults.
+  const pr=a.protection,pb=el('div');pb.style.cssText='border:1px solid var(--line,#24304f);border-radius:10px;padding:10px;margin:10px 0';
+  if(pr.is_default)pb.append(el('div','win','Using the recommended Auto manage and Equity protection settings.'));
+  else pb.append(el('div','warn','You have changed these protection settings from the recommended ones: '+pr.changed.map(c=>c.key.replace(/_/g,' ')+' ('+c.value+', recommended '+c.recommended+')').join(', ')));
+  if(pr.prot_mode==='off')pb.append(el('small','mut','Equity protection is off. Turn it on in the MT5 tab if you want trades with no stop, or a stop that risks too much, to be protected.'));
+  pb.append(el('small','mut',' Change them in the MT5 tab. AutoTrading never changes them.'));card.append(pb);
   let ack=null;
   if(!a.acknowledged){const l=document.createElement('label');l.style.cssText='display:flex;gap:8px;align-items:flex-start;font-weight:400;margin-top:10px';
     ack=document.createElement('input');ack.type='checkbox';ack.style.width='auto';l.append(ack,el('span','','I understand AutoTrading places real trades on my MT5 account without asking me each time, that signals can lose, and that I can pause it here at any time.'));card.append(l)}
   const msg=el('div','mut');msg.style.margin='8px 0';
   const save=el('button','','Save'),pause=el('button','ghost','Pause AutoTrading');pause.style.marginLeft='8px';
   const body=en=>({account:a.id,enabled:en,styles:st.get(),instruments:sy.get(),mode:md.value,risk_pct:rp.value,fixed_lots:fl.value,max_risk_pct:cap.value,
-    max_open:mo.value,max_per_day:pd.value,max_rating:rt.value,acknowledge:ack?ack.checked:true});
+    max_open:mo.value,max_per_day:pd.value,loss_limit:ll.value,max_rating:rt.value,acknowledge:ack?ack.checked:true,resume:resume?resume.checked:false});
   async function post(en,okText){
     try{const r=await fetch('/api/auto/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body(en))});
       const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof j.detail==='string'?j.detail:('HTTP '+r.status));
-      msg.className='win';msg.textContent=okText;setTimeout(load,700)}catch(e){msg.className='err';msg.textContent=e.message}}
+      msg.className='win';msg.textContent=okText+(Object.keys(j.pending||{}).length?' Some changes take effect after '+j.delay_hours+' hours.':'');setTimeout(load,900)}catch(e){msg.className='err';msg.textContent=e.message}}
   save.onclick=()=>post(on.checked,on.checked?'Saved. AutoTrading is on.':'Saved. AutoTrading is off.');
   pause.onclick=()=>{on.checked=false;post(false,'Paused. Waiting trades were cancelled. Trades already open stay open and keep their protection.')};
   card.append(msg,save,pause);root.append(card);
@@ -84,7 +109,7 @@ async function load(){
   const h=el('div','card');h.append(el('h2','','Recent auto trades'));
   if(!d.recent.length)h.append(el('div','mut','Nothing yet. Trades appear here when a matching signal is published.'));
   d.recent.forEach(j=>{const row=el('div','kv');
-    row.append(el('span','',(j.symbol||'')+' '+(j.dir||'')+(j.lots?' | '+j.lots+' lot':'')+(j.risk_pct!=null?' | '+j.risk_pct+'%':'')),
+    row.append(el('span','',(j.symbol||'')+' '+(j.dir||'')+(j.lots?' | '+j.lots+' lot':'')+(j.risk_pct!=null?' | '+j.risk_pct+'%':'')+(j.profit!=null?' | '+(j.profit>=0?'+':'')+j.profit.toFixed(2):'')),
       el('span',j.status==='skipped'||j.status==='failed'?'warn':j.status==='open'?'win':'mut',j.status));h.append(row);
     h.append(el('div','mut',when(j.at)+(j.note?' - '+j.note:'')))});
   root.append(h);

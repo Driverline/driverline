@@ -76,11 +76,12 @@ def add(uid, label="Main"):
     return r.json()["id"], r.json()["key"]
 
 
-def eareport(key, positions=(), balance=1000.0, **flags):
+def eareport(key, positions=(), balance=20000.0, specs=None, currency="USD", **flags):
     ea._last_report.clear()
-    acc = {"login": "1", "server": "Deriv-Demo", "currency": "USD", "balance": balance, "equity": balance, "demo": True,
+    extra = flags.pop("extra", {})
+    acc = {"login": "1", "server": "Deriv-Demo", "currency": currency, "balance": balance, "equity": flags.pop("equity", balance), "demo": True,
            "remote_close": True, "manage_allowed": True, "execute_allowed": True, "pending_allowed": True, **flags}
-    body = {"account": acc, "today": {"closed_pnl": 0}, "positions": list(positions), "orders": [], "specs": SPECS}
+    body = {"account": acc, "today": {"closed_pnl": 0}, "positions": list(positions), "orders": [], "specs": specs or SPECS, **extra}
     return ANON.post("/api/ea/report", json=body, headers={"x-driverline-key": key})
 
 
@@ -310,6 +311,281 @@ class Dispatch(unittest.TestCase):
         r = cl(s.uid).request("DELETE", f"/api/ea/accounts/{s.aid}")
         if r.status_code == 200:
             self.assertEqual(q("SELECT * FROM auto_settings WHERE account_id=?", s.aid), [])
+
+
+def spec(sym, vmin=0.01):
+    return {"symbol": sym, "tick_size": 0.01, "tick_value": 0.01, "vol_min": vmin, "vol_step": 0.01, "vol_max": 100, "contract_size": 1}
+
+
+def inbox_msgs(uid):
+    from app import inbox
+    with closing(inbox.db()) as c:
+        return [r["body"] for r in c.execute("SELECT body FROM inbox_messages WHERE user_id=? ORDER BY id", (uid,)).fetchall()]
+
+
+class Tiers(unittest.TestCase):
+    def test_boundaries(self):
+        want = {25: 1, 25.99: 1, 26: 2, 59: 2, 59.99: 2, 60: 3, 159: 3, 160: 4, 599: 4, 600: 5, 1499: 5, 1500: 6, 10499: 6, 10500: 7, 50000: 7}
+        for eq, t in want.items():
+            self.assertEqual(AT.tier_of(eq), t, eq)
+
+    def test_symbol_lists(self):
+        self.assertEqual(AT.eligible_keys(1), {"v10", "v50"})
+        self.assertEqual(AT.eligible_keys(2), {"v10", "v25", "v50", "xauusd"})
+        self.assertIn("v50_1s", AT.eligible_keys(3))
+        self.assertNotIn("v75", AT.eligible_keys(3))
+        self.assertIn("step", AT.eligible_keys(4))
+        self.assertNotIn("boom300", AT.eligible_keys(4))
+        self.assertIn("crash300", AT.eligible_keys(5))
+        self.assertNotIn("boom500", AT.eligible_keys(5))
+        self.assertIn("crash1000", AT.eligible_keys(6))
+        self.assertEqual(AT.eligible_keys(7), set(AT.INSTRUMENTS))
+        self.assertEqual(AT.eligible_keys(None), set())
+
+    def test_gold_h4_only_tiers_2_to_6(self):
+        for t in (2, 3, 4, 5, 6):
+            self.assertEqual(AT.trade_allowed(t, "xauusd", "h4"), "")
+            self.assertIn("H4", AT.trade_allowed(t, "xauusd", "day"))
+        self.assertEqual(AT.trade_allowed(7, "xauusd", "day"), "")
+        self.assertIn("Not available", AT.trade_allowed(1, "xauusd", "h4"))
+        self.assertIn("could not be verified", AT.trade_allowed(None, "v10", "day"))
+        self.assertEqual(AT.gold_label(3), "XAUUSDmicro (H4 only)")
+        self.assertEqual(AT.gold_label(6), "XAUUSD (H4 only)")
+
+    def test_gold_contract_variant(self):
+        sp = [spec("XAUUSD"), spec("XAUUSDmicro")]
+        self.assertEqual(AT._pick_symbol(sp, "xauusd", 3)[0]["symbol"], "XAUUSDmicro")
+        self.assertEqual(AT._pick_symbol(sp, "xauusd", 6)[0]["symbol"], "XAUUSD")
+        self.assertIsNone(AT._pick_symbol([spec("XAUUSD")], "xauusd", 3)[0])
+        self.assertIsNone(AT._pick_symbol([spec("XAUUSDmicro")], "xauusd", 6)[0])
+        self.assertIn(AT._pick_symbol(sp, "xauusd", 7)[0]["symbol"], ("XAUUSD", "XAUUSDmicro"))
+
+
+class Eligibility(unittest.TestCase):
+    def setup(self, equity, **over):
+        s = Setup(instruments=over.pop("instruments", ["v10"]), **over)
+        eareport(s.key, balance=equity, specs=[spec("Volatility 10"), spec("Volatility 75"), spec("XAUUSDmicro"), spec("XAUUSD")])
+        return s
+
+    def test_api_refuses_locked_symbol_and_logs_it(self):
+        s = self.setup(85.0)                                           # tier 3
+        r = s.save(instruments=["v75"])
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("Not available for your current account equity", r.json()["detail"])
+        self.assertEqual(q("SELECT kind FROM auto_events WHERE account_id=?", s.aid)[0]["kind"], "rejected_setting")
+        self.assertEqual(s.save(instruments=["v10"]).status_code, 200)
+        me = cl(s.uid).get("/api/auto/me").json()["accounts"][0]["eligibility"]
+        self.assertEqual((me["tier"], me["equity"], me["ok"]), (3, 85.0, True))
+        self.assertIn("v50_1s", me["keys"])
+        self.assertNotIn("v75", me["keys"])
+        self.assertEqual(me["gold"], "XAUUSDmicro (H4 only)")
+
+    def test_cannot_switch_on_when_equity_unverified(self):
+        s = Setup()
+        r = s.save()                                                   # nothing reported yet in this account's state is fine, then stale it
+        q("UPDATE ea_accounts SET last_seen=? WHERE id=?", int(time.time()) - 600, s.aid)
+        self.assertEqual(s.save().status_code, 409)
+
+    def test_non_usd_refused(self):
+        s = Setup(instruments=["v10"])
+        eareport(s.key, balance=500, currency="EUR")
+        r = s.save()
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("USD", r.json()["detail"])
+
+    def test_dispatch_revalidates_every_trade(self):
+        s = Setup(instruments=["v75"], styles=["day"])
+        eareport(s.key, balance=1000.0, specs=[spec("Volatility 75")])           # tier 5: v75 ok
+        self.assertEqual(s.save().status_code, 200)
+        sid = signal(inst="v75")
+        AT.on_new_signals([sid])
+        eareport(s.key, balance=100.0, specs=[spec("Volatility 75")])            # equity fell to tier 3 before the EA collected it
+        eapoll(s.key)
+        j = s.jobs()[0]
+        self.assertEqual(j["status"], "skipped")
+        self.assertIn("Not available for your current account equity", j["note"])
+        self.assertEqual(q("SELECT kind FROM auto_events WHERE account_id=? AND kind='rejected_tier'", s.aid)[0]["kind"], "rejected_tier")
+        self.assertEqual(q("SELECT * FROM ea_commands WHERE account_id=?", s.aid), [])
+
+    def test_stale_equity_blocks_new_trades(self):
+        s = Setup(instruments=["v10"])
+        eareport(s.key, balance=1000.0, specs=[spec("Volatility 10")])
+        s.save()
+        sid = signal(inst="v10")
+        AT.on_new_signals([sid])
+        q("UPDATE ea_acct_state SET updated_at=? WHERE account_id=?", int(time.time()) - 600, s.aid)
+        eapoll(s.key)
+        self.assertIn("equity cannot be verified", s.jobs()[0]["note"])
+
+    def test_gold_day_signal_refused_by_execution_layer(self):
+        s = Setup(instruments=["xauusd"], styles=["day"])
+        eareport(s.key, balance=100.0, specs=[spec("XAUUSDmicro")])
+        self.assertEqual(s.save().status_code, 200)
+        sid = signal(inst="xauusd", style="day")
+        AT.on_new_signals([sid])
+        eapoll(s.key)
+        self.assertEqual(s.jobs()[0]["status"], "skipped")
+        self.assertIn("H4", s.jobs()[0]["note"])
+
+    def test_gold_h4_places_micro_in_tier_3(self):
+        signal_feed.allowed_combos = lambda force=False: {("synthetic", "day", "x"): {}, ("metal", "h4", "x"): {}}
+        try:
+            s = Setup(instruments=["xauusd"], styles=["h4"], fixed_lots=0.01, max_risk_pct=10)
+            eareport(s.key, balance=100.0, specs=[spec("XAUUSD"), spec("XAUUSDmicro")])
+            self.assertEqual(s.save().status_code, 200)
+            sid = signal(inst="xauusd", style="h4")
+            AT.on_new_signals([sid])
+            eapoll(s.key)
+            cmd = q("SELECT payload FROM ea_commands WHERE account_id=?", s.aid)
+            self.assertEqual(json.loads(cmd[0]["payload"])["symbol"], "XAUUSDmicro")
+        finally:
+            signal_feed.allowed_combos = lambda force=False: {("synthetic", "day", "ema_pullback"): {}, ("synthetic", "scalp", "ema_pullback"): {}}
+
+    def test_tier_change_notifies_never_closes_never_activates(self):
+        s = Setup(instruments=["v75"], styles=["day"])
+        eareport(s.key, balance=700.0, specs=[spec("Volatility 75")])
+        self.assertEqual(s.save().status_code, 200)
+        eareport(s.key, balance=700.0, specs=[spec("Volatility 75")], positions=[pos(3, symbol="Volatility 75")])
+        eareport(s.key, balance=550.0, specs=[spec("Volatility 75")], positions=[pos(3, symbol="Volatility 75")])   # tier 5 -> 4
+        msgs = inbox_msgs(s.uid)
+        self.assertTrue(any("tier 4, was tier 5" in m for m in msgs), msgs)
+        self.assertEqual(q("SELECT * FROM ea_commands WHERE account_id=? AND kind IN ('close','close_all')", s.aid), [])
+        ev = q("SELECT detail FROM auto_events WHERE account_id=? AND kind='tier_change'", s.aid)
+        self.assertEqual(len(ev), 1)
+        eareport(s.key, balance=2000.0, specs=[spec("Volatility 75")])      # up to tier 6: nothing new switched on
+        self.assertEqual(get_sel(s), ["v75"])
+
+
+def get_sel(s):
+    with closing(ea.db()) as c:
+        return AT.get_settings(c, s.aid)["instruments"]
+
+
+class Loosening(unittest.TestCase):
+    def test_first_setup_immediate_then_loosening_waits(self):
+        s = Setup(instruments=["v10"], max_open=2)
+        eareport(s.key, balance=1000.0, specs=[spec("Volatility 10")])
+        self.assertEqual(s.save().status_code, 200)
+        self.assertEqual(get_sel(s), ["v10"])
+        r = s.save(max_open=5, instruments=["v10", "v50"]).json()
+        self.assertEqual(r["settings"]["max_open"], 2)                    # still the old value
+        self.assertEqual(r["settings"]["instruments"], ["v10"])
+        self.assertIn("max_open", r["pending"])
+        self.assertIn("instruments", r["pending"])
+        me = cl(s.uid).get("/api/auto/me").json()["accounts"][0]
+        self.assertEqual(me["form"]["max_open"], 5)                         # the form shows the waiting value
+        # saving the same form again does not restart the clock
+        at = r["pending"]["max_open"]["at"]
+        r2 = s.save(max_open=5, instruments=["v10", "v50"]).json()
+        self.assertEqual(r2["pending"]["max_open"]["at"], at)
+        # tightening is immediate and cancels a waiting loosening
+        r3 = s.save(max_open=1, instruments=["v10"]).json()
+        self.assertEqual(r3["settings"]["max_open"], 1)
+        self.assertEqual(r3["pending"], {})
+
+    def test_matured_change_applies(self):
+        s = Setup(instruments=["v10"], max_open=2)
+        eareport(s.key, balance=1000.0, specs=[spec("Volatility 10")])
+        s.save()
+        s.save(max_open=6, max_per_day=9, max_rating="High")
+        with closing(ea.db()) as c:
+            row = json.loads(c.execute("SELECT pending FROM auto_settings WHERE account_id=?", (s.aid,)).fetchone()["pending"])
+            for f in row:
+                row[f]["at"] = int(time.time()) - 5
+            c.execute("UPDATE auto_settings SET pending=? WHERE account_id=?", (json.dumps(row), s.aid))
+            c.commit()
+            got = AT.get_settings(c, s.aid)
+        self.assertEqual((got["max_open"], got["max_per_day"], got["max_rating"]), (6, 9, "High"))
+        self.assertEqual(got["pending"], {})
+
+    def test_merge_rules(self):
+        cur = {**AT.DEFAULTS, "styles": ["day"], "instruments": ["v10", "v50"]}
+        want = {**cur, "instruments": ["v10"], "risk_pct": 0.5, "loss_limit": 2}
+        eff, pend = AT.merge(cur, want, {}, 1000)
+        self.assertEqual((eff["instruments"], eff["risk_pct"], eff["loss_limit"], pend), (["v10"], 0.5, 2, {}))
+        want = {**cur, "risk_pct": 2.0, "loss_limit": 5, "max_rating": "High"}
+        eff, pend = AT.merge(cur, want, {}, 1000)
+        self.assertEqual(sorted(pend), ["loss_limit", "max_rating", "risk_pct"])
+        self.assertEqual(eff["risk_pct"], 1.0)
+        self.assertEqual(pend["risk_pct"]["at"], 1000 + 24 * 3600)
+
+
+class LossPause(unittest.TestCase):
+    def run_trades(self, s, profits, balance=1000.0):
+        for i, pr in enumerate(profits):
+            sid = signal(inst="v10")
+            eareport(s.key, balance=balance, specs=[spec("Volatility 10")])
+            AT.on_new_signals([sid])
+            eapoll(s.key)
+            if not s.jobs()[-1]["status"] == "sent":
+                return
+            q("UPDATE ea_commands SET status='done' WHERE account_id=?", s.aid)
+            eareport(s.key, balance=balance, specs=[spec("Volatility 10")], positions=[pos(100 + i, symbol="Volatility 10")])
+            now = int(time.time())
+            eareport(s.key, balance=balance, specs=[spec("Volatility 10")], extra={"closed": [{
+                "id": 100 + i, "symbol": "Volatility 10", "type": "BUY", "volume": 0.01, "open": 1, "close": 1, "profit": pr, "opened": now - 60, "closed": now}]})
+
+    def start(self, limit=3):
+        s = Setup(instruments=["v10"], max_open=5, max_per_day=20, loss_limit=limit, mode="fixed", fixed_lots=0.01, max_risk_pct=10)
+        eareport(s.key, balance=1000.0, specs=[spec("Volatility 10")])
+        self.assertEqual(s.save().status_code, 200, s.save().text)
+        return s
+
+    def test_three_losses_pause_and_resume_needs_confirmation(self):
+        s = self.start()
+        self.run_trades(s, [-5, -5, -5])
+        me = cl(s.uid).get("/api/auto/me").json()["accounts"][0]
+        self.assertEqual(me["paused_reason"], "losses")
+        self.assertEqual(me["settings"]["enabled"], 0)
+        self.assertTrue(any("paused itself after 3 losing" in m for m in inbox_msgs(s.uid)))
+        self.assertEqual(s.save().status_code, 409)                            # plain re-enable is refused
+        self.assertEqual(s.save(resume=True).status_code, 200)
+        self.assertIsNone(cl(s.uid).get("/api/auto/me").json()["accounts"][0]["paused_reason"])
+        self.run_trades(s, [-5, -5])                                            # the old losses no longer count
+        self.assertEqual(cl(s.uid).get("/api/auto/me").json()["accounts"][0]["settings"]["enabled"], 1)
+
+    def test_a_win_ends_the_run_and_breakeven_is_neutral(self):
+        s = self.start()
+        self.run_trades(s, [-5, -5, 8, -5, -5])
+        self.assertEqual(cl(s.uid).get("/api/auto/me").json()["accounts"][0]["settings"]["enabled"], 1)
+        self.run_trades(s, [0.2, -5])                                           # breakeven in between does not break the run
+        self.assertEqual(cl(s.uid).get("/api/auto/me").json()["accounts"][0]["paused_reason"], "losses")
+
+    def test_placed_message_in_inbox(self):
+        s = self.start()
+        self.run_trades(s, [3])
+        self.assertTrue(any("placed a BUY Volatility 10 trade" in m for m in inbox_msgs(s.uid)))
+
+
+class Admin(unittest.TestCase):
+    def test_admin_view(self):
+        s = Setup(instruments=["v10"])
+        eareport(s.key, balance=20.0, specs=[spec("Volatility 10")])
+        s.save()
+        eareport(s.key, balance=20.0, specs=[spec("Volatility 10")])
+        adm = Setup()
+        d = cl(adm.uid).get("/api/auto/admin").json()
+        row = next(a for a in d["accounts"] if a["account"] == s.aid)
+        self.assertEqual((row["tier"], row["equity"], row["status"]), (1, 20.0, "ok"))
+        self.assertEqual(row["symbols"], ["Volatility 10"])
+        self.assertTrue(row["last_sync"])
+        mem = Setup(tier="member")
+        self.assertEqual(cl(mem.uid).get("/api/auto/admin").status_code, 403)
+
+
+class Protection(unittest.TestCase):
+    def test_autotrading_does_not_touch_protection_settings(self):
+        s = Setup(instruments=["v10"])
+        eareport(s.key, balance=1000.0, specs=[spec("Volatility 10")])
+        with closing(ea.db()) as c:
+            before = ea.get_manage(c, s.aid)
+        s.save()
+        with closing(ea.db()) as c:
+            after = ea.get_manage(c, s.aid)
+        self.assertEqual(before, after)
+        self.assertEqual(after["prot_risk_pct"], 4.5)
+        pv = cl(s.uid).get("/api/auto/me").json()["accounts"][0]["protection"]
+        self.assertTrue(pv["is_default"])
 
 
 if __name__ == "__main__":

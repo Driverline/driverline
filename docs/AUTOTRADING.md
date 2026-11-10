@@ -24,8 +24,41 @@ enabled, styles, instruments (nothing is pre-selected), sizing (risk % of balanc
 ## Files
 `app/autotrade.py`, tables in `app/ea.py` SCHEMA (`auto_settings`, `auto_jobs`), hooks in `ea.poll`, `ea.report`, `signal_feed.signal_loop`, `static/auto.html`, tab in `static/auth.js`, tile in `static/index.html`, admin card in `static/admin-copy.html`, `tests/test_autotrade.py`.
 
+## Account size and symbol eligibility (round 2)
+The tier comes from the live equity in the member's own EA report (never from the browser) and is checked again before EVERY trade (`equity_status`, `trade_allowed`). Equity below $26 is tier 1 (the brief's $25 / $26 gap is closed this way), $26-59.99 tier 2, $60-159.99 tier 3, $160-599.99 tier 4, $600-1,499.99 tier 5, $1,500-10,499.99 tier 6, $10,500+ tier 7 (every supported symbol).
+
+| Tier | Adds |
+|---|---|
+| 1 | Volatility 10, 50 |
+| 2 | Volatility 25, gold (H4 only, micro contract) |
+| 3 | Volatility 10/25/50 (1s) |
+| 4 | Volatility 75, 100, 75 (1s), 100 (1s), Step Index |
+| 5 | Boom 300, Crash 300 |
+| 6 | Boom/Crash 500 and 1000; gold becomes the standard XAUUSD (H4 only) |
+| 7 | All supported symbols, existing timeframe rules |
+
+Enforcement is on the server in three places: the settings API (a locked symbol is refused with 422 and logged as `rejected_setting`), job creation, and dispatch (`rejected_tier` / `rejected_equity` events). Gold must be the `H4` signal type in tiers 2-6, and the broker symbol must be the micro contract in tiers 2-5 and the standard contract in tier 6. No new trade starts when the account is not connected, the equity report is older than 120 s, equity is missing, or the account currency is not USD (non-USD accounts are refused for now). A fall into a lower tier never closes or changes an open trade; the member gets an inbox message (at most one per hour) and the symbols that are no longer allowed are skipped with the reason. A rise unlocks symbols for selection only; nothing is switched on.
+
+## Defaults
+Auto manage and Equity protection keep their existing defaults (`ea.MANAGE_DEFAULT`) and AutoTrading never writes them (tested). The page shows "Using the recommended settings" or lists what differs, and the MT5 page asks for confirmation before saving non-recommended Equity protection settings while AutoTrading is on.
+
+## 24-hour delay on loosening
+After the first set-up, anything that lets AutoTrading take more risk (added symbols or types, higher max open, per day, risk %, cap, fixed lot, loss limit or rating, switching sizing mode) waits 24 hours (`LOOSEN_DELAY`, `merge`). Lowering or removing applies at once and cancels a waiting increase. The form shows waiting values, so saving again does not restart the clock. Switching AutoTrading on or off is not delayed.
+
+## Loss pause
+`on_closed` records each closed auto trade's profit from the EA's closed-trade report. After `loss_limit` (default 3, range 2-10) losing auto trades in a row, AutoTrading switches itself off for that account until the member ticks Resume. A win ends the run; a trade that loses less than 0.1% of the balance (breakeven exit) is neutral. Resuming starts the count from zero. Open trades are untouched.
+
+## Inbox messages
+One message when an auto trade is placed (confirmed by the EA), when AutoTrading pauses itself, and when the tier changes.
+
+## Admin
+Admin > Copy trading > AutoTrading access shows per account: equity, tier, chosen symbols, symbols not allowed now, status, last sync, plus the last 40 eligibility decisions (`auto_events`).
+
+## Database changes (all additive, created at start-up)
+`auto_events` (new); columns added to `auto_jobs` (profit, closed_at) and `auto_settings` (loss_limit, pending, paused_reason, streak_since, tier, equity, equity_at).
+
 ## Not built yet
-Pause after N consecutive losses (no per-trade outcome data yet); a 24 h delay on loosening limits (as for equity protection); inbox message when a trade is placed; public mode.
+Public mode; conversion for non-USD accounts.
 
 ## Demo trial checklist
 1. Admin: confirm access card shows "testers", add the tester e-mail.

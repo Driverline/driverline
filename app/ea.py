@@ -67,7 +67,8 @@ EA_SCHEMA = """
         max_open INTEGER, max_per_day INTEGER, max_rating TEXT, ack_at BIGINT, updated_at BIGINT NOT NULL);
     CREATE TABLE IF NOT EXISTS auto_jobs(id {ID}, signal_id BIGINT NOT NULL, account_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
         status TEXT NOT NULL, note TEXT, command_id INTEGER, lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, ticket BIGINT, before TEXT,
-        symbol TEXT, dir TEXT, placed_at BIGINT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, UNIQUE(signal_id, account_id))"""
+        symbol TEXT, dir TEXT, placed_at BIGINT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, UNIQUE(signal_id, account_id));
+    CREATE TABLE IF NOT EXISTS auto_events(id {ID}, account_id INTEGER NOT NULL, user_id INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT, created_at BIGINT NOT NULL)"""
 _auth_ready = False
 OPEN_TTL = 20   # seconds an 'open trade' request stays valid, so a stale order can never fire later
 
@@ -81,6 +82,11 @@ def _migrate(con):
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_copy_jobs_flag_acct ON copy_jobs(flag_id, account_id)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_jobs_acct ON copy_jobs(account_id, status)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_auto_jobs_acct ON auto_jobs(account_id, status)")
+    for t, c, ddl in (("auto_jobs", "profit", "DOUBLE PRECISION"), ("auto_jobs", "closed_at", "BIGINT"), ("auto_settings", "loss_limit", "INTEGER"),
+                      ("auto_settings", "pending", "TEXT"), ("auto_settings", "paused_reason", "TEXT"), ("auto_settings", "streak_since", "BIGINT"),
+                      ("auto_settings", "tier", "INTEGER"), ("auto_settings", "equity", "DOUBLE PRECISION"), ("auto_settings", "equity_at", "BIGINT")):
+        con.add_column(t, c, ddl)
+    con.execute("CREATE INDEX IF NOT EXISTS ix_auto_events_acct ON auto_events(account_id, kind, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_flags_status ON copy_flags(status)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_mt5_requests_status ON mt5_requests(status, user_id)")
     # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and
@@ -316,6 +322,12 @@ async def report(request):
             con.raw.rollback()
             print(f"[protect] events failed: {type(e).__name__}", flush=True)
     closed = [c for c in (d.get("closed") or []) if isinstance(c, dict)] if isinstance(d.get("closed"), list) else []
+    if closed:                                 # AutoTrading: record the result of closed auto trades (and pause after a run of losses)
+        try:
+            from . import autotrade
+            autotrade.on_closed(aid, closed, int(_f(acc.get("server_offset"))))
+        except Exception as e:
+            print(f"[auto] closed hook failed: {type(e).__name__}: {e}", flush=True)
     out = risk_check(state, rules)
     fresh: list = []
     out["journal"] = journal.import_mt5(uid, acc.get("login"), closed, int(_f(acc.get("server_offset"))), fresh) if closed else 0

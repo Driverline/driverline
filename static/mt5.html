@@ -239,8 +239,12 @@ $('mgsave').onclick=async()=>{
     $('mgmsg').className='win';$('mgmsg').textContent='Saved. It applies to your account within a few seconds.';load();
   }catch(e){$('mgmsg').className='err';$('mgmsg').textContent=e.message}
 };
+let autoOn=false;
+fetch('/api/auto/me').then(r=>r.ok?r.json():null).then(d=>{autoOn=!!(d&&d.available&&d.accounts.some(a=>a.settings.enabled))}).catch(()=>{});
 $('protsave').onclick=async()=>{
   const num=k=>Number($(k).value);
+  const rec=$('prot_mode').value!=='off'&&num('prot_risk_pct')===4.5&&num('prot_cap_pct')===4.5&&num('prot_grace')===45&&num('prot_be_pct')===1;
+  if(autoOn&&!rec&&!confirm('AutoTrading is switched on for one of your accounts. These Equity protection settings are not the recommended ones (mode on, 4.5% risk, 4.5% cap, 45 s grace, 1% breakeven). Less protection means a bad trade can hurt your account more. Save them anyway?'))return;
   try{
     const d=await api('/manage','POST',dlAcct.body({prot_mode:$('prot_mode').value,prot_risk_pct:num('prot_risk_pct'),prot_cap_pct:num('prot_cap_pct'),prot_grace:num('prot_grace'),prot_be_pct:num('prot_be_pct')}));
     protFirst=true;await load();

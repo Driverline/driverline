@@ -38,7 +38,15 @@ async function load(){
     const sb=el('button','','Save AutoTrading access');sb.style.marginTop='8px';
     sb.onclick=async()=>{try{const r=await fetch('/api/auto/admin',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:ms.value,testers:ta.value.split(/\s+/).filter(Boolean)})});
       const j=await r.json();if(!r.ok)throw new Error(typeof j.detail==='string'?j.detail:'HTTP '+r.status);note('AutoTrading access saved.','win');await load()}catch(e){note(e.message,'err')}};
-    au.append(ms,ta,sb,kv('Accounts with AutoTrading on',String(ad.accounts_on)),kv('Auto trades, last 7 days',Object.entries(ad.jobs_7d).map(([k,v])=>v+' '+k).join(', ')||'none'));
+    au.append(ms,ta,sb);
+    au.append(el('h3','','Eligibility by account'));
+    if(!ad.accounts.length)au.append(el('div','mut','No account has saved AutoTrading settings yet.'));
+    ad.accounts.forEach(x=>{au.append(kv((x.email||'')+' / '+x.label,(x.enabled?'ON':x.paused?'PAUSED ('+x.paused+')':'off')+' | '+(x.equity!=null?'$'+x.equity.toFixed(2):'no equity')+' | tier '+(x.tier==null?'?':x.tier),x.status==='ok'?'mut':'warn'));
+      au.append(el('div','mut','Symbols: '+(x.symbols.join(', ')||'none')+(x.not_allowed_now.length?' | not allowed now: '+x.not_allowed_now.join(', '):'')+' | status: '+x.status+' | last sync '+day(x.last_sync)))});
+    au.append(el('h3','','Recent eligibility decisions'));
+    if(!ad.events.length)au.append(el('div','mut','Nothing logged yet.'));
+    ad.events.forEach(x=>au.append(el('div','mut',day(x.created_at)+' | account '+x.account_id+' | '+x.kind+' | '+x.detail)));
+    au.append(kv('Accounts with AutoTrading on',String(ad.accounts_on)),kv('Auto trades, last 7 days',Object.entries(ad.jobs_7d).map(([k,v])=>v+' '+k).join(', ')||'none'));
   }catch(e){au.append(el('div','err',e.message))}
   root.append(au);
 
