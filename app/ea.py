@@ -61,7 +61,13 @@ EA_SCHEMA = """
     CREATE TABLE IF NOT EXISTS copy_jobs(id {ID}, flag_id INTEGER NOT NULL, account_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
         status TEXT NOT NULL, note TEXT, command_id INTEGER, lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, ticket BIGINT, before TEXT,
         symbol TEXT, dir TEXT, close_req INTEGER NOT NULL DEFAULT 0, close_cmd INTEGER, close_tries INTEGER NOT NULL DEFAULT 0,
-        created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)"""
+        created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS auto_settings(account_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
+        styles TEXT, instruments TEXT, mode TEXT, fixed_lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, max_risk_pct DOUBLE PRECISION,
+        max_open INTEGER, max_per_day INTEGER, max_rating TEXT, ack_at BIGINT, updated_at BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS auto_jobs(id {ID}, signal_id BIGINT NOT NULL, account_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+        status TEXT NOT NULL, note TEXT, command_id INTEGER, lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, ticket BIGINT, before TEXT,
+        symbol TEXT, dir TEXT, placed_at BIGINT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, UNIQUE(signal_id, account_id))"""
 _auth_ready = False
 OPEN_TTL = 20   # seconds an 'open trade' request stays valid, so a stale order can never fire later
 
@@ -74,6 +80,7 @@ def _migrate(con):
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_ea_protect_once ON ea_protect_log(account_id, ticket, action)")
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_copy_jobs_flag_acct ON copy_jobs(flag_id, account_id)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_jobs_acct ON copy_jobs(account_id, status)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_auto_jobs_acct ON auto_jobs(account_id, status)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_flags_status ON copy_flags(status)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_mt5_requests_status ON mt5_requests(status, user_id)")
     # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and
@@ -285,6 +292,12 @@ async def report(request):
         except Exception as e:
             con.raw.rollback()
             print(f"[copy] report hook failed: {type(e).__name__}: {e}", flush=True)
+        try:                                       # AutoTrading: follow the auto trades of this account
+            from . import autotrade
+            autotrade.on_report(con, aid, state)
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[auto] report hook failed: {type(e).__name__}: {e}", flush=True)
         try:                                       # a connection request finished: delete the stored password
             from . import mt5_requests
             mt5_requests.on_report(con, aid)
@@ -401,6 +414,12 @@ async def poll(request):
         except Exception as e:
             con.raw.rollback()
             print(f"[copy] dispatch failed: {type(e).__name__}: {e}", flush=True)
+        try:                                       # AutoTrading: turn the next waiting auto job of THIS account into a command
+            from . import autotrade
+            autotrade.dispatch(con, aid)
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[auto] dispatch failed: {type(e).__name__}: {e}", flush=True)
         r = con.execute("SELECT id,kind,ticket,payload FROM ea_commands WHERE account_id=? AND status='pending' "
                         "ORDER BY id LIMIT 1", (aid,)).fetchone()
         if r:
@@ -752,6 +771,8 @@ def _remove(con, a: dict):
     for t in ("ea_acct_state", "ea_acct_rules", "ea_acct_manage", "copy_members", "ea_protect_log"):
         con.execute(f"DELETE FROM {t} WHERE account_id=?", (aid,))
     con.execute("UPDATE copy_jobs SET status='closed', note='Account removed' WHERE account_id=? AND status IN ('waiting','sent','open')", (aid,))
+    con.execute("UPDATE auto_jobs SET status='closed', note='Account removed' WHERE account_id=? AND status IN ('waiting','sent','open')", (aid,))
+    con.execute("DELETE FROM auto_settings WHERE account_id=?", (aid,))
     con.execute("DELETE FROM ea_meta WHERE k='copy_master' AND v=?", (str(aid),))
     con.execute("DELETE FROM ea_commands WHERE account_id=?", (aid,))
     con.execute("DELETE FROM ea_accounts WHERE id=?", (aid,))

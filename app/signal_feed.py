@@ -316,6 +316,11 @@ async def signal_loop():
             new = await asyncio.wait_for(scan_signals(), timeout=120)
             if new:
                 await asyncio.to_thread(push.notify_new, new)
+                try:                               # AutoTrading: queue the matching trades for members who switched it on (autotrade.py)
+                    from . import autotrade
+                    await asyncio.to_thread(autotrade.on_new_signals, new)
+                except Exception as e:
+                    print(f"[auto] queueing failed: {type(e).__name__}: {str(e)[:150]}", flush=True)
         except Exception as e:
             print(f"[feed] scan failed: {type(e).__name__}: {str(e)[:150]}", flush=True)
         await asyncio.sleep(CFG["scan_seconds"])

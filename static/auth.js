@@ -13,6 +13,7 @@
       if(u.tier==='admin')adminTab();
       if(u.rewards)rewardsTab();
       partnerTab();
+      autoTab();
       window.dlBadge()}catch(x){}
   };
   // Unread counters on the Messages tabs: the member's own (announcements + replies) and, for an admin, members' unread messages.
@@ -49,6 +50,13 @@
       const a=document.createElement('a');a.href='/partner.html';a.textContent='Partner';a.dataset.partner='1';
       if(location.pathname==='/partner.html')a.className='on';
       const m=n.querySelector('[data-rewards]')||n.querySelector('a[href="/inbox.html"]');if(m)m.after(a);else n.append(a)}catch(x){}
+  }
+  async function autoTab(){             // AutoTrading is private for now: the tab appears only where the server says it is available
+    try{const r=await f('/api/auto/me');if(!r.ok||!(await r.json()).available)return;
+      const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-auto]'))return;
+      const a=document.createElement('a');a.href='/auto.html';a.textContent='AutoTrading';a.dataset.auto='1';
+      if(location.pathname==='/auto.html')a.className='on';
+      const m=n.querySelector('a[href="/mt5.html"]');if(m)m.after(a);else n.append(a)}catch(x){}
   }
   function adminTab(){
     const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-admin]'))return;

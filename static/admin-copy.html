@@ -31,6 +31,17 @@ async function load(){
   const head=el('div','card');head.append(el('h2','','Copy trading'),el('p','mut','Flag a trade on the master account and it is copied to subscribed members who switched copying on. Only flagged trades are copied, and only if they have a stop loss and a take profit.'));
   msg=el('div','mut');head.append(msg);root.append(head);
 
+  const au=el('div','card');au.append(el('h2','','AutoTrading access (private test)'),el('p','mut','AutoTrading places trades from signals on a member\'s own MT5. It is visible only to admins and the testers listed here (paid members). There is no public mode yet.'));
+  try{const ar=await fetch('/api/auto/admin'),ad=await ar.json();if(!ar.ok)throw new Error(ad.detail||'HTTP '+ar.status);
+    const ms=document.createElement('select');[['testers','On for admins and listed testers'],['off','Off for everyone']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ms.append(o)});ms.value=ad.mode;
+    const ta=document.createElement('textarea');ta.rows=4;ta.placeholder='One tester e-mail per line';ta.value=ad.testers.join('\n');
+    const sb=el('button','','Save AutoTrading access');sb.style.marginTop='8px';
+    sb.onclick=async()=>{try{const r=await fetch('/api/auto/admin',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:ms.value,testers:ta.value.split(/\s+/).filter(Boolean)})});
+      const j=await r.json();if(!r.ok)throw new Error(typeof j.detail==='string'?j.detail:'HTTP '+r.status);note('AutoTrading access saved.','win');await load()}catch(e){note(e.message,'err')}};
+    au.append(ms,ta,sb,kv('Accounts with AutoTrading on',String(ad.accounts_on)),kv('Auto trades, last 7 days',Object.entries(ad.jobs_7d).map(([k,v])=>v+' '+k).join(', ')||'none'));
+  }catch(e){au.append(el('div','err',e.message))}
+  root.append(au);
+
   const m=el('div','card');m.append(el('h2','','Master account'));
   const sel=document.createElement('select');
   const o0=document.createElement('option');o0.value='';o0.textContent='Choose one of your MT5 accounts';sel.append(o0);
