@@ -611,6 +611,13 @@ class WrongBrokerTickValue(unittest.TestCase):
         self.assertAlmostEqual(unit_per_lot({"symbol": "USDJPY", "tick_size": 0.001, "tick_value": 0.67, "contract_size": 100000}), 670.0)
         self.assertEqual(unit_per_lot({"symbol": "Volatility 75 Index", "contract_size": 1}), 1.0)
 
+    def test_ea_reported_unit_is_used_when_larger(self):
+        from app.config import unit_per_lot
+        self.assertEqual(unit_per_lot({"symbol": "Boom 500 Index", "tick_size": 0.001, "tick_value": 0.0001, "contract_size": 1, "unit": 1.0}), 1.0)
+        self.assertEqual(unit_per_lot({"symbol": "EURUSD", "tick_size": 0.00001, "tick_value": 0.5, "contract_size": 100000, "unit": 100000.0}), 100000.0)
+        self.assertAlmostEqual(unit_per_lot({"symbol": "USDJPY", "tick_size": 0.001, "tick_value": 0.67, "contract_size": 100000, "unit": 667.0}), 670.0)
+        self.assertAlmostEqual(unit_per_lot({"symbol": "EURUSD", "tick_size": 0.00001, "tick_value": 1.0, "contract_size": 100000, "unit": 0}), 100000.0, places=3)
+
     def test_equity_protection_precheck_uses_the_same_unit(self):
         from app import pending_orders
         pct = pending_orders._risk_pct(V75_REAL, 6.322, 725.9, 1062.0)

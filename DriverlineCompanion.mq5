@@ -24,7 +24,7 @@
 //| never widens a stop. It limits risk but cannot guarantee it.     |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.55"
+#property version     "1.56"
 #property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
@@ -324,6 +324,26 @@ string BuildClosed(datetime &newest)
    return rows;
 }
 
+// Money MT5 itself says one lot gains or loses per ONE price unit, measured with OrderCalcProfit (the same call Equity protection uses).
+// TradeLens sizes lots from this, because some brokers publish a wrong tick value (Deriv Volatility 75 Index: 100 times too small). 0 = unknown.
+double UnitPerLot(const string sym)
+{
+   double tick = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   if(tick <= 0.0)
+      tick = SymbolInfoDouble(sym, SYMBOL_POINT);
+   double px = SymbolInfoDouble(sym, SYMBOL_BID);
+   if(px <= 0.0)
+      px = SymbolInfoDouble(sym, SYMBOL_ASK);
+   if(tick <= 0.0 || px <= 0.0)
+      return 0.0;
+   int    dg    = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   double probe = 100.0 * tick;
+   double p     = 0.0;
+   if(!OrderCalcProfit(ORDER_TYPE_BUY, sym, 1.0, px, NormalizeDouble(px - probe, dg), p))
+      return 0.0;
+   return (p < 0.0) ? (-p / probe) : 0.0;
+}
+
 string BuildSpecs()
 {
    string s = "";
@@ -336,7 +356,9 @@ string BuildSpecs()
          continue;
       if(added > 0)
          s += ",";
+      double unitLot = UnitPerLot(sym);
       s += "{\"symbol\":\"" + JsonEscape(sym) + "\""
+         + ((unitLot > 0.0) ? (",\"unit\":" + DoubleToString(unitLot, 8)) : "")
          + ",\"tick_size\":"     + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 8)
          + ",\"tick_value\":"    + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE_LOSS), 8)
          + ",\"vol_min\":"       + DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN), 8)
