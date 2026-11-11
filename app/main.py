@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, rewards, commission, prizes, partners, pending_orders, tg_bot, copy_trading, copy_plan, autotrade, mt5_requests, inbox, recap
+from . import admin, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, rewards, commission, prizes, partners, pending_orders, tg_bot, copy_trading, copy_plan, autotrade, price_alerts, mt5_requests, inbox, recap
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -152,6 +152,8 @@ async def lifespan(app):
     tasks = await radar.background_loops() if os.environ.get("DRIVERLINE_RADAR", "1") != "0" else []
     if os.environ.get("DRIVERLINE_SIGNALS", "1") != "0":
         tasks.append(asyncio.create_task(signal_feed.signal_loop()))
+    if os.environ.get("DRIVERLINE_SIGNALS", "1") != "0" and price_alerts.enabled():     # price alerts: watches only symbols that have an active alert
+        tasks.append(asyncio.create_task(price_alerts.alert_loop()))
     if engine_signals.enabled():           # shadow signals for validated research models only; off unless DRIVERLINE_ENGINE_SHADOW=1
         tasks.append(asyncio.create_task(engine_signals.engine_loop()))
     if os.environ.get("NOWPAYMENTS_API_KEY"):   # re-checks open crypto orders with NOWPayments, so a lost notification only delays
@@ -193,6 +195,7 @@ routes = [
     *pending_orders.routes,
     *copy_trading.routes,
     *autotrade.routes,
+    *price_alerts.routes,
     *copy_plan.routes,
     *mt5_requests.routes,
     *inbox.routes,

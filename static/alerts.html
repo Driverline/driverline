@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Price alerts</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+<script src="/acct.js"></script>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main id="root"><span class="mut">Loading...</span></main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function field(label,input){const w=el('div');w.append(el('label','',label),input);return w}
+const fmt=x=>Number(x).toLocaleString(undefined,{maximumFractionDigits:Math.abs(x)<10?4:2});
+const when=t=>t?new Date(t*1000).toISOString().slice(0,16).replace('T',' ')+' UTC':'';
+const left=t=>{const h=Math.max(0,Math.round((t-Date.now()/1000)/3600));return h<48?h+' h left':Math.round(h/24)+' days left'};
+async function api(url,opt){const r=await fetch(url,opt);const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof j.detail==='string'?j.detail:('HTTP '+r.status));return j}
+async function load(){
+  const root=$('root');let d;
+  try{d=await api('/api/alerts')}catch(e){root.textContent=e.message;return}
+  root.textContent='';
+  const head=el('div','card');head.append(el('h2','','Price alerts'),
+    el('p','mut','Pick a symbol and a price. TradeLens sends you a notification when the price gets CLOSE to it, a little early on purpose, so you have time to open MT5 and decide: enter a trade, move a take profit, or leave it. Prices come from Deriv, so your MT5 may differ slightly. Each alert fires once.'));
+  root.append(head);
+  if(!d.available){root.append(el('div','card',d.reason||'Price alerts are not available on your account.'));return}
+  const f=el('div','card');f.append(el('h3','','New alert'));
+  const sy=document.createElement('select');d.instruments.forEach(x=>{const o=document.createElement('option');o.value=x.key;o.textContent=x.name;sy.append(o)});
+  const lv=document.createElement('input');lv.type='number';lv.step='any';lv.inputMode='decimal';lv.placeholder='Price, e.g. 38500';
+  const er=document.createElement('select');d.early.forEach(x=>{const o=document.createElement('option');o.value=x.key;o.textContent=x.label;er.append(o)});er.value=String(d.default_early);
+  const nt=document.createElement('input');nt.type='text';nt.maxLength=d.note_max;nt.placeholder='Note to yourself (optional)';
+  const dy=document.createElement('select');[1,3,7,14,30].filter(x=>x<=d.max_days).forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x===1?'1 day':x+' days';dy.append(o)});dy.value=String(d.default_days);
+  const out=el('div','mut');out.style.margin='8px 0';
+  f.append(field('Symbol',sy),field('Price to watch',lv),field('How early should I warn you?',er),field('Note',nt),field('Keep this alert for',dy));
+  const chk=el('button','ghost','Check price'),set=el('button','','Set alert');set.style.marginLeft='8px';
+  const q=()=>'instrument='+encodeURIComponent(sy.value)+'&level='+encodeURIComponent(lv.value)+'&early='+er.value;
+  chk.onclick=async()=>{out.className='mut';out.textContent='Checking...';try{const p=await api('/api/alerts/preview?'+q());
+    out.textContent='Now about '+fmt(p.price)+'. You will be warned when the price '+(p.dir==='up'?'rises':'falls')+' to about '+fmt(p.trigger)+', which is '+fmt(p.buffer)+' before '+fmt(Number(lv.value))+'.'}catch(e){out.className='err';out.textContent=e.message}};
+  set.onclick=async()=>{out.className='mut';out.textContent='Saving...';try{await api('/api/alerts',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({instrument:sy.value,level:lv.value,early:Number(er.value),note:nt.value,days:Number(dy.value)})});
+    out.className='win';out.textContent='Alert set.';setTimeout(load,700)}catch(e){out.className='err';out.textContent=e.message}};
+  f.append(out,chk,set);f.append(el('small','mut','Up to '+d.max_active+' active alerts and '+d.per_day+' new alerts a day. Alerts need notifications switched on in this browser or app (Signals tab).'));root.append(f);
+  const a=el('div','card');a.append(el('h2','','Active alerts ('+d.active.length+' of '+d.max_active+')'));
+  if(!d.active.length)a.append(el('div','mut','No active alerts.'));
+  d.active.forEach(x=>{const row=el('div','kv');
+    row.append(el('span','',x.name+' '+(x.dir==='up'?'rises to ':'falls to ')+fmt(x.level)),el('span','mut',left(x.expires_at)));
+    const c=el('button','ghost','Cancel');c.style.cssText='width:auto;padding:4px 10px;margin-left:8px';c.onclick=async()=>{try{await api('/api/alerts/'+x.id+'/cancel',{method:'POST'});load()}catch(e){alert(e.message)}};row.append(c);a.append(row);
+    a.append(el('div','mut','Warns near '+fmt(x.trigger_price)+(x.note?' - '+x.note:'')))});
+  root.append(a);
+  const h=el('div','card');h.append(el('h2','','Recent'));
+  if(!d.recent.length)h.append(el('div','mut','Nothing yet.'));
+  d.recent.forEach(x=>{const row=el('div','kv');row.append(el('span','',x.name+' '+fmt(x.level)),el('span',x.status==='fired'?'win':'mut',x.status==='fired'?'fired at about '+fmt(x.fired_price):x.status));h.append(row);
+    h.append(el('div','mut',when(x.fired_at||x.created_at)+(x.status==='fired'&&!x.delivered?' - no device received the push, so it was sent to your Messages tab':'')+(x.note?' - '+x.note:'')))});
+  root.append(h);
+}
+load();
+</script>
+</body>
+</html>
