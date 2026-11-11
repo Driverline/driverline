@@ -66,3 +66,9 @@ Public mode; conversion for non-USD accounts.
 3. When a matching signal appears, check history shows sent then open, the trade has SL/TP and comment TLA-...
 4. Pause: no new trades; waiting ones cancelled.
 5. Try max open 1 with two signals: second is skipped with the reason.
+
+## Incident, 10 Nov 2026: V75 lot size 6.322 (fixed 11 Nov)
+AutoTrading sized a Volatility 75 SELL at 6.322 lots on a $1,062 account (setting: risk 4.5%) and the broker stopped the trade out (reason "so") for -$946.97. Cause: Deriv's MT5 reports Volatility 75 Index with tick size 0.01 but tick value 0.0001 (100x too small; contract size 1). Risk sizing used tick value / tick size = 0.01 as the money per price unit per lot; the true figure is 1. The stop was 725.9 points away, so one lot really risked about $726 and the trade risked about $4,589 (450%), not $47.79. Equity protection saw the real figure from MT5 (risk 4589.20 of 1019.83) but could not place a closer stop (broker minimum distance) and, by design, left the trade open. The other Deriv symbols checked (V10, V50, V100, V75 (1s)) report consistent values; V100 traded correctly the day before (3.55 lots, loss 4.5%).
+Fix: `config.unit_per_lot(spec)` is now the single place that works out money per price unit per lot. For Deriv synthetic indices it never goes below the contract size (so a wrong broker tick value can only make a lot smaller). It is used by AutoTrading and copy trading sizing (`copy_trading.size`) and by the Equity-protection pre-check and Open-trade risk figure (`pending_orders._risk_pct`). Forex and gold keep the broker's tick value.
+Not changed: the Open-trade button (no lot given = the symbol's minimum lot).
+Follow-up worth doing: have the EA report the real per-lot loss from MT5's own OrderCalcProfit and size from that.

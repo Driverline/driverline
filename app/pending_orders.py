@@ -30,7 +30,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .config import INSTRUMENTS, market, match_key
+from .config import INSTRUMENTS, market, match_key, unit_per_lot
 from . import watch_chart as WC
 
 ORDER_TYPES = ("BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP", "BUY_STOP_LIMIT", "SELL_STOP_LIMIT")
@@ -277,8 +277,7 @@ def build_pending(facts: dict, card: dict, candles: dict, key: str):
 # ------------------------------------------------------------------------------------------------ placing one
 def _risk_pct(spec: dict, lots: float, dist: float, balance: float):
     try:
-        unit = (spec["tick_value"] / spec["tick_size"]) if spec.get("tick_size", 0) > 0 and spec.get("tick_value", 0) > 0 \
-            else spec.get("contract_size", 0)
+        unit = unit_per_lot(spec)
         l = lots if lots > 0 else spec.get("vol_min", 0)
         return (l * dist * unit / balance * 100) if unit > 0 and l > 0 and balance > 0 else None
     except (TypeError, KeyError, ZeroDivisionError):

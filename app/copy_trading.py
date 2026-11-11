@@ -23,6 +23,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from . import auth, copy_plan, ea, journal, signal_feed
+from .config import unit_per_lot
 
 JOB_TTL = 120            # seconds a copy job may wait for the follower's EA to collect it, then it is skipped
 TICKET_WAIT = 60         # seconds to look for the follower's new position before giving up on finding its ticket
@@ -42,8 +43,7 @@ def size(spec: dict, balance: float, sl_dist: float, mode: str, fixed_lots, risk
     """(lots, risk_pct_of_balance, reason). lots is None when the trade must NOT be placed; reason says why.
     fixed: the member's fixed lot, or the symbol's minimum lot when none is set. risk: lots so the stop loss risks risk_pct of balance.
     cap_pct: the member's own limit per trade: a lot that would risk more than it is never traded."""
-    unit = _f(spec.get("tick_value")) / _f(spec.get("tick_size")) if _f(spec.get("tick_size")) > 0 and _f(spec.get("tick_value")) > 0 \
-        else _f(spec.get("contract_size"))
+    unit = unit_per_lot(spec)
     vmin, vstep, vmax = _f(spec.get("vol_min")), _f(spec.get("vol_step")), _f(spec.get("vol_max"))
     if not (unit > 0 and vmin > 0 and vstep > 0 and sl_dist > 0):
         return None, None, "Contract details for this symbol are missing from your MT5, so the risk cannot be worked out"

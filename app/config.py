@@ -94,6 +94,26 @@ def match_key(symbol: str):
             return key
     return None
 
+_SYNTH_NAME = re.compile(r"^(volatility|boom|crash|jump|step)\b", re.I)
+
+
+def unit_per_lot(spec: dict, symbol: str = "") -> float:
+    """Account-currency profit or loss per ONE price unit per ONE lot, for risk sizing. Never trust a broker's tick value blindly for a synthetic index:
+    Deriv's MT5 reports Volatility 75 Index with tick size 0.01 but tick value 0.0001, which is 100 times too small and made a risk-based lot 100 times
+    too big (Nov 2026). Deriv synthetic indices are USD-quoted with a contract size of 1, so the true figure is never below the contract size; take the
+    larger of the two, which can only make a lot smaller. Other symbols use the broker's tick value as before."""
+    def f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+    ts, tv, cs = f(spec.get("tick_size")), f(spec.get("tick_value")), f(spec.get("contract_size"))
+    unit = tv / ts if ts > 0 and tv > 0 else cs
+    if _SYNTH_NAME.match(str(symbol or spec.get("symbol") or "").strip()) and cs > 0:
+        unit = max(unit, cs)
+    return unit
+
+
 # Timeframe label -> granularity in seconds (Deriv candle granularities)
 TIMEFRAMES = {
     "D1": 86400,

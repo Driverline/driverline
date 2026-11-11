@@ -588,5 +588,55 @@ class Protection(unittest.TestCase):
         self.assertTrue(pv["is_default"])
 
 
+V75_REAL = {"symbol": "Volatility 75 Index", "vol_max": 15, "vol_min": 0.01, "vol_step": 0.001, "tick_size": 0.01, "tick_value": 0.0001, "contract_size": 1}
+
+
+class WrongBrokerTickValue(unittest.TestCase):
+    """Nov 2026: Deriv reports Volatility 75 with tick value 0.0001 for tick size 0.01 (100x too small). Risk sizing took 6.322 lots for a
+    726-point stop on a $1,062 account and lost $947. The risk of one lot over that stop is about $726, so 4.5% ($47.79) allows about 0.065 lot."""
+    def test_v75_lot_is_about_a_16th_of_a_lot_not_six(self):
+        from app import copy_trading
+        lots, pct, why = copy_trading.size(V75_REAL, 1062.0, 725.9141678571032, "risk", None, 4.5, 4.5)
+        self.assertEqual(why, "")
+        self.assertAlmostEqual(lots, 0.065, places=3)
+        self.assertLessEqual(pct, 4.5)
+
+    def test_unit_helper(self):
+        from app.config import unit_per_lot
+        self.assertEqual(unit_per_lot(V75_REAL), 1.0)
+        ok = {"symbol": "Volatility 100 Index", "tick_size": 0.01, "tick_value": 0.01, "contract_size": 1}
+        self.assertEqual(unit_per_lot(ok), 1.0)
+        self.assertAlmostEqual(unit_per_lot({"symbol": "EURUSDm", "tick_size": 0.00001, "tick_value": 1.0, "contract_size": 100000}), 100000.0, places=3)
+        # a forex pair keeps the broker's own tick value (JPY pairs are worth far less than the contract size per unit)
+        self.assertAlmostEqual(unit_per_lot({"symbol": "USDJPY", "tick_size": 0.001, "tick_value": 0.67, "contract_size": 100000}), 670.0)
+        self.assertEqual(unit_per_lot({"symbol": "Volatility 75 Index", "contract_size": 1}), 1.0)
+
+    def test_equity_protection_precheck_uses_the_same_unit(self):
+        from app import pending_orders
+        pct = pending_orders._risk_pct(V75_REAL, 6.322, 725.9, 1062.0)
+        self.assertGreater(pct, 400)                                  # it used to say about 4.5
+        pct = pending_orders._risk_pct(V75_REAL, 0.065, 725.9, 1062.0)
+        self.assertAlmostEqual(pct, 4.44, places=1)
+
+    def test_autotrading_end_to_end_on_the_real_v75_spec(self):
+        s = Setup(instruments=["v75"], styles=["swing"], mode="risk", risk_pct=4.5, max_risk_pct=4.5)
+        sp = [V75_REAL]
+        eareport(s.key, balance=1062.0, specs=sp)
+        q("INSERT INTO ea_acct_rules(account_id,max_risk_pct,daily_loss_pct,max_positions) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET max_risk_pct=5", s.aid, 5.0, 5.0, 5)
+        self.assertEqual(s.save(styles=["day"], mode="risk", risk_pct=4.5, max_risk_pct=4.5).status_code, 200)
+        sid = signal(inst="v75")
+        with closing(signal_feed.db()) as c:
+            c.execute("UPDATE signals SET entry=38582.45, stop=39308.36, target=37493.58, direction=-1 WHERE id=?", (sid,))
+            c.commit()
+        AT.on_new_signals([sid])
+        eareport(s.key, balance=1062.0, specs=sp)
+        eapoll(s.key)
+        cmd = q("SELECT payload FROM ea_commands WHERE account_id=?", s.aid)
+        self.assertEqual(len(cmd), 1, s.jobs())
+        lots = json.loads(cmd[0]["payload"])["lots"]
+        self.assertLess(lots, 0.07)
+        self.assertGreater(lots, 0.05)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
