@@ -35,15 +35,15 @@
 <div class="card"><h2>Partner programme</h2>
   <div class="mut">Deriv is the authority for partner approval, client tagging and commissions. TradeLens only keeps its own referral records and routes members to official Deriv links. Nothing here is verified automatically.</div>
   <label>Mode</label>
-  <div class="mut small">Off: admins only, nothing recorded, old universal Deriv link hidden. Review: admins and listed reviewers only. Public: every member, and needs Deriv's written approval recorded below.</div>
-  <select id="mode"><option value="off">Off (admins only)</option><option value="review">Review (listed reviewers)</option><option value="public">Public (needs Deriv approval)</option></select>
+  <div class="mut small">Off: admins only, nothing recorded, old universal Deriv link hidden. Review: admins and listed reviewers only. Public: every member, and needs a launch record below (Deriv's written approval, or your own dated decision to launch without it).</div>
+  <select id="mode"><option value="off">Off (admins only)</option><option value="review">Review (listed reviewers)</option><option value="public">Public (needs a launch record)</option></select>
   <label>Master Partner link (used ONLY when a member chooses to become a Deriv partner)</label>
   <input id="master" placeholder="https://t.deriv.link?t=..." autocomplete="off">
   <div id="adminonly">
     <label>Reviewer accounts (e-mails, comma separated; they must already have a TradeLens account)</label>
     <textarea id="rev" rows="2" placeholder="reviewer1@example.com, reviewer2@example.com"></textarea>
   </div>
-  <label>Record of Deriv's written approval and any conditions (required before Public)</label>
+  <label>Launch record (required before Public): Deriv's written approval and conditions, or your dated decision to launch without Deriv approval</label>
   <textarea id="appr" rows="3" maxlength="600" placeholder="Who at Deriv approved, on what date, reference, and the conditions"></textarea>
   <div class="btns"><button id="ssave">Save settings</button></div><div id="smsg" class="mut small" style="margin-top:6px"></div>
   <div class="mut small" id="legacy" style="margin-top:8px"></div>

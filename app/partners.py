@@ -21,7 +21,8 @@ re-attached or overwritten later, and nobody can be attributed to themselves.
 Stage gate (Admin > Partner programme > Mode): off | review | public.
   off     only admins can see anything; no referral is recorded and the old universal Deriv link is not shown or used.
   review  admins and the listed reviewer accounts (read-only admin view, e-mails masked) can use every screen; referrals are recorded.
-  public  every signed-in member. Refused until the written Deriv approval and its conditions have been recorded in Admin.
+  public  every signed-in member. Refused until a launch record has been entered in Admin: either Deriv's written approval and its
+          conditions, or the owner's own dated decision to launch without Deriv approval. It must never say Deriv approved when it did not.
 Tables are new and additive (migrations/2026_11_partners.sql); nothing existing is edited."""
 import asyncio
 import json
@@ -704,7 +705,7 @@ async def admin_settings(request):
                     if m not in MODES:
                         raise HTTPException(422, "mode must be off, review or public")
                     if m == "public" and len(s.get("approval_record", "")) < 10:
-                        raise HTTPException(409, "Record Deriv's written approval and its conditions first. The programme cannot be made public without it")
+                        raise HTTPException(409, "Enter the launch record first (Deriv's written approval, or the owner's dated decision to launch without Deriv approval). The programme cannot be made public without it")
                     changes["mode"] = {"before": s.get("mode", "off"), "after": m}
                     _set(con, "mode", m)
                 _audit(con, admin["id"], None, "settings", changes)
