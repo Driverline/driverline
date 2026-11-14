@@ -71,8 +71,14 @@
     const w=document.createElement('a');w.href='/admin-rewards.html';w.textContent='Rewards';w.dataset.admin='1';
     if(location.pathname==='/admin-rewards.html')w.className='on';n.append(w);
   }
+  // The tab bar stays at the top while the page scrolls (see theme.css). Keep the current page's tab in view inside the bar.
+  function showActiveTab(){
+    const n=document.querySelector('nav.tabs'),a=n&&n.querySelector('a.on');
+    if(a&&n.scrollWidth>n.clientWidth)n.scrollLeft=a.offsetLeft-(n.clientWidth-a.offsetWidth)/2;
+  }
   document.addEventListener('DOMContentLoaded',()=>{
     tabs();
+    [50,800,2500].forEach(ms=>setTimeout(showActiveTab,ms));       // later tabs (Admin, Partner, Auto) are added after sign-in is checked
     window.dlMe();
     const o=document.getElementById('signout');
     if(o)o.onclick=async ev=>{ev.preventDefault();await f('/api/auth/logout',{method:'POST'});location.href='/login.html'};
