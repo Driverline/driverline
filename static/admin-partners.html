@@ -22,6 +22,7 @@
 .btns button{width:auto;padding:8px 14px}
 .pick{cursor:pointer}
 .small{font-size:13px}
+.dot{display:inline-block;background:var(--gold);color:#02122c;border-radius:99px;font-size:11px;font-weight:700;padding:1px 7px;margin-left:6px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -54,7 +55,8 @@
   <input id="hlink" placeholder="https://t.deriv.link?t=..." autocomplete="off"><input id="hid" placeholder="Your Deriv partner ID (optional)" autocomplete="off" style="margin-top:6px">
   <div class="btns"><button id="hmake" class="ghost">Create house partner</button></div><div id="hmsg" class="mut small" style="margin-top:6px"></div></div>
 
-<div class="card"><h2>Partners</h2>
+<div class="card"><h2>Partners <span id="pn"></span></h2>
+  <label style="display:flex;gap:8px;align-items:center;margin:0 0 8px"><input type="checkbox" id="need" style="width:auto"> Show only partners that need action</label>
   <input id="q" placeholder="Search e-mail, partner ID, referral code or Deriv partner ID">
   <div class="btns"><button id="qgo">Search</button></div>
   <div id="list" style="margin-top:8px"></div></div>
@@ -92,14 +94,27 @@ $('ssave').onclick=async()=>{
 $('hmake').onclick=async()=>{
   try{await api('/house','POST',{deriv_referral_link:$('hlink').value,deriv_partner_id:$('hid').value});msg($('hmsg'),'win','Created. Approve it below, then verify the link.');await list()}
   catch(e){msg($('hmsg'),'err',e.message)}};
+// What an admin has to do next for one partner. "Verified" always means checked by hand.
+function nextStep(p){
+  if(p.status==='application_initiated'||p.status==='awaiting_deriv_approval')
+    return 'Check them in Deriv Partners Hub, then Approve (you need their Deriv partner ID)';
+  if(p.status==='approved'&&!p.deriv_referral_link)return 'Add their Deriv trader referral link, then mark it verified';
+  if(p.status==='approved'&&p.link_status!=='verified')return 'Check their link in Partners Hub, then mark it verified';
+  return '';
+}
 async function list(){
   const d=await api('?q='+encodeURIComponent($('q').value||'')),box=$('list');box.textContent='';
-  if(!d.partners.length)box.append(el('div','mut','No partners yet.'));
-  d.partners.forEach(p=>{const x=el('div','item pick');
+  const todo=d.partners.filter(p=>nextStep(p)).length;
+  $('pn').textContent='';if(todo)$('pn').append(el('span','dot',todo+' need action'));
+  let rows=d.partners.slice().sort((a,b)=>(nextStep(b)?1:0)-(nextStep(a)?1:0));
+  if($('need').checked)rows=rows.filter(p=>nextStep(p));
+  if(!rows.length)box.append(el('div','mut',$('need').checked?'Nothing needs action.':'No partners yet.'));
+  rows.forEach(p=>{const x=el('div','item pick'),n=nextStep(p);
     x.append(row(p.email+(p.is_house?' (house)':''),p.status_label),el('div','mut small',p.partner_id+' · '+p.referral_code+' · link '+p.link_status));
+    if(n)x.append(el('div','small',"Next: "+n));
     x.onclick=()=>open(p.id);box.append(x)});
 }
-$('qgo').onclick=list;
+$('qgo').onclick=list;$('need').onchange=list;
 async function open(id){
   const d=await api('/'+id);cur=id;const p=d.partner,b=$('dbody');b.textContent='';$('detail').hidden=false;$('dtitle').textContent=p.partner_id+' · '+p.email;
   b.append(row('Status',p.status_label),row('Referral code',p.referral_code),row('Applied via',p.applied_via),row('Deriv partner ID',p.deriv_partner_id),

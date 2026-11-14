@@ -417,6 +417,9 @@ def _fulfil(oid: int, source: str, p: dict) -> str:
             _event(con, oid, source, "overpaid", "finished", f"paid {paid}, expected {row['pay_amount']}: the extra is not credited",
                    row["provider_payment_id"])
         con.commit()
+        from . import admin_alerts
+        admin_alerts.payment(row["user_id"], (credits.CATALOG.get(row["product"]) or {}).get("label", row["product"]),
+                             float(row["amount_usd"] or 0), "Crypto payment received", row["ref"])
         return "fulfilled"
 
 

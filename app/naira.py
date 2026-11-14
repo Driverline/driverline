@@ -299,6 +299,8 @@ async def claim(request):
             _event(con, oid, "member", "customer_note", row["status"], note)
             con.commit()
     await asyncio.to_thread(_save)
+    from . import admin_alerts
+    admin_alerts.payment(user["id"], row["product"], float(row["amount_usd"] or 0), "Naira transfer sent", row["ref"])
     return JSONResponse({"ok": True})
 
 

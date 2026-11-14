@@ -30,8 +30,10 @@ ADMIN_MAX = 2000           # characters in one message or broadcast from an admi
 TITLE_MAX = 80
 PER_MINUTE = 5             # messages one member may send in a minute
 PER_DAY = 30               # ... and in 24 hours
-THREAD_SHOWN = 200         # messages shown in one conversation
+THREAD_SHOWN = 200         # messages shown in one conversation (the admin side)
 BROADCASTS_SHOWN = 30
+PAGE_MSGS = 40             # a member's chat opens on the newest 40 messages and 15 announcements; older ones load on request
+PAGE_BCS = 15
 INBOX_SHOWN = 100          # conversations listed to the admin
 
 
@@ -86,17 +88,43 @@ async def member_summary(request):
         return JSONResponse(_counts(con, user))
 
 
+def _int_arg(request, name: str) -> int:
+    try:
+        return max(0, int(request.query_params.get(name) or 0))
+    except ValueError:
+        return 0
+
+
 async def member_view(request):
+    """The chat. No arguments: the newest page. before_msg / before_bc: the page of older items. after_msg / after_bc: only what is new.
+    Items come back oldest first, so the page can show them like a chat with the newest at the bottom."""
     user = auth.require_user(request)
+    bm, bb, am, ab = (_int_arg(request, k) for k in ("before_msg", "before_bc", "after_msg", "after_bc"))
     with closing(db()) as con:
         c = _counts(con, user)
         seen = con.execute("SELECT last_id FROM inbox_broadcast_reads WHERE user_id=?", (user["id"],)).fetchone()
         last, joined = (seen["last_id"] if seen else 0), _joined(user)
-        rows = con.execute("SELECT * FROM (SELECT * FROM inbox_messages WHERE user_id=? ORDER BY id DESC LIMIT ?) t ORDER BY id",
-                           (user["id"], THREAD_SHOWN)).fetchall()
-        bcs = con.execute("SELECT * FROM inbox_broadcasts ORDER BY id DESC LIMIT ?", (BROADCASTS_SHOWN,)).fetchall()
+        if am or ab:                                       # polling: only newer than what the page already has
+            rows = con.execute("SELECT * FROM inbox_messages WHERE user_id=? AND id>? ORDER BY id LIMIT 100", (user["id"], am)).fetchall()
+            bcs = list(reversed(con.execute("SELECT * FROM inbox_broadcasts WHERE id>? ORDER BY id DESC LIMIT 50", (ab,)).fetchall()))
+            more_m = more_b = False
+        else:
+            older = "before_msg" in request.query_params or "before_bc" in request.query_params
+            if older and not bm:
+                rows = []
+            else:
+                rows = con.execute(f"SELECT * FROM inbox_messages WHERE user_id=? {'AND id<?' if bm else ''} ORDER BY id DESC LIMIT ?",
+                                   (user["id"], *([bm] if bm else []), PAGE_MSGS + 1)).fetchall()
+            if older and not bb:
+                bcs = []
+            else:
+                bcs = con.execute(f"SELECT * FROM inbox_broadcasts {'WHERE id<?' if bb else ''} ORDER BY id DESC LIMIT ?",
+                                  (*([bb] if bb else []), PAGE_BCS + 1)).fetchall()
+            more_m, more_b = len(rows) > PAGE_MSGS, len(bcs) > PAGE_BCS
+            rows, bcs = list(reversed(rows[:PAGE_MSGS])), list(reversed(bcs[:PAGE_BCS]))
     return JSONResponse({**c, "messages": [_msg(r) for r in rows],
-                         "broadcasts": [_bc(r, r["id"] > last and r["created_at"] >= joined) for r in bcs]})
+                         "broadcasts": [_bc(r, r["id"] > last and r["created_at"] >= joined) for r in bcs],
+                         "more_messages": more_m, "more_broadcasts": more_b})
 
 
 async def member_read(request):
@@ -144,7 +172,12 @@ async def admin_summary(request):
     auth.require_admin(request)
     with closing(db()) as con:
         n = con.execute("SELECT COUNT(*) AS c, COUNT(DISTINCT user_id) AS u FROM inbox_messages WHERE sender='user' AND read_at IS NULL").fetchone()
-    return JSONResponse({"unread": n["c"], "conversations": n["u"]})
+    try:
+        from . import admin_alerts
+        alerts = admin_alerts.unread_count()
+    except Exception:
+        alerts = 0
+    return JSONResponse({"unread": n["c"], "conversations": n["u"], "alerts": alerts})
 
 
 async def admin_list(request):

@@ -11,26 +11,33 @@
 <link rel="stylesheet" href="/theme.css">
 <script src="/auth.js"></script>
 <style>
-.msg{max-width:86%;padding:9px 12px;border-radius:12px;margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:1.35}
+#chat{position:relative}
+#thread{height:min(64vh,620px);min-height:300px;overflow-y:auto;overscroll-behavior:contain;padding:4px 2px 8px;scroll-behavior:auto}
+.msg{max-width:86%;padding:9px 12px;border-radius:12px;margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:1.35}
 .msg small{display:block;margin-top:4px;color:var(--mut);font-size:11px}
 .msg.me{margin-left:auto;background:#0d2a63;border:1px solid var(--line)}
 .msg.team{margin-right:auto;background:#06122f;border:1px solid var(--line);border-left:3px solid var(--gold)}
 .msg.team.new{border-color:var(--gold)}
-.bc{padding:10px 0;border-top:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}
-.bc:first-of-type{border-top:0}
-.bc b{display:block}
-.bc small{color:var(--mut)}
+.msg.ann{max-width:94%;margin:10px auto;background:#081a3d;border:1px solid var(--line);border-left:3px solid #4fd8ff}
+.msg.ann .tag{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#4fd8ff;margin-bottom:3px}
+.msg.ann b{display:block;margin-bottom:2px}
+.day{text-align:center;margin:12px 0 4px}
+.day span{display:inline-block;background:#0a1d44;color:var(--mut);border-radius:99px;font-size:11px;padding:2px 10px}
+.newline{display:flex;align-items:center;gap:8px;margin:10px 0;color:var(--gold);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.newline:before,.newline:after{content:"";flex:1;height:1px;background:var(--gold);opacity:.5}
+#older{display:block;margin:4px auto 6px;background:transparent;border:1px solid var(--line);color:var(--mut);box-shadow:none;font-size:12px;padding:5px 12px;border-radius:99px}
+#jump{position:absolute;right:14px;bottom:150px;display:none;border-radius:99px;padding:6px 12px;font-size:12px}
 .dot{display:inline-block;background:var(--gold);color:#02122c;border-radius:99px;font-size:11px;font-weight:700;padding:1px 7px;margin-left:6px;vertical-align:middle}
 </style>
 </head>
 <body>
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
 <main>
-<div class="card"><h2>Announcements <span id="bcn"></span></h2><div id="bcs"><span class="mut">Loading...</span></div></div>
-<div class="card"><h2>Messages with the TradeLens team <span id="mgn"></span></h2>
-  <div id="thread"><span class="mut">Loading...</span></div>
-  <textarea id="body" rows="3" maxlength="1000" placeholder="Write to the team"></textarea>
-  <div class="mut" style="margin:4px 0 8px;font-size:12px">The team answers here. Please never send your password or any account secret.</div>
+<div class="card" id="chat"><h2>Messages <span id="mgn"></span></h2>
+  <div id="thread" aria-live="polite"><span class="mut">Loading...</span></div>
+  <button id="jump" type="button">New messages &#8595;</button>
+  <textarea id="body" rows="2" maxlength="1000" placeholder="Write to the team" style="margin-top:8px"></textarea>
+  <div class="mut" style="margin:4px 0 8px;font-size:12px">The team answers here. Announcements from the team also appear here. Please never send your password or any account secret.</div>
   <button id="send">Send</button>
   <div id="err" class="err"></div>
 </div>
@@ -41,35 +48,90 @@ function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==u
 async function api(path,method,body){
   const r=await fetch(path,{method:method||'GET',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
   const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:('HTTP '+r.status));return d}
-const when=t=>new Date(t*1000).toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
-let busy=false;
-async function load(markRead){
+const T=$('thread');
+const clock=t=>new Date(t*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+function dayKey(t){const d=new Date(t*1000);return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate()}
+function dayLabel(t){
+  const d=new Date(t*1000),n=new Date(),y=new Date(Date.now()-864e5);
+  if(dayKey(t)===n.getFullYear()+'-'+n.getMonth()+'-'+n.getDate())return 'Today';
+  if(dayKey(t)===y.getFullYear()+'-'+y.getMonth()+'-'+y.getDate())return 'Yesterday';
+  return d.toLocaleDateString(undefined,{day:'numeric',month:'short',year:d.getFullYear()===n.getFullYear()?undefined:'numeric'})}
+
+// State: every item the page holds, keyed so nothing is shown twice. Items are drawn oldest first, newest at the bottom.
+const items=new Map();            // 'm12' or 'b3' -> {key,kind,id,t,...}
+let minM=0,minB=0,maxM=0,maxB=0,moreM=false,moreB=false,firstUnreadKey=null,busy=false,loadedOnce=false;
+
+function absorb(d,older){
+  const add=(kind,r)=>{const k=(kind==='m'?'m':'b')+r.id;if(items.has(k))return false;
+    items.set(k,{key:k,kind,id:r.id,t:r.created_at,body:r.body,title:r.title||'',sender:r.sender,fresh:kind==='m'?(r.sender==='admin'&&!r.read):!!r.unread});return true};
+  let n=0;
+  d.messages.forEach(r=>{if(add('m',r))n++;maxM=Math.max(maxM,r.id);minM=minM?Math.min(minM,r.id):r.id});
+  d.broadcasts.forEach(r=>{if(add('b',r))n++;maxB=Math.max(maxB,r.id);minB=minB?Math.min(minB,r.id):r.id});
+  if(older||!loadedOnce){moreM=!!d.more_messages;moreB=!!d.more_broadcasts}
+  return n;
+}
+function sorted(){return [...items.values()].sort((a,b)=>a.t-b.t||(a.kind===b.kind?a.id-b.id:(a.kind==='b'?-1:1)))}
+function bubble(i){
+  let x;
+  if(i.kind==='b'){x=el('div','msg ann');x.append(el('span','tag','Announcement'));if(i.title)x.append(el('b','',i.title))}
+  else x=el('div','msg '+(i.sender==='admin'?'team'+(i.fresh?' new':''):'me'));
+  x.append(document.createTextNode(i.body),el('small','',(i.kind==='m'?(i.sender==='admin'?'TradeLens team · ':'You · '):'')+clock(i.t)));
+  return x;
+}
+function draw(){
+  T.textContent='';
+  if(moreM||moreB){const b=el('button','','Load older messages');b.id='older';b.type='button';b.onclick=()=>loadOlder();T.append(b)}
+  const all=sorted();
+  if(!all.length){T.append(el('div','mut','No messages yet. Write to the team below and they will answer here.'));return}
+  let day=null;
+  all.forEach(i=>{
+    const k=dayKey(i.t);if(k!==day){day=k;const d=el('div','day');d.append(el('span','',dayLabel(i.t)));T.append(d)}
+    if(i.key===firstUnreadKey)T.append(el('div','newline','New'));
+    T.append(bubble(i));
+  });
+}
+const nearBottom=()=>T.scrollHeight-T.scrollTop-T.clientHeight<90;
+const toBottom=()=>{T.scrollTop=T.scrollHeight};
+
+async function firstLoad(){
+  const d=await api('/api/inbox');
+  absorb(d,false);loadedOnce=true;
+  const fresh=sorted().find(i=>i.fresh);firstUnreadKey=fresh?fresh.key:null;
+  draw();toBottom();requestAnimationFrame(toBottom);setTimeout(toBottom,150);   // open on the newest message
+  badge(d);
+  if(d.unread>0){await api('/api/inbox/read','POST');if(window.dlBadge)window.dlBadge()}
+}
+async function poll(){
+  const d=await api('/api/inbox?after_msg='+(maxM||0)+'&after_bc='+(maxB||0)+(maxM||maxB?'':'&x=1'));
+  const stick=nearBottom();
+  const n=absorb(d,false);
+  if(n){draw();if(stick||d.messages.some(m=>m.sender==='user'))toBottom();else $('jump').style.display='block'}
+  if(n&&!document.hidden&&d.unread>0){await api('/api/inbox/read','POST');if(window.dlBadge)window.dlBadge()}
+  badge(d);
+}
+function badge(d){$('mgn').textContent='';if(d&&d.unread>0)$('mgn').append(el('span','dot',d.unread+' new'))}
+async function loadOlder(){
   if(busy)return;busy=true;
   try{
-    const d=await api('/api/inbox');
-    const bs=$('bcs');bs.textContent='';
-    if(!d.broadcasts.length)bs.append(el('div','mut','No announcements yet.'));
-    d.broadcasts.forEach(b=>{const x=el('div','bc');if(b.title)x.append(el('b','',b.title));x.append(document.createTextNode(b.body),el('small','',when(b.created_at)));bs.append(x)});
-    const t=$('thread');t.textContent='';
-    if(!d.messages.length)t.append(el('div','mut','No messages yet. Write to the team below and they will answer here.'));
-    d.messages.forEach(m=>{const x=el('div','msg '+(m.sender==='admin'?'team'+(m.read?'':' new'):'me'));
-      x.append(document.createTextNode(m.body),el('small','',(m.sender==='admin'?'TradeLens team · ':'You · ')+when(m.created_at)));t.append(x)});
-    $('bcn').textContent='';$('mgn').textContent='';
-    if(d.broadcasts.some(b=>b.unread))$('bcn').append(el('span','dot','new'));
-    if(d.messages.some(m=>m.sender==='admin'&&!m.read))$('mgn').append(el('span','dot','new'));
-    if(markRead&&(d.unread>0)){await api('/api/inbox/read','POST');if(window.dlBadge)window.dlBadge()}
-  }catch(e){$('thread').textContent=e.message}
+    const d=await api('/api/inbox?before_msg='+(moreM?minM:0)+'&before_bc='+(moreB?minB:0));
+    const h=T.scrollHeight,top=T.scrollTop;
+    absorb(d,true);draw();
+    T.scrollTop=top+(T.scrollHeight-h);                 // stay where you were reading
+  }catch(e){$('err').textContent=e.message}
   busy=false;
 }
+T.addEventListener('scroll',()=>{if(nearBottom())$('jump').style.display='none';if(T.scrollTop<30&&(moreM||moreB)&&loadedOnce)loadOlder()});
+$('jump').onclick=()=>{toBottom();$('jump').style.display='none'};
 $('send').onclick=async()=>{
   const b=$('body'),text=b.value.trim();$('err').textContent='';
   if(!text)return;$('send').disabled=true;
-  try{await api('/api/inbox/send','POST',{body:text});b.value='';await load(false)}
+  try{await api('/api/inbox/send','POST',{body:text});b.value='';await poll();toBottom()}
   catch(e){$('err').textContent=e.message}
   $('send').disabled=false;
 };
-load(true);
-setInterval(()=>{if(!document.hidden)load(true)},30000);
+$('body').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();$('send').click()}});
+firstLoad().catch(e=>{T.textContent=e.message});
+setInterval(()=>{if(!document.hidden&&loadedOnce)poll().catch(()=>{})},30000);
 </script>
 </body>
 </html>

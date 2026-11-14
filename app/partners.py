@@ -402,9 +402,13 @@ async def api_become_start(request):
             _consent(con, u["id"], "partner_application", pid)
             _event(con, pid, u["id"], "master_handoff" if path == "master_link" else "already_tagged_declared",
                    {"consent": CONSENT_VERSION, "review_account": u["tier"] == "admin" or is_reviewer(u, s)})
+            code = con.execute("SELECT partner_code FROM tl_partners WHERE id=?", (pid,)).fetchone()["partner_code"]
             con.commit()
-            return s.get("master_link") if path == "master_link" else None
-    url = await asyncio.to_thread(work)
+            return (s.get("master_link") if path == "master_link" else None), code
+    url, code = await asyncio.to_thread(work)
+    if u["tier"] != "admin":
+        from . import admin_alerts
+        admin_alerts.partner(u["id"], code, "started")
     return JSONResponse({"redirect": url, "status": "application_initiated" if url else "awaiting_deriv_approval"})
 
 
@@ -425,7 +429,11 @@ async def api_become_submit(request):
                         (did or None, _now(), own["id"]))
             _event(con, own["id"], u["id"], "application_submitted", {"deriv_partner_id_given": bool(did)})
             con.commit()
-    await asyncio.to_thread(work)
+            return own["partner_code"]
+    code = await asyncio.to_thread(work)
+    if u["tier"] != "admin":
+        from . import admin_alerts
+        admin_alerts.partner(u["id"], code, "submitted")
     return JSONResponse({"ok": True, "status": "awaiting_deriv_approval"})
 
 

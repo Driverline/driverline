@@ -25,6 +25,12 @@
 .bc b{display:block}
 .bc small{color:var(--mut)}
 #thread{max-height:55vh;overflow-y:auto}
+#alerts{max-height:50vh;overflow-y:auto;overscroll-behavior:contain}
+.al{display:block;border:1px solid var(--line);border-left:3px solid #4fd8ff;border-radius:10px;padding:8px 10px;margin:6px 0;background:#06122f;overflow-wrap:anywhere}
+.al.new{border-left-color:var(--gold);background:#0a1d44}
+.al b{display:block}.al small{display:block;color:var(--mut);margin-top:2px}
+.al a{color:var(--gold2,#e8b84a);font-size:13px}
+.al .k{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#4fd8ff}
 </style>
 </head>
 <body>
@@ -32,6 +38,12 @@
 <main>
 <div class="mut" id="me"></div>
 <div id="note" class="mut"></div>
+
+<div class="card"><h2>Needs your attention <span id="an"></span></h2>
+  <div class="mut" style="margin-bottom:6px">Payments, MT5 details, Copy trading and AutoTrading switched on, and partner applications. The newest is at the bottom. You also get a push notification if notifications are on for this device.</div>
+  <div id="alerts"><span class="mut">Loading...</span></div>
+  <div style="margin-top:8px"><button id="aread" class="ghost" type="button">Mark all as read</button></div>
+</div>
 
 <div class="card"><h2>Broadcast to all members</h2>
   <div class="mut" style="margin-bottom:8px">One announcement every member sees in their Messages tab. It cannot be edited or recalled once sent. Plain text only.</div>
@@ -88,6 +100,28 @@ async function openThread(uid){
   if(d.messages.some(m=>m.sender==='user'&&!m.read)){await api('/inbox/'+uid+'/read','POST');if(window.dlBadge)window.dlBadge()}
   await loadConvs();
 }
+let alertItems=new Map(),alertMore=false,alertFirst=true;
+function drawAlerts(){
+  const box=$('alerts');box.textContent='';
+  const all=[...alertItems.values()].sort((a,b)=>a.id-b.id);
+  if(alertMore){const b=el('button','ghost','Load older');b.type='button';b.style.cssText='display:block;margin:0 auto 6px';b.onclick=()=>loadAlerts(true);box.append(b)}
+  if(!all.length){box.append(el('div','mut','Nothing yet. Alerts appear here when something needs you.'));return}
+  all.forEach(a=>{const x=el('div','al'+(a.read?'':' new'));x.append(el('span','k',a.label),el('b','',a.title),el('small','',a.body+' · '+when(a.created_at)));
+    if(a.link){const l=document.createElement('a');l.href=a.link;l.textContent='Open';x.append(l)}box.append(x)});
+}
+async function loadAlerts(older){
+  const first=older?Math.min(...alertItems.keys()):0;
+  const d=await api('/alerts'+(older&&first?'?before='+first:''));
+  const box=$('alerts'),stick=box.scrollHeight-box.scrollTop-box.clientHeight<90||alertFirst;
+  d.alerts.forEach(a=>alertItems.set(a.id,a));
+  if(alertFirst||older)alertMore=d.has_more;
+  const h=box.scrollHeight,top=box.scrollTop;drawAlerts();
+  if(older)box.scrollTop=top+(box.scrollHeight-h);else if(stick)box.scrollTop=box.scrollHeight;
+  alertFirst=false;
+  $('an').textContent='';if(d.unread)$('an').append(el('span','dot',d.unread+' new'));
+  if(window.dlBadge)window.dlBadge();
+}
+$('aread').onclick=async()=>{try{await api('/alerts/read','POST',{all:true});alertItems.forEach(a=>a.read=true);drawAlerts();$('an').textContent='';if(window.dlBadge)window.dlBadge()}catch(e){alert(e.message)}};
 async function loadBroadcasts(){
   const d=await api('/broadcasts'),box=$('bhist');box.textContent='';
   if(!d.broadcasts.length){box.append(el('div','mut','No broadcasts sent yet.'));return}
@@ -120,7 +154,7 @@ $('rsend').onclick=async()=>{
 };
 async function refresh(){
   if(busy)return;busy=true;
-  try{await loadConvs()}catch(e){$('note').className='err';$('note').textContent=e.message}
+  try{await loadConvs();await loadAlerts(false)}catch(e){$('note').className='err';$('note').textContent=e.message}
   busy=false;
 }
 loadBroadcasts().catch(e=>{$('bhist').textContent=e.message});refresh();

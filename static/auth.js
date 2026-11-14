@@ -27,7 +27,7 @@
     if(/^\/(login|reset)/.test(location.pathname))return;
     try{const r=await f('/api/inbox/summary');if(r.ok)setBadge(document.querySelector('nav.tabs a[href="/inbox.html"]'),(await r.json()).unread||0)}catch(x){}
     const ad=document.querySelector('nav.tabs a[href="/admin-messages.html"]');
-    if(ad)try{const r=await f('/api/admin/inbox/summary');if(r.ok)setBadge(ad,(await r.json()).unread||0)}catch(x){}
+    if(ad)try{const r=await f('/api/admin/inbox/summary');if(r.ok){const j=await r.json();setBadge(ad,(j.unread||0)+(j.alerts||0))}}catch(x){}
   };
   function tabs(){
     const h=document.querySelector('header');

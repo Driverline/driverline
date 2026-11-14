@@ -152,6 +152,8 @@ async def create(request):
         rid = con.insert("INSERT INTO mt5_requests(user_id,label,login,server,pw_enc,status,created_at,updated_at) VALUES(?,?,?,?,?,'new',?,?)",
                          (u["id"], label, login, server, enc, _now(), _now()))
         con.commit()
+    from . import admin_alerts
+    admin_alerts.mt5_request(u["id"], rid, login)
     return JSONResponse({"id": rid, "status": "new"}, headers={"Cache-Control": "no-store"})
 
 

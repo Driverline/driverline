@@ -710,6 +710,9 @@ async def me_settings(request):
                         (now, a["id"]))
         con.commit()
         out = get_settings(con, a["id"])
+    if enabled and not (row and row["enabled"]):
+        from . import admin_alerts
+        admin_alerts.feature_on("auto_on", u["id"], "AutoTrading", f"auto:{a['id']}:{now // 86400}")
     return JSONResponse({"ok": True, "account": a["id"], "settings": {k: out[k] for k in form_values(out)}, "pending": out["pending"],
                          "delay_hours": LOOSEN_DELAY // 3600})
 

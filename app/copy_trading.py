@@ -345,6 +345,7 @@ async def me_settings(request):
                                                f"{copy_plan.view(u)['per_day']:g} signals a day are used from your balance. Switch to Copy trading?", "need_switch": True},
                                     status_code=409)
             copy_plan.set_mode(u, "copy")
+        was_on = con.execute("SELECT enabled FROM copy_members WHERE account_id=?", (a["id"],)).fetchone()
         if enabled and not subscribed(con, u["id"]):
             raise HTTPException(403, "Copy trading needs the Copy Trading plan or Signals Pro (or Signals Plus if your Deriv account is linked to TradeLens). "
                                      "See the Billing tab.")
@@ -353,6 +354,9 @@ async def me_settings(request):
                     "risk_pct=excluded.risk_pct, max_risk_pct=excluded.max_risk_pct, updated_at=excluded.updated_at",
                     (a["id"], u["id"], 1 if enabled else 0, mode, fixed, risk, cap, _now()))
         con.commit()
+    if enabled and not (was_on and was_on["enabled"]):
+        from . import admin_alerts
+        admin_alerts.feature_on("copy_on", u["id"], "Copy trading", f"copy:{a['id']}:{_now() // 86400}")
     return JSONResponse({"ok": True, "account": a["id"]})
 
 

@@ -452,6 +452,10 @@ async def order_paid(request):
         if cur.rowcount != 1:
             raise HTTPException(409, "This order cannot be submitted (already sent, closed or not yours)")
         con.commit()
+        o = con.execute("SELECT product, amount_usd, ref FROM billing_orders WHERE id=?", (oid,)).fetchone()
+    if o:
+        from . import admin_alerts
+        admin_alerts.payment(user["id"], (CATALOG.get(o["product"]) or {}).get("label", o["product"]), float(o["amount_usd"] or 0), "USDT sent", o["ref"])
     return JSONResponse({"ok": True})
 
 
