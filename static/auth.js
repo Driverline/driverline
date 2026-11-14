@@ -36,7 +36,7 @@
     const n=document.createElement('nav');n.className='tabs';
     [['Home','/'],['Analysis','/analysis.html'],['Signals','/signals.html'],['Alerts','/alerts.html'],['Risk','/risk.html'],['Journal','/journal.html'],['MT5','/mt5.html'],['Billing','/billing.html'],['Messages','/inbox.html']].forEach(([t,u])=>{
       const a=document.createElement('a');a.href=u;a.textContent=t;if(u===here)a.className='on';n.append(a)});
-    h.after(n);
+    const w=document.createElement('div');w.className='dltop';h.before(w);w.append(h,n);   // logo and tabs stay together at the top while the page scrolls
   }
   function rewardsTab(){
     const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-rewards]'))return;
