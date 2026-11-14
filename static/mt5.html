@@ -175,7 +175,7 @@ async function loadCopy(sel){
     const r=await fetch('/api/copy/me'),d=await r.json();if(!r.ok)throw new Error(d.detail||'HTTP '+r.status);
     const a=(d.accounts||[]).find(x=>x.id===sel);box.textContent='';
     if(!a){box.append(el('div','mut','Add an MT5 account first.'));return}
-    box.append(el('div','mut','Trades the TradeLens admin flags are copied to this MT5 account while copy trading is on. Each copy is placed with its own stop loss and take profit, only if trading from the app is enabled on your account, and never if the lot would risk more than your limit.'));
+    box.append(el('div','mut','While copy trading is on, trades the TradeLens team takes on its master account are copied to this MT5 account, normally every new trade as it opens. Each copy is placed with its own stop loss and take profit, only if trading from the app is enabled on your account, and never if the lot would risk more than your limit. Your own equity protection and auto-manage settings apply to every copy.'));
     if(a.is_master){box.append(el('div','warn','This is the master account. It cannot copy itself.'));return}
     const P=d.plan||{};
     box.append(kv('Copy trading',d.subscribed?'Active until '+new Date(d.ends_at*1000).toISOString().slice(0,10):(P.swap?'Available instead of signals':'Not active'),d.subscribed?'win':'warn'));
@@ -192,7 +192,7 @@ async function loadCopy(sel){
           if(!r.ok)throw new Error(typeof dd.detail==='string'?dd.detail:'HTTP '+r.status);loadCopy(sel)}catch(e){alert(e.message)}};
       w.append(sw);box.append(w)}
     const en=document.createElement('input');en.type='checkbox';en.checked=a.enabled;
-    const lb=el('label','sw');lb.append(en,document.createTextNode(' Copy flagged trades to this account'));box.append(lb);
+    const lb=el('label','sw');lb.append(en,document.createTextNode(' Copy the TradeLens team\'s trades to this account'));box.append(lb);
     const md=document.createElement('select');[['fixed','Fixed lot'],['risk','Percentage risk']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;md.append(o)});md.value=a.mode;
     const fl=document.createElement('input');fl.type='number';fl.step='any';fl.inputMode='decimal';fl.placeholder='Empty = the smallest lot';fl.value=a.fixed_lots||'';
     const rk=document.createElement('input');rk.type='number';rk.step='any';rk.inputMode='decimal';rk.value=a.risk_pct||1;

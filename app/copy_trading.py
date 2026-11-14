@@ -1,7 +1,9 @@
-"""Copy trading: the admin FLAGS a trade on the master MT5 account and it is copied to every subscribed member who switched copying on.
+"""Copy trading: trades on the master MT5 account are copied to every subscribed member who switched copying on. Either the admin FLAGS a
+trade by hand, or (when Admin > Copy trading > "Copy every master trade automatically" is on) every NEW master trade is flagged by the
+system the moment it appears, so the followers' price is close to the master's. Both use the same rules below.
 
 Design (see docs/COPY_TRADING.md):
-- Only flagged trades are copied. A flag needs a stop loss and a take profit on the master position, so a copy is never unprotected.
+- Only flagged trades are copied (a flag is made by the admin, or automatically for every new master trade when that switch is on). A flag needs a stop loss and a take profit on the master position, so a copy is never unprotected.
 - Pull model: flagging creates one `copy_jobs` row per eligible follower account. Each follower's EA collects its own job on its next poll
   (dispatch), when sizing is worked out from that account's fresh balance and contract specs. Nothing is pushed and nothing waits for
   a busy account: a job that cannot be taken in JOB_TTL seconds is skipped (never executed late).
@@ -27,6 +29,9 @@ from .config import unit_per_lot
 
 JOB_TTL = 120            # seconds a copy job may wait for the follower's EA to collect it, then it is skipped
 TICKET_WAIT = 60         # seconds to look for the follower's new position before giving up on finding its ticket
+AUTO_GAP = 90            # automatic copying: if the master's EA had been silent this long, trades found open afterwards are NOT copied (we cannot know when they opened)
+AUTO_SLTP_WAIT = 45      # seconds a new master trade may take to get its stop loss and take profit before it is left uncopied
+AUTO_MAX_PER_DAY = 40    # safety brake: at most this many automatic copies per rolling 24 hours
 SUB_MAX_DAYS = 366
 MODES = ("fixed", "risk")
 OPEN_STATES = ("waiting", "sent", "open")
@@ -122,7 +127,7 @@ def _cmd_msg(con, cid) -> str:
 
 
 # ---------------------------------------------------------------- flagging (admin) -> one job per eligible follower
-def create_flag(con, admin_id: int, ticket: int) -> dict:
+def create_flag(con, admin_id: int, ticket: int, source: str = "manual") -> dict:
     mid = master_id(con)
     if not mid:
         raise HTTPException(409, "Choose the master MT5 account first")
@@ -142,8 +147,8 @@ def create_flag(con, admin_id: int, ticket: int) -> dict:
     if con.execute("SELECT 1 FROM copy_flags WHERE master_account_id=? AND master_ticket=? AND status='open'", (mid, ticket)).fetchone():
         raise HTTPException(409, "This trade is already flagged")
     now = _now()
-    fid = con.insert("INSERT INTO copy_flags(master_account_id,master_ticket,symbol,dir,open_price,sl,tp,status,admin_id,created_at) "
-                     "VALUES(?,?,?,?,?,?,?,'open',?,?)", (mid, ticket, str(pos.get("symbol")), d, op, sl, tp, admin_id, now))
+    fid = con.insert("INSERT INTO copy_flags(master_account_id,master_ticket,symbol,dir,open_price,sl,tp,status,admin_id,created_at,source) "
+                     "VALUES(?,?,?,?,?,?,?,'open',?,?,?)", (mid, ticket, str(pos.get("symbol")), d, op, sl, tp, admin_id, now, source))
     n = 0
     for m in con.execute("SELECT m.account_id, m.user_id FROM copy_members m JOIN ea_accounts a ON a.id=m.account_id "
                          "WHERE m.enabled=1 AND m.account_id<>?", (mid,)).fetchall():
@@ -236,11 +241,104 @@ def dispatch(con, aid: int):
     con.commit()
 
 
-def on_report(con, aid: int, state: dict):
+# ---------------------------------------------------------------- automatic copying of every master trade
+def auto_on(con) -> bool:
+    r = con.execute("SELECT v FROM ea_meta WHERE k='copy_auto'").fetchone()
+    return bool(r and r["v"] == "1")
+
+
+def _seen(con, mid) -> dict:
+    return {int(r["ticket"]): dict(r) for r in con.execute("SELECT * FROM copy_auto_seen WHERE master_account_id=?", (mid,)).fetchall()}
+
+
+def _mark(con, mid, tk, action, now, pos=None, note=None, flag_id=None):
+    sym = str(pos.get("symbol")) if pos else None
+    d = ("BUY" if str(pos.get("type")).upper() == "BUY" else "SELL") if pos else None
+    con.execute("INSERT INTO copy_auto_seen(master_account_id,ticket,symbol,dir,action,note,flag_id,first_seen,updated_at) VALUES(?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(master_account_id,ticket) DO UPDATE SET action=excluded.action, note=excluded.note, flag_id=excluded.flag_id, "
+                "updated_at=excluded.updated_at", (mid, tk, sym, d, action, note, flag_id, now, now))
+
+
+def auto_baseline(con, mid: int, state: dict, why: str):
+    """Every trade open right now stays the master's own: it is recorded as seen and NEVER copied. Used when automatic copying is switched on
+    and after the master's EA was offline (we cannot tell when those trades were opened, and a late copy would be at a different price)."""
+    now = _now()
+    seen = _seen(con, mid)
+    for p in (state or {}).get("positions", []):
+        tk = int(_f(p.get("ticket")))
+        if tk not in seen:
+            _mark(con, mid, tk, "baseline", now, p, why)
+    con.commit()
+
+
+def _auto_skip(con, mid, tk, pos, now, why):
+    _mark(con, mid, tk, "skipped", now, pos, why)
+    con.commit()                                                      # the alert uses its own connection: do not hold this one's write open
+    try:
+        from . import admin_alerts
+        admin_alerts.copy_skipped(mid, tk, str(pos.get("symbol")), why)
+    except Exception as e:
+        print(f"[copy] could not raise the skipped-trade alert: {type(e).__name__}", flush=True)
+
+
+def auto_follow(con, mid: int, state: dict, prev_seen):
+    """The master's report arrived: copy every NEW master trade automatically, as if the admin had flagged it that second.
+    Same rules as a manual flag (stop loss and take profit required, followers decide their own size and limits), plus safeguards:
+    nothing found after an offline gap, nothing already open when it was switched on, and a daily brake."""
+    now = _now()
+    acct = con.execute("SELECT user_id FROM ea_accounts WHERE id=?", (mid,)).fetchone()
+    if not acct:
+        return
+    positions = [p for p in state.get("positions", []) if isinstance(p, dict)]
+    if not prev_seen or now - prev_seen > AUTO_GAP:
+        auto_baseline(con, mid, state, "Found open after the master account had been offline, so it was not copied")
+        return
+    seen = _seen(con, mid)
+    for p in positions:
+        tk = int(_f(p.get("ticket")))
+        row = seen.get(tk)
+        if row and row["action"] != "waiting":
+            continue                                                  # already handled: copied, skipped, or the master's earlier trade
+        sl, tp = _f(p.get("sl")), _f(p.get("tp"))
+        if not (sl > 0 and tp > 0):
+            first = row["first_seen"] if row else now
+            if not row:
+                _mark(con, mid, tk, "waiting", now, p, "Waiting for a stop loss and a take profit")
+            elif now - first > AUTO_SLTP_WAIT:
+                _auto_skip(con, mid, tk, p, now, f"No stop loss and take profit within {AUTO_SLTP_WAIT} s, so it was not copied (copies are never placed without them). "
+                                               "You can still flag it by hand once both are set.")
+            continue
+        made = con.execute("SELECT COUNT(*) AS c FROM copy_flags WHERE source='auto' AND created_at>?", (now - 86400,)).fetchone()["c"]
+        if made >= AUTO_MAX_PER_DAY:
+            _auto_skip(con, mid, tk, p, now, f"Safety brake: {AUTO_MAX_PER_DAY} automatic copies in 24 hours already")
+            continue
+        try:
+            r = create_flag(con, acct["user_id"], tk, source="auto")
+            _mark(con, mid, tk, "flagged", now, p, f"Copied to {r['followers']} follower account(s)", r["id"])
+        except HTTPException as e:
+            if e.status_code == 409 and "already flagged" in str(e.detail):
+                _mark(con, mid, tk, "flagged", now, p, "Already flagged")
+            else:
+                con.raw.rollback()
+                _auto_skip(con, mid, tk, p, now, str(e.detail))
+    con.commit()
+    # forget closed master trades after a while so the table stays small
+    if now % 50 == 0:
+        con.execute("DELETE FROM copy_auto_seen WHERE master_account_id=? AND updated_at<?", (mid, now - 14 * 86400))
+        con.commit()
+
+
+def on_report(con, aid: int, state: dict, prev_seen=None):
     """Called after an account's report was stored."""
     now = _now()
     mid = master_id(con)
     have = _tickets(state)
+    if mid == aid and auto_on(con):                                  # the master opened something new: copy it now
+        try:
+            auto_follow(con, mid, state, prev_seen)
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[copy] automatic copy failed: {type(e).__name__}: {e}", flush=True)
     if mid == aid:                                                   # the master: did a flagged trade close?
         for f in con.execute("SELECT id, master_ticket FROM copy_flags WHERE master_account_id=? AND status='open'", (aid,)).fetchall():
             if f["master_ticket"] not in have:
@@ -387,8 +485,16 @@ async def admin_get(request):
         followers = sum(1 for m in con.execute("SELECT user_id FROM copy_members WHERE enabled=1").fetchall() if subscribed(con, m["user_id"]))
         subs = [{"user_id": r["user_id"], "email": r["email"], "ends_at": r["ends_at"], "note": r["note"], "active": r["ends_at"] > now}
                 for r in con.execute("SELECT s.user_id, s.ends_at, s.note, u.email FROM copy_subs s JOIN users u ON u.id=s.user_id ORDER BY s.ends_at DESC LIMIT 200").fetchall()]
+        auto = {"enabled": auto_on(con), "max_per_day": AUTO_MAX_PER_DAY, "recent": []}
+        since = con.execute("SELECT v FROM ea_meta WHERE k='copy_auto_since'").fetchone()
+        auto["since"] = int(since["v"]) if since and str(since["v"]).isdigit() else None
+        if mid:
+            auto["recent"] = [dict(r) for r in con.execute(
+                "SELECT ticket, symbol, dir, action, note, flag_id, first_seen FROM copy_auto_seen WHERE master_account_id=? AND action<>'baseline' "
+                "ORDER BY first_seen DESC LIMIT 12", (mid,)).fetchall()]
+            auto["last_24h"] = con.execute("SELECT COUNT(*) AS c FROM copy_flags WHERE source='auto' AND created_at>?", (now - 86400,)).fetchone()["c"]
     return JSONResponse({"master": master, "my_accounts": [{"id": a["id"], "label": a["label"]} for a in mine], "positions": positions,
-                         "flags": flags, "followers": followers, "subscribers": subs, "now": now})
+                         "flags": flags, "followers": followers, "subscribers": subs, "now": now, "auto": auto})
 
 
 async def admin_master(request):
@@ -402,6 +508,28 @@ async def admin_master(request):
         con.execute("INSERT INTO ea_meta(k,v) VALUES('copy_master',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(a["id"]),))
         con.commit()
     return JSONResponse({"ok": True, "master": a["id"]})
+
+
+async def admin_auto(request):
+    """Switch automatic copying of every master trade on or off. Switching on: trades already open stay the master's own."""
+    u = auth.require_admin(request)
+    d = await auth._json(request)
+    if not isinstance(d.get("enabled"), bool):
+        raise HTTPException(422, "enabled must be true or false")
+    with closing(ea.db()) as con:
+        mid = master_id(con)
+        if d["enabled"]:
+            if not mid:
+                raise HTTPException(409, "Choose the master MT5 account first")
+            row = con.execute("SELECT * FROM ea_accounts WHERE id=?", (mid,)).fetchone()
+            st, _ = _state(con, mid)
+            if not row or not st or not ea._connected(dict(row)):
+                raise HTTPException(409, "The master MT5 account is not connected right now. Connect it first, so the trades open now can be left alone")
+            auto_baseline(con, mid, st, "Already open when automatic copying was switched on, so it was not copied")
+            con.execute("INSERT INTO ea_meta(k,v) VALUES('copy_auto_since',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(_now()),))
+        con.execute("INSERT INTO ea_meta(k,v) VALUES('copy_auto',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", ("1" if d["enabled"] else "0",))
+        con.commit()
+    return JSONResponse({"ok": True, "enabled": d["enabled"]})
 
 
 async def admin_flag(request):
@@ -475,6 +603,7 @@ routes = [
     Route("/api/copy/me/settings", me_settings, methods=["POST"]),
     Route("/api/copy/admin", admin_get, methods=["GET"]),
     Route("/api/copy/admin/master", admin_master, methods=["POST"]),
+    Route("/api/copy/admin/auto", admin_auto, methods=["POST"]),
     Route("/api/copy/admin/flag", admin_flag, methods=["POST"]),
     Route("/api/copy/admin/flag/{fid:int}/close", admin_flag_close, methods=["POST"]),
     Route("/api/copy/admin/flag/{fid:int}", admin_flag_jobs, methods=["GET"]),

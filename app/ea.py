@@ -58,6 +58,8 @@ EA_SCHEMA = """
     CREATE TABLE IF NOT EXISTS copy_flags(id {ID}, master_account_id INTEGER NOT NULL, master_ticket BIGINT NOT NULL, symbol TEXT NOT NULL,
         dir TEXT NOT NULL, open_price DOUBLE PRECISION NOT NULL, sl DOUBLE PRECISION NOT NULL, tp DOUBLE PRECISION NOT NULL,
         status TEXT NOT NULL, admin_id INTEGER, created_at BIGINT NOT NULL, closed_at BIGINT);
+    CREATE TABLE IF NOT EXISTS copy_auto_seen(master_account_id INTEGER NOT NULL, ticket BIGINT NOT NULL, symbol TEXT, dir TEXT,
+        action TEXT NOT NULL, note TEXT, flag_id INTEGER, first_seen BIGINT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY(master_account_id, ticket));
     CREATE TABLE IF NOT EXISTS copy_jobs(id {ID}, flag_id INTEGER NOT NULL, account_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
         status TEXT NOT NULL, note TEXT, command_id INTEGER, lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, ticket BIGINT, before TEXT,
         symbol TEXT, dir TEXT, close_req INTEGER NOT NULL DEFAULT 0, close_cmd INTEGER, close_tries INTEGER NOT NULL DEFAULT 0,
@@ -88,6 +90,8 @@ def _migrate(con):
         con.add_column(t, c, ddl)
     con.execute("CREATE INDEX IF NOT EXISTS ix_auto_events_acct ON auto_events(account_id, kind, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_flags_status ON copy_flags(status)")
+    con.add_column("copy_flags", "source", "TEXT")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_copy_auto_seen_acct ON copy_auto_seen(master_account_id, first_seen)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_mt5_requests_status ON mt5_requests(status, user_id)")
     # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and
     # auto-manage settings, so a connected EA keeps working untouched. The old tables are left as they are (rollback safety).
@@ -294,7 +298,7 @@ async def report(request):
         con.commit()
         try:                                       # copy trading: follow flagged trades / follow the master closing (never blocks the EA)
             from . import copy_trading
-            copy_trading.on_report(con, aid, state)
+            copy_trading.on_report(con, aid, state, prev_seen=r["last_seen"])
         except Exception as e:
             con.raw.rollback()
             print(f"[copy] report hook failed: {type(e).__name__}: {e}", flush=True)

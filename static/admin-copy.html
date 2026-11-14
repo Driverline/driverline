@@ -28,8 +28,17 @@ async function load(){
   const root=$('root');let d;
   try{d=await api('')}catch(e){root.textContent=e.message;return}
   root.textContent='';
-  const head=el('div','card');head.append(el('h2','','Copy trading'),el('p','mut','Flag a trade on the master account and it is copied to subscribed members who switched copying on. Only flagged trades are copied, and only if they have a stop loss and a take profit.'));
+  const head=el('div','card');head.append(el('h2','','Copy trading'),el('p','mut','Trades on the master account are copied to subscribed members who switched copying on, only if they have a stop loss and a take profit. Switch on automatic copying below to copy every new master trade the moment it opens, or flag trades by hand.'));
   msg=el('div','mut');head.append(msg);root.append(head);
+
+  const A=d.auto||{},ac=el('div','card');ac.append(el('h2','','Copy every master trade automatically'));
+  ac.append(el('p','mut','When ON, every NEW trade opened on the master account is flagged for copying by the system the moment it appears, so followers get a price close to yours. Same rules as a flag: a stop loss and a take profit are required, and each follower keeps their own lot size, risk limit, daily loss limit and equity protection. Trades already open when you switch it on, or found after the master account was offline, are never copied. A new trade without both stop loss and take profit within 45 seconds is left uncopied and you get an alert. At most '+A.max_per_day+' automatic copies per 24 hours.'));
+  ac.append(kv('Status',A.enabled?'ON'+(A.since?' since '+day(A.since):''):'off',A.enabled?'win':'mut'),kv('Automatic copies, last 24 hours',String(A.last_24h||0)));
+  const ab=el('button',A.enabled?'ghost':'',A.enabled?'Switch off automatic copying':'Switch on automatic copying');ab.style.margin='8px 0';
+  ab.onclick=()=>{const t=A.enabled?'Stop copying new master trades automatically? Trades already flagged keep running. You can still flag by hand.':'Switch on automatic copying? From now on EVERY new trade on the master account is copied to all subscribed followers. Trades open right now are not copied.';if(confirm(t))act(()=>api('/auto','POST',{enabled:!A.enabled}))};
+  ac.append(ab);
+  if((A.recent||[]).length){ac.append(el('h3','','Latest master trades seen'));A.recent.forEach(x=>ac.append(el('div',x.action==='skipped'?'warn':'mut',day(x.first_seen)+' | '+(x.symbol||'?')+' '+(x.dir||'')+' #'+x.ticket+' | '+x.action+(x.note?' | '+x.note:''))))}
+  root.append(ac);
 
   const au=el('div','card');au.append(el('h2','','AutoTrading access (private test)'),el('p','mut','AutoTrading places trades from signals on a member\'s own MT5. It is visible only to admins and the testers listed here (paid members). There is no public mode yet.'));
   try{const ar=await fetch('/api/auto/admin'),ad=await ar.json();if(!ar.ok)throw new Error(ad.detail||'HTTP '+ar.status);
@@ -56,7 +65,7 @@ async function load(){
   d.my_accounts.forEach(a=>{const o=document.createElement('option');o.value=a.id;o.textContent=a.label;sel.append(o)});
   if(d.master)sel.value=d.master.id;
   const sv=el('button','','Use as master');sv.style.marginTop='8px';
-  sv.onclick=()=>{if(!sel.value)return;if(!confirm('Use this account as the copy-trading master? Members will copy the trades you flag on it.'))return;act(()=>api('/master','POST',{account:Number(sel.value)}))};
+  sv.onclick=()=>{if(!sel.value)return;if(!confirm('Use this account as the copy-trading master? Members will copy the trades you flag on it, and every new trade on it if automatic copying is on.'))return;act(()=>api('/master','POST',{account:Number(sel.value)}))};
   m.append(sel,sv);
   if(d.master)m.append(kv('Master',d.master.label+(d.master.connected?' (connected)':' (not connected)'),d.master.connected?'win':'warn'));
   m.append(kv('Active followers',String(d.followers)));root.append(m);
