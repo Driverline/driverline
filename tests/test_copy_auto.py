@@ -136,4 +136,63 @@ class AutoCopy(T.World, unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(argv=[sys.argv[0], "AutoCopy"])
+    unittest.main(argv=[sys.argv[0]])
+
+
+class NotCopiedAndNeeds(T.World, unittest.TestCase):
+    def setUp(self):
+        q("DELETE FROM copy_auto_seen")
+        q("DELETE FROM ea_meta WHERE k IN ('copy_auto','copy_auto_since')")
+        q("DELETE FROM copy_flags WHERE source='auto'")
+        super().setUp()
+
+    def test_an_alert_when_every_follower_refuses_a_master_trade(self):
+        from contextlib import closing
+        from app import admin_alerts
+        with closing(admin_alerts.db()) as con:
+            con.execute("DELETE FROM admin_alerts")
+            con.commit()
+        auto(self)
+        eareport(self.km, "9000", [pos(900), pos(920)])
+        fid = self.flags()[0]["id"] if hasattr(self, "flags") else q("SELECT id FROM copy_flags WHERE source='auto' ORDER BY id DESC")[0]["id"]
+        q("UPDATE copy_jobs SET status='skipped', note='Lot 4 would risk 48% of your balance, above your 10% limit' WHERE flag_id=?", fid)
+        eareport(self.km, "9000", [pos(900), pos(920)])
+        with closing(admin_alerts.db()) as con:
+            rows = con.execute("SELECT title, body FROM admin_alerts WHERE kind='copy_none'").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertIn("2x", rows[0]["body"])
+        eareport(self.km, "9000", [pos(900), pos(920)])
+        with closing(admin_alerts.db()) as con:                                                   # once only
+            self.assertEqual(con.execute("SELECT COUNT(*) AS c FROM admin_alerts WHERE kind='copy_none'").fetchone()["c"], 1)
+
+    def test_no_alert_while_a_follower_still_has_the_copy_pending_or_placed(self):
+        from contextlib import closing
+        from app import admin_alerts
+        with closing(admin_alerts.db()) as con:
+            con.execute("DELETE FROM admin_alerts")
+            con.commit()
+        auto(self)
+        eareport(self.km, "9000", [pos(900), pos(921)])
+        fid = q("SELECT id FROM copy_flags WHERE source='auto' ORDER BY id DESC")[0]["id"]
+        q("UPDATE copy_jobs SET status='skipped', note='x' WHERE flag_id=? AND account_id=?", fid, self.f1["a"])      # f2 is still waiting
+        eareport(self.km, "9000", [pos(900), pos(921)])
+        with closing(admin_alerts.db()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) AS c FROM admin_alerts WHERE kind='copy_none'").fetchone()["c"], 0)
+
+    def test_what_a_small_account_needs_is_shown_to_the_member(self):
+        spec = {"symbol": "Volatility 50 Index", "vol_min": 4.0, "vol_step": 0.01, "vol_max": 3700, "tick_size": 0.0001, "tick_value": 0.0001, "contract_size": 1.0, "unit": 1.0}
+        q("INSERT INTO copy_flags(master_account_id,master_ticket,symbol,dir,open_price,sl,tp,status,created_at,source) VALUES(?,?,?,?,?,?,?,'closed',?,?)",
+          self.m, 777, "Volatility 50 Index", "SELL", 84.7754, 85.2929, 83.4382, int(time.time()), "auto")
+        from contextlib import closing
+        with closing(ea.db()) as con:
+            needs = CT.needs_for(con, [spec], 2.08, 10.0)
+            ok = CT.needs_for(con, [spec], 100.0, 10.0)
+            none = CT.needs_for(con, [spec], 2.08, None)
+        n = needs[0]
+        self.assertEqual((n["symbol"], n["min_lot"], n["ok"]), ("Volatility 50 Index", 4.0, False))
+        self.assertAlmostEqual(n["risk_at_min"], 2.07, places=2)
+        self.assertAlmostEqual(n["min_balance"], 20.7, places=1)
+        self.assertTrue(ok[0]["ok"])
+        self.assertTrue(none[0]["ok"] and none[0]["min_balance"] is None)
+        r = cl(self.f1["u"]).get("/api/copy/me").json()
+        self.assertIn("needs", r["accounts"][0])

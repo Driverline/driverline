@@ -27,7 +27,7 @@ SCHEMA = """
     CREATE UNIQUE INDEX IF NOT EXISTS ux_admin_alert_ref ON admin_alerts(kind, ref);
     CREATE INDEX IF NOT EXISTS ix_admin_alert_unread ON admin_alerts(read_at, id)"""
 
-KINDS = {"copy_skip": "Copy skipped", "payment": "Payment", "mt5_request": "MT5 details", "copy_on": "Copy trading", "auto_on": "AutoTrading", "partner": "Partner"}
+KINDS = {"copy_none": "Not copied", "copy_skip": "Copy skipped", "payment": "Payment", "mt5_request": "MT5 details", "copy_on": "Copy trading", "auto_on": "AutoTrading", "partner": "Partner"}
 PAGE = 30
 KEEP_DAYS = 90
 
@@ -136,6 +136,10 @@ def feature_on(kind, user_id, what, key):
 
 def copy_skipped(master_id, ticket, symbol, why):
     notify("copy_skip", f"Master trade not copied: {symbol}", str(why)[:300], None, f"{master_id}:{ticket}", "/admin-copy.html")
+
+
+def copy_unplaced(flag_id, symbol, followers, why):
+    notify("copy_none", f"No follower copied {symbol}", f"{followers} follower account(s) refused it. {why}"[:400], None, f"flag:{flag_id}", "/admin-copy.html")
 
 
 def partner(user_id, partner_code, stage):

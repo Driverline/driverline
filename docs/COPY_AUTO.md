@@ -22,3 +22,8 @@ Members' wording changed: the MT5 tab and the Terms now say the team's trades (n
 
 ## Rollback
 Switch OFF in Admin. The patch can be reverted; the added table and column are additive.
+
+## Not copied by anyone, and what a member needs
+
+* **Admin alert "No follower copied <symbol>"**: raised once per master trade when it has follower jobs and every one is skipped or failed. The alert lists the most common reasons. No alert when there are no followers, or while any follower's copy is still waiting, sent or open.
+* **Member message** (MT5 page, copy box, "Can this account copy the team's trades?"): for up to four symbols the team traded recently, the smallest lot, what one smallest-lot trade risks on that account, the balance needed at the member's risk limit, and the current balance. Served inside `GET /api/copy/me` as `accounts[].needs`. Nothing is placed or changed by it.

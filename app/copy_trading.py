@@ -328,6 +328,44 @@ def auto_follow(con, mid: int, state: dict, prev_seen):
         con.commit()
 
 
+def alert_unplaced(con, now: int):
+    """A recent master trade that EVERY follower refused or failed: tell the admin once, with the reasons, so a trade nobody copied is never a silent surprise."""
+    from collections import Counter
+    for f in con.execute("SELECT id, symbol FROM copy_flags WHERE created_at>? ORDER BY id DESC LIMIT 10", (now - 1200,)).fetchall():
+        jobs = con.execute("SELECT status, note FROM copy_jobs WHERE flag_id=?", (f["id"],)).fetchall()
+        if not jobs or any(j["status"] not in ("skipped", "failed") for j in jobs):
+            continue
+        why = Counter((j["note"] or j["status"])[:110] for j in jobs).most_common(2)
+        con.commit()                                                  # the alert uses its own connection
+        try:
+            from . import admin_alerts
+            admin_alerts.copy_unplaced(f["id"], f["symbol"], len(jobs), "; ".join(f"{n}x {w}" for w, n in why))
+        except Exception as e:
+            print(f"[copy] could not raise the not-copied alert: {type(e).__name__}", flush=True)
+
+
+def needs_for(con, spec_list, balance: float, cap) -> list:
+    """For the symbols the master traded recently: what the smallest lot risks on THIS account and the balance it needs at the member's limit."""
+    out, seen = [], set()
+    for f in con.execute("SELECT symbol, open_price, sl FROM copy_flags ORDER BY id DESC LIMIT 40").fetchall():
+        if f["symbol"] in seen or len(out) >= 4:
+            continue
+        seen.add(f["symbol"])
+        want = journal._norm(f["symbol"])
+        spec = next((x for x in spec_list if x.get("symbol") == f["symbol"]), None) or next((x for x in spec_list if journal._norm(str(x.get("symbol", ""))) == want), None)
+        sd = abs(_f(f["open_price"]) - _f(f["sl"]))
+        if not spec or not sd > 0:
+            continue
+        vmin, unit = _f(spec.get("vol_min")), unit_per_lot(spec)
+        if not (vmin > 0 and unit > 0):
+            continue
+        risk = vmin * sd * unit
+        need = risk / (cap / 100.0) if cap and cap > 0 else None
+        out.append({"symbol": f["symbol"], "min_lot": vmin, "risk_at_min": round(risk, 2), "min_balance": round(need, 2) if need else None,
+                    "balance": round(balance, 2), "ok": bool(need is None or balance >= need)})
+    return out
+
+
 def on_report(con, aid: int, state: dict, prev_seen=None):
     """Called after an account's report was stored."""
     now = _now()
@@ -345,6 +383,11 @@ def on_report(con, aid: int, state: dict, prev_seen=None):
                 con.execute("UPDATE copy_flags SET status='closed', closed_at=? WHERE id=?", (now, f["id"]))
                 request_close(con, f["id"])
         con.commit()
+        try:
+            alert_unplaced(con, now)
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[copy] not-copied check failed: {type(e).__name__}", flush=True)
     for j in con.execute("SELECT * FROM copy_jobs WHERE account_id=? AND status IN ('sent','open')", (aid,)).fetchall():
         j = dict(j)
         if j["status"] == "sent":
@@ -411,7 +454,10 @@ async def me_get(request):
         for a in ea.user_accounts(con, u["id"]):
             m = con.execute("SELECT * FROM copy_members WHERE account_id=?", (a["id"],)).fetchone()
             rules = ea.get_rules(con, a["id"])
-            accts.append({"id": a["id"], "label": a["label"], "is_master": a["id"] == mid, "enabled": bool(m and m["enabled"]),
+            st, specs = _state(con, a["id"])
+            cap = (m["max_risk_pct"] if m and m["max_risk_pct"] else None) or _f(rules.get("max_risk_pct"))
+            needs = [] if a["id"] == mid else needs_for(con, specs, _f(((st or {}).get("account") or {}).get("balance")), cap)
+            accts.append({"id": a["id"], "label": a["label"], "is_master": a["id"] == mid, "enabled": bool(m and m["enabled"]), "needs": needs,
                           "mode": m["mode"] if m else "fixed", "fixed_lots": m["fixed_lots"] if m else None,
                           "risk_pct": m["risk_pct"] if m else 1.0, "max_risk_pct": (m["max_risk_pct"] if m and m["max_risk_pct"] else None),
                           "own_limit_pct": rules["max_risk_pct"]})

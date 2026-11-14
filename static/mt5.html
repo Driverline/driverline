@@ -207,6 +207,10 @@ async function loadCopy(sel){
       if(!rr.ok)throw new Error(typeof dd.detail==='string'?dd.detail:'HTTP '+rr.status);
       mg.className='win';mg.textContent='Saved.';loadCopy(sel)}catch(e){mg.className='err';mg.textContent=e.message}};
     box.append(sv,mg);
+    if((a.needs||[]).length){box.append(el('h2','','Can this account copy the team\'s trades?'),
+      el('div','mut','For the symbols the team traded recently. A copy is only placed when the smallest allowed lot risks no more than your limit, so a small balance cannot copy some symbols. This protects you.'));
+      a.needs.forEach(n=>{box.append(kv(n.symbol+' (smallest lot '+n.min_lot+')',n.ok?'Your balance is enough':'Balance too small',n.ok?'win':'warn'));
+        box.append(el('div','mut','One smallest-lot trade risks about $'+n.risk_at_min.toFixed(2)+(n.min_balance?'. At your limit you need about $'+n.min_balance.toFixed(2)+'; your balance is $'+n.balance.toFixed(2)+'.':'.')))})}
     const mine=(d.recent||[]).filter(j=>j.account_id===sel).slice(0,8);
     if(mine.length){box.append(el('h2','','Recent copies'));
       mine.forEach(j=>{box.append(kv(j.symbol+' '+j.dir+(j.lots?' '+j.lots+' lot':''),j.status,j.status==='skipped'||j.status==='failed'?'warn':(j.status==='closed'?'mut':'win')));if(j.note)box.append(el('div','mut',j.note))})}
