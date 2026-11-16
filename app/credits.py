@@ -44,7 +44,12 @@ SCHEMA = """
     CREATE TABLE IF NOT EXISTS payment_events(id {ID}, order_id BIGINT, provider_payment_id TEXT, source TEXT NOT NULL,
         kind TEXT NOT NULL, provider_status TEXT, detail TEXT, dedupe_key TEXT UNIQUE, admin_id INTEGER, created_at BIGINT NOT NULL);
     CREATE INDEX IF NOT EXISTS ix_pevents_order ON payment_events(order_id, id);
-    CREATE INDEX IF NOT EXISTS ix_pevents_kind ON payment_events(kind, id)"""
+    CREATE INDEX IF NOT EXISTS ix_pevents_kind ON payment_events(kind, id);
+    CREATE TABLE IF NOT EXISTS wallet_balances(user_id INTEGER PRIMARY KEY, balance_cents BIGINT NOT NULL DEFAULT 0 CHECK (balance_cents >= 0));
+    CREATE TABLE IF NOT EXISTS wallet_ledger(id {ID}, user_id INTEGER NOT NULL, delta_cents BIGINT NOT NULL, kind TEXT NOT NULL,
+        ref TEXT NOT NULL, note TEXT, admin_id INTEGER, created_at BIGINT NOT NULL);
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_wallet_ledger_ref ON wallet_ledger(user_id, kind, ref);
+    CREATE INDEX IF NOT EXISTS ix_wallet_ledger_user ON wallet_ledger(user_id, id)"""
 
 WELCOME = 3            # one-time welcome signals for a new member. A partner member ends with 5 in total instead (perks.py)
 GRANT_LOCK = threading.Lock()   # the welcome and the partner signals are decided under this lock, so a member never gets both in full
@@ -61,7 +66,15 @@ CATALOG = {
     # (they are balance); the days do not roll over (copy trading needs a VPS, which is rented per period).
     "vaultlite": {"label": "Signal Vault Lite", "usd": 50, "signals": 2500, "days": 30, "notify": True, "mt5": True, "copy": True},
     "vault": {"label": "Signal Vault", "usd": 100, "signals": 5500, "days": 90, "notify": True, "mt5": True, "copy": True},
+    # Wallet top-ups (wallet.py). Not shop items: they travel through the same payment channels as any order, and grant_product adds the
+    # money to the member's wallet instead of signals. billing_view keeps them out of the shop list.
+    "wallet10": {"label": "Wallet top-up $10", "usd": 10, "signals": 0, "days": 0, "notify": False, "mt5": False, "wallet": True},
+    "wallet25": {"label": "Wallet top-up $25", "usd": 25, "signals": 0, "days": 0, "notify": False, "mt5": False, "wallet": True},
+    "wallet50": {"label": "Wallet top-up $50", "usd": 50, "signals": 0, "days": 0, "notify": False, "mt5": False, "wallet": True},
+    "wallet100": {"label": "Wallet top-up $100", "usd": 100, "signals": 0, "days": 0, "notify": False, "mt5": False, "wallet": True},
+    "wallet250": {"label": "Wallet top-up $250", "usd": 250, "signals": 0, "days": 0, "notify": False, "mt5": False, "wallet": True},
 }
+WALLET_KEYS = tuple(k for k, v in CATALOG.items() if v.get("wallet"))
 # Free plans given by perks.py. They are not products: they cannot be bought and do not appear in the shop.
 # "partner_notify" is no longer given to anyone new (perks v2); it stays here so the ones already given keep working until they end.
 GRANTS = {
@@ -76,6 +89,8 @@ SETTING_KEYS = ("pay_trc20", "pay_bep20", "bank_name", "bank_account_name", "ban
                 "support", "deriv_enabled", "deriv_app_id", "deriv_ib_link", "deriv_cashier_url", "nowpayments_enabled")
 AUTO_METHOD = "nowpayments"      # billing_orders.method of automatic crypto orders. Deliberately NOT in METHODS: the manual
                                  # order endpoint refuses it, so only nowpay.py can create or settle such an order.
+WALLET_METHOD = "wallet"         # billing_orders.method of an order paid from the wallet balance (wallet.py). Created already approved, in the same
+                                 # transaction as the debit, so no manual or provider flow can ever act on it.
 AUTO_LABEL = "USDT (TRC20), automatic"
 NAIRA_METHOD = "moniepoint"      # billing_orders.method of "Pay with Naira" orders (naira.py): a bank transfer to the Moniepoint business
                                  # account that an administrator verifies. Also NOT in METHODS: only naira.py can create or settle one.
@@ -167,6 +182,9 @@ def grant_product(con, uid: int, product: str, order_id: int, ref: str, admin_id
     Does NOT commit. False means the signals for this order were already credited (the ledger refuses a second
     ("purchase", "order:<id>") row), in which case nothing else is changed either."""
     p = CATALOG[product]
+    if p.get("wallet"):                 # a top-up: the money goes to the wallet, once per order (the wallet ledger refuses a second row)
+        from . import wallet
+        return wallet.credit(con, uid, int(round(p["usd"] * 100)), "topup", f"order:{order_id}", f"{p['label']} ({ref})", admin_id)
     fresh = _credit(con, uid, p["signals"], "purchase", f"order:{order_id}", f"{p['label']} ({ref})", admin_id)
     if fresh and p["days"]:
         now = _now()
@@ -320,7 +338,7 @@ def _order_public(r) -> dict:
     out = {"id": r["id"], "ref": r["ref"], "product": r["product"], "label": _label(r["product"]),
            "method": r["method"],
            "method_label": AUTO_LABEL if r["method"] == AUTO_METHOD else NAIRA_LABEL if r["method"] == NAIRA_METHOD
-           else METHODS.get(r["method"]) or LEGACY_LABELS.get(r["method"], r["method"]),
+           else "Wallet balance" if r["method"] == WALLET_METHOD else METHODS.get(r["method"]) or LEGACY_LABELS.get(r["method"], r["method"]),
            "amount_usd": r["amount_usd"], "amount_local": r["amount_local"], "currency": r["currency"],
            "status": r["status"], "txid": None if r["method"] == NAIRA_METHOD else r["txid"],   # a Naira order's txid is the admin's bank reference
            "note": None if r["method"] == NAIRA_METHOD else r["note"], "created_at": r["created_at"]}
@@ -344,6 +362,23 @@ def _num(v):
         return x if x > 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def _wallet_view(user: dict):
+    try:
+        from . import wallet
+        return wallet.view(user)
+    except Exception as e:
+        print(f"[wallet] view failed: {type(e).__name__}", flush=True)
+        return {"enabled": False}
+
+
+def check_orderable(user: dict, product: str):
+    """Wallet top-ups can only be ordered while the wallet is open to this member. Called by every order creator."""
+    if (CATALOG.get(product) or {}).get("wallet"):
+        from . import wallet
+        if not wallet.allowed(user):
+            raise HTTPException(409, "The wallet is not open yet")
 
 
 async def billing_view(request):
@@ -387,10 +422,10 @@ async def billing_view(request):
     return JSONResponse({
         "enabled": shop, "grandfathered": grandfathered(user), "balance": balance(user["id"]), "welcome": WELCOME,
         "partner": _partner_view(user), "crypto": crypto, "naira": naira,
-        "copy_plan": cp,
+        "copy_plan": cp, "wallet": _wallet_view(user),
         "catalog": [{"key": k, **{f: v[f] for f in ("label", "usd", "signals", "days", "notify", "mt5")},
                      "copy": bool(v.get("copy")), "copy_ib": bool(v.get("copy_ib")) and __import__("app.perks", fromlist=["x"]).grants_on(), **_price_fields(user, k)}
-                    for k, v in CATALOG.items()],
+                    for k, v in CATALOG.items() if not v.get("wallet")],
         "plans": [{"plan": p["plan"], "label": _label(p["plan"]), "ends_at": p["ends_at"]} for p in plans],
         "pay": pay, "methods": METHODS, "orders": orders, "ledger": ledger})
 
@@ -415,6 +450,7 @@ async def order_create(request):
         raise HTTPException(422, "Please accept the Terms, Refunds and Support policy to continue")
     if product not in CATALOG:
         raise HTTPException(422, "Unknown product")
+    check_orderable(user, product)
     if method not in METHODS:
         raise HTTPException(422, "Choose a payment method")
     usd, now = _price_fields(user, product)["usd"], _now()

@@ -14,6 +14,7 @@
       if(u.rewards)rewardsTab();
       partnerTab();
       autoTab();
+      window.dlWallet();
       window.dlBadge()}catch(x){}
   };
   // Unread counters on the Messages tabs: the member's own (announcements + replies) and, for an admin, members' unread messages.
@@ -38,6 +39,36 @@
       const a=document.createElement('a');a.href=u;a.textContent=t;if(u===here)a.className='on';n.append(a)});
     const w=document.createElement('div');w.className='dltop';h.before(w);w.append(h,n);   // logo and tabs stay together at the top while the page scrolls
   }
+  // Wallet balance on the header's right, with a hide/reveal eye. Shown only where the server says the member has a wallet. The hidden state is a
+  // per-device preference (localStorage, wrapped because it can be blocked).
+  const EYE='<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF='<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.9 10.9 0 0 1 12 19c-7 0-11-7-11-7a19.8 19.8 0 0 1 5.06-5.94M9.9 4.24A10.9 10.9 0 0 1 12 4c7 0 11 7 11 7a19.9 19.9 0 0 1-3.17 4.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>';
+  let walletUsd=null;
+  const hidden=()=>{try{return localStorage.getItem('dl_wallet_hidden')==='1'}catch(x){return false}};
+  function drawWallet(){
+    const h=document.querySelector('header'),c=h&&h.querySelector('.dlwallet');if(!c||walletUsd==null)return;
+    const hide=hidden();
+    c.querySelector('.amt').textContent=hide?'\u2022\u2022\u2022\u2022':'$'+walletUsd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const b=c.querySelector('button');b.innerHTML=hide?EYE_OFF:EYE;b.setAttribute('aria-label',hide?'Show wallet balance':'Hide wallet balance');b.setAttribute('aria-pressed',hide?'true':'false');
+  }
+  window.dlWallet=async function(){
+    const h=document.querySelector('header');
+    if(!h||/^\/(login|reset)/.test(location.pathname))return;
+    try{const r=await f('/api/wallet');if(!r.ok)return;const d=await r.json();
+      let c=h.querySelector('.dlwallet');
+      if(!d.enabled){if(c)c.remove();return}
+      walletUsd=Number(d.balance_usd)||0;
+      if(!c){
+        c=document.createElement('div');c.className='dlwallet';
+        const a=document.createElement('a');a.href='/billing.html#wallet';a.title='Open your wallet';
+        const l=document.createElement('small');l.textContent='Wallet';const m=document.createElement('b');m.className='amt';a.append(l,m);
+        const b=document.createElement('button');b.type='button';
+        b.onclick=()=>{try{localStorage.setItem('dl_wallet_hidden',hidden()?'0':'1')}catch(x){}drawWallet()};
+        c.append(a,b);h.append(c);
+      }
+      drawWallet();
+    }catch(x){}
+  };
   function rewardsTab(){
     const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-rewards]'))return;
     const a=document.createElement('a');a.href='/rewards.html';a.textContent='Rewards';a.dataset.rewards='1';

@@ -575,6 +575,7 @@ async def create_order(request):
         raise HTTPException(422, "Please accept the Terms, Refunds and Support policy to continue")
     if product not in credits.CATALOG:
         raise HTTPException(422, "Unknown product")
+    credits.check_orderable(user, product)
     currency = str(d.get("currency") or pay_currency()).lower()
     if currency not in pay_currencies():
         raise HTTPException(422, "Choose one of the offered networks")

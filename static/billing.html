@@ -15,6 +15,7 @@
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
 <main>
 <div class="card" id="bal"><span class="mut">Loading...</span></div>
+<div id="wallet"></div>
 <div id="crypto"></div>
 <div id="naira"></div>
 <div id="open"></div>
@@ -40,6 +41,7 @@ const per=p=>'$'+(p.usd/p.signals).toFixed(5).replace(/0+$/,'')+' per signal';
 function copyBtn(text){const b=el('button','ghost','Copy');b.style.cssText='width:auto;padding:6px 12px';b.onclick=async()=>{try{await navigator.clipboard.writeText(text);b.textContent='Copied'}catch(e){prompt('Copy this:',text)}};return b}
 function line(k,v,copy,ctext){const d=el('div','kv');const s=el('span','',v);s.style.wordBreak='break-all';d.append(el('span','',k));if(copy){const w=el('span');w.style.cssText='display:flex;gap:8px;align-items:center;justify-content:flex-end;text-align:right';w.append(s,copyBtn(ctext!==undefined?ctext:v));d.append(w)}else d.append(s);return d}
 
+function statusText(o){return(o.status==='approved'&&String(o.product).startsWith('wallet'))?'Added to your wallet':(STATUS[o.status]||o.status)}
 function renderBalance(){
   const c=$('bal');c.textContent='';
   c.append(el('h2','','Your signals'),el('div','big',String(D.balance)));
@@ -55,6 +57,25 @@ function renderBalance(){
     if(F&&F.status==='closed')c.append(el('div','mut','All '+F.slots+' founding member places have been taken.'));
     if(F&&F.status==='verified')c.append(el('div','win','Founding member: notifications and your MT5 connection are free until '+(F.until?date(F.until):'')+'.'))}
   const a=el('a','','Back to Signals');a.href='/signals.html';a.style.cssText='display:block;margin-top:8px;color:var(--gold2)';c.append(a);
+}
+const WKIND={'Top-up':'win','Purchase':'mut'};
+function renderWallet(){
+  const w=$('wallet');w.textContent='';const W=D.wallet;
+  if(!W||!W.enabled)return;
+  const c=el('div','card');c.id='walletcard';c.append(el('h2','','Your wallet'),el('div','big','$'+W.balance_usd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})));
+  c.append(el('div','mut','Money you add stays in your wallet and is not used for anything until you choose to pay for a service with it. It can only be spent on TradeLens services and cannot be withdrawn.'));
+  if(W.can_add&&D.enabled){
+    c.append(el('h3','','Add money'));
+    W.topups.forEach(p=>{
+      const row=el('div');row.style.cssText='border-top:1px solid var(--line);margin-top:10px;padding-top:10px';
+      const h=el('div','hd');h.append(el('span','','$'+p.usd),el('span','mut','added to your wallet'));
+      const b=el('button','','Add $'+p.usd);b.style.marginTop='8px';b.onclick=()=>choose(p,row,b);row.append(h,b);c.append(row)});
+  }
+  if(W.ledger.length){
+    c.append(el('h3','','Wallet history'));
+    W.ledger.forEach(x=>{const r=el('div','kv');r.append(el('span','',x.label+(x.note?' \u00b7 '+x.note:'')+' \u00b7 '+date(x.created_at)),el('span',x.usd>0?'win':'mut',(x.usd>0?'+$':'-$')+Math.abs(x.usd).toFixed(2)));c.append(r)});
+  }
+  w.append(c);
 }
 function renderShop(){
   const s=$('shop');s.textContent='';
@@ -74,12 +95,12 @@ function renderShop(){
       const b=el('button','','Buy '+p.label);b.style.marginTop='8px';b.onclick=()=>choose(p,row,b);row.append(b);c.append(row)});
     s.append(c)});
 }
-function askTerms(){
+function askTerms(extra){
   return new Promise(res=>{
     const ov=el('div');ov.style.cssText='position:fixed;inset:0;z-index:1000;background:rgba(2,8,22,.78);display:flex;align-items:center;justify-content:center;padding:16px';
     const bx=el('div','card');bx.setAttribute('role','dialog');bx.setAttribute('aria-modal','true');bx.tabIndex=-1;bx.style.cssText='max-width:420px;width:100%;margin:0;outline:none';
     const ta=el('a','','Terms, Refunds and Support');ta.href='/terms.html?from=billing';ta.style.color='var(--gold2)';
-    const tx=el('p');tx.style.cssText='font-size:15px;color:var(--tx);margin:6px 0 14px';tx.append(document.createTextNode('I accept the '),ta,document.createTextNode('. Payments are non-refundable.'));
+    const tx=el('p');tx.style.cssText='font-size:15px;color:var(--tx);margin:6px 0 14px';tx.append(document.createTextNode('I accept the '),ta,document.createTextNode('. Payments are non-refundable.'+(extra?' '+extra:'')));
     const row=el('div','btns');const no=el('button','ghost','Reject'),yes=el('button','','Accept');row.append(no,yes);
     bx.append(el('h2','','Before you pay'),tx,row);ov.append(bx);document.body.append(ov);bx.focus();
     const done=v=>{document.removeEventListener('keydown',key);ov.remove();res(v)};
@@ -92,6 +113,15 @@ function choose(p,row,btn){
   const old=row.querySelector('.pick');if(old){old.remove();if(btn){btn.className='';btn.textContent=label}return}
   if(btn){btn.className='ghost open';btn.textContent='\u25B2 Hide payment options'}
   const box=el('div','pick');box.style.marginTop='8px';box.append(el('div','mut','Choose how you want to pay:'));
+  const isTopup=String(p.key).startsWith('wallet');
+  if(!isTopup&&D.wallet&&D.wallet.enabled){
+    const need=D.wallet.balance_usd+1e-9>=p.usd;
+    const wb=el('button','','Pay with wallet \u00b7 $'+D.wallet.balance_usd.toFixed(2)+' available');wb.style.marginTop='8px';wb.disabled=!need;
+    wb.onclick=async()=>{if(!await askTerms('The price is taken from your wallet balance straight away.'))return;wb.disabled=true;
+      try{const r=await api('/api/wallet/pay','POST',{product:p.key,accepted:true});await load();if(window.dlWallet)window.dlWallet();showPaid(r);window.scrollTo({top:0,behavior:'smooth'})}
+      catch(e){alert(e.message);wb.disabled=false}};
+    box.append(wb,el('div','mut',need?'Paid instantly from your wallet balance. Nothing else to do.':'Your wallet balance is not enough for this. Add money to your wallet below, or pay another way.'));
+  }
   const auto=D.crypto&&D.crypto.enabled;
   if(auto){
     const opts=D.crypto.options&&D.crypto.options.length?D.crypto.options:[{code:null,short:D.crypto.network.replace(/.*\((.*)\)/,'$1')}];
@@ -119,6 +149,12 @@ function choose(p,row,btn){
     const b=el('button','ghost',label);b.disabled=!avail;
     b.onclick=async()=>{if(!await askTerms())return;b.disabled=true;try{const r=await api('/api/billing/order','POST',{product:p.key,method:m,accepted:true});openId=r.order.id;await load();window.scrollTo({top:0,behavior:'smooth'})}catch(e){alert(e.message);b.disabled=false}};btns.append(b)});
   box.append(btns);row.append(box);
+}
+function showPaid(r){
+  const w=$('open');w.textContent='';const c=el('div','card');c.append(el('h2','','Paid from your wallet'));
+  c.append(el('div','win',r.label+' is active'+(r.days?' for '+r.days+' days':'')+(r.signals?' and '+r.signals.toLocaleString()+' signals were added':'')+'.'),
+           line('Order reference',r.ref,true),line('Wallet balance now','$'+r.balance_usd.toFixed(2)));
+  const x=el('button','ghost','Done');x.onclick=()=>{w.textContent=''};c.append(x);w.append(c);
 }
 /* ---- automatic USDT payment: the page shows what NOWPayments returned and asks the server for the live status.
    Nothing here decides that a payment succeeded: only the server, after checking with the provider, can do that. */
@@ -236,7 +272,7 @@ function renderOrders(){
   if(!D.orders.length){b.append(el('span','mut','No orders yet.'));return}
   D.orders.forEach(o=>{
     const r=el('div');r.style.cssText='border-top:1px solid var(--line);padding:8px 0';
-    const h=el('div','hd');h.append(el('span','',o.label),el('span',o.status==='approved'?'win':o.status==='rejected'?'loss':'mut',STATUS[o.status]||o.status));
+    const h=el('div','hd');h.append(el('span','',o.label),el('span',o.status==='approved'?'win':o.status==='rejected'?'loss':'mut',statusText(o)));
     r.append(h,el('div','mut',o.ref+' \u00b7 '+o.method_label+' \u00b7 '+(o.currency==='NGN'?'\u20a6'+Math.round(o.amount_local).toLocaleString():usd(o.amount_usd))+' \u00b7 '+date(o.created_at)));
     if(o.status==='rejected'&&o.note)r.append(el('div','warn',o.note));
     if(o.status==='submitted')r.append(el('div','mut','We are checking your payment. Your signals are added once it is confirmed.'));
@@ -258,12 +294,12 @@ function renderLedger(){
   D.ledger.forEach(x=>{const r=el('div','kv');r.append(el('span','',(KIND[x.kind]||x.kind)+' \u00b7 '+date(x.created_at)),el('span',x.delta>0?'win':'mut',(x.delta>0?'+':'')+x.delta));b.append(r)});
 }
 async function load(){
-  try{D=await api('/api/billing');renderBalance();renderOpen();renderShop();renderOrders();renderLedger();
+  try{D=await api('/api/billing');renderBalance();renderWallet();renderOpen();renderShop();renderOrders();renderLedger();
     try{const dv=await (await fetch('/api/public/deriv')).json();if(dv.enabled&&dv.cashier_url){$('fundgo').href=dv.cashier_url;$('fund').hidden=false}}catch(e){}
     try{const s=await (await fetch('/api/public/support')).json();$('sup').textContent=s.support?'Support: '+s.support:''}catch(e){}}
   catch(e){$('bal').textContent=e.message}
 }
-load();
+load().then(()=>{if(location.hash==='#wallet'){const e=$('walletcard');if(e)e.scrollIntoView()}});
 </script>
 <script src="/chat.js" defer></script>
 </body>

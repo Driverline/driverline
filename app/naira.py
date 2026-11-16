@@ -224,6 +224,7 @@ async def create_order(request):
         raise HTTPException(422, "Please accept the Terms, Refunds and Support policy to continue")
     if product not in credits.CATALOG:
         raise HTTPException(422, "Unknown product")
+    credits.check_orderable(user, product)
     if _limited(f"create:{user['id']}", 6, 600):
         raise HTTPException(429, "Too many attempts. Please wait a few minutes.")
     usd = credits._price_fields(user, product)["usd"]

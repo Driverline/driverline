@@ -30,7 +30,8 @@ async function api(path,method,body,base){
 const SECTIONS=[
   ['naira','Naira (Moniepoint)','Naira payments (Moniepoint)',b=>loadNaira(b)],
   ['crypto','Crypto','Crypto payments (NOWPayments)',b=>loadCrypto(b,'open')],
-  ['manual','Manual USDT and credits','Billing and signal credits',b=>loadBilling(b)]];
+  ['manual','Manual USDT and credits','Billing and signal credits',b=>loadBilling(b)],
+  ['wallet','Wallet','Member wallets',b=>loadWallet(b)]];
 function show(key){
   const s=SECTIONS.find(x=>x[0]===key)||SECTIONS[0];
   try{history.replaceState(null,'','#'+s[0])}catch(e){}
@@ -138,6 +139,25 @@ async function loadCrypto(box,filter){
     row.append(hs);d.append(row,hb);box.append(d)});
   if(r.exceptions.length){box.append(el('h2','','Recent exceptions'));
     r.exceptions.forEach(x=>{const e=el('div','mut',when(x.created_at)+' · '+x.kind+(x.order_id?' · order #'+x.order_id:'')+' · '+(x.detail||''));e.style.fontSize='13px';box.append(e)})}
+}
+async function loadWallet(box){
+  box.textContent='';
+  let r;try{r=await api('/wallet')}catch(e){box.append(el('div','err',e.message));return}
+  box.append(el('div','mut','Members add money to a wallet through the same payment channels (automatic USDT, Naira, manual USDT) and spend it on any product. Money in a wallet is not used until a member pays with it. There is no withdrawal: a refund is an adjustment you record below.'));
+  const sel=document.createElement('select');[['off','Off: nobody can add money (balances already held stay visible)'],['admin','Pilot: admin accounts only'],['public','Public: every member']].forEach(([v,t])=>opt(sel,v,t));sel.value=r.mode;
+  const mb=el('button','','Save mode');mb.style.marginTop='8px';const mm=el('div','mut');
+  mb.onclick=async()=>{if(sel.value==='public'&&r.mode!=='public'&&!confirm('Open the wallet to every member now?'))return;
+    try{await api('/wallet/mode','POST',{mode:sel.value});loadWallet(box)}catch(e){mm.className='err';mm.textContent=e.message}};
+  box.append(el('label','','Who can use the wallet'),sel,mb,mm);
+  box.append(kv('Held in member wallets','$'+Number(r.held_usd).toFixed(2)),kv('Members with a balance',String(r.holders)));
+  box.append(el('h3','','Adjust a wallet'),el('div','mut','Use a positive amount to add money (for example a refund) and a negative amount to remove it. A note is required and is recorded with your admin id.'));
+  const em=document.createElement('input');em.placeholder='Member email';const am=document.createElement('input');am.placeholder='Amount in US dollars, for example 15 or -15';am.inputMode='decimal';
+  const nt=document.createElement('input');nt.placeholder='Why (required)';nt.maxLength=200;
+  const go=el('button','ghost','Record adjustment');go.style.marginTop='8px';const msg=el('div','mut');
+  go.onclick=async()=>{const a=parseFloat(am.value);if(!em.value.trim()||!isFinite(a)||!nt.value.trim()){msg.className='err';msg.textContent='Enter the email, an amount and a note.';return}
+    if(!confirm((a>0?'Add $':'Remove $')+Math.abs(a).toFixed(2)+(a>0?' to ':' from ')+em.value.trim()+"'s wallet?"))return;
+    try{const d=await api('/wallet/adjust','POST',{email:em.value,amount_usd:a,note:nt.value});msg.className='win';msg.textContent='Done. New balance $'+Number(d.balance_usd).toFixed(2)+'.';am.value='';nt.value=''}catch(e){msg.className='err';msg.textContent=e.message}};
+  box.append(em,am,nt,go,msg);
 }
 async function loadNaira(box,st){
   st=st||{status:'open',q:'',from:'',to:'',offset:0};

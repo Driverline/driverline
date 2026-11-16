@@ -290,7 +290,8 @@ def _orders(uid: int, st: int):
     from . import credits
     with closing(credits.db()) as c:
         rows = c.execute("SELECT id, amount_usd, provider_status, COALESCE(fulfilled_at, decided_at, created_at) AS t FROM billing_orders "
-                         "WHERE user_id=? AND status='approved' ORDER BY COALESCE(fulfilled_at, decided_at, created_at), id", (uid,)).fetchall()
+                         f"WHERE user_id=? AND status='approved' AND product NOT IN ({','.join('?' * len(credits.WALLET_KEYS))}) "
+                         "ORDER BY COALESCE(fulfilled_at, decided_at, created_at), id", (uid, *credits.WALLET_KEYS)).fetchall()
     with closing(db()) as con:
         ref = con.execute("SELECT referrer_id, status FROM referrals WHERE referred_id=?", (uid,)).fetchone()
         first = True
@@ -377,8 +378,8 @@ def _qualifying_orders(referrer: int, st: int) -> list:
         return []
     with closing(credits.db()) as c:
         rows = c.execute(f"SELECT id, user_id, product, provider_status, COALESCE(fulfilled_at, decided_at, created_at) AS t FROM billing_orders "
-                         f"WHERE status='approved' AND user_id IN ({','.join('?' * len(ids))}) "
-                         f"ORDER BY COALESCE(fulfilled_at, decided_at, created_at), id", ids).fetchall()
+                         f"WHERE status='approved' AND user_id IN ({','.join('?' * len(ids))}) AND product NOT IN ({','.join('?' * len(credits.WALLET_KEYS))}) "
+                         f"ORDER BY COALESCE(fulfilled_at, decided_at, created_at), id", [*ids, *credits.WALLET_KEYS]).fetchall()
     return [r for r in rows if int(r["t"] or 0) >= st and r["provider_status"] not in BAD_PAYMENT]
 
 

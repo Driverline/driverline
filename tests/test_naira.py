@@ -233,7 +233,10 @@ class CreateOrderTests(Base):
         self.assertNotIn("@", o["narration"] + o["ref"])
 
     def test_every_product_category_can_be_ordered_at_its_catalogue_price(self):
-        for product, p in credits.CATALOG.items():           # token packs, 30-day plans, and the plan with the MT5 connection
+        with closing(credits.db()) as con:                    # wallet top-ups are orderable only while the wallet is open
+            con.execute("INSERT INTO billing_settings(key,value) VALUES('wallet_mode','public') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            con.commit()
+        for product, p in credits.CATALOG.items():           # token packs, 30-day plans, the MT5 plan and the wallet top-ups
             u = mk_user()
             oid, o = buy(u, product)
             self.assertEqual((o["amount_naira"], o["signals"], o["days"], o["notify"], o["mt5"]),
