@@ -283,7 +283,8 @@ async def me(request):
             rewards.touch_soon(u["id"])
     except Exception as e:
         print(f"[rewards] {type(e).__name__}", flush=True)
-    return JSONResponse({"email": u["email"], "tier": u["tier"], "used": used, "limit": limit, "rewards": on})
+    return JSONResponse({"email": u["email"], "tier": u["tier"], "used": used, "limit": limit, "rewards": on,
+                         "joined": str(u.get("created_at") or "")[:10]})
 
 
 RESET_TTL = 3600
