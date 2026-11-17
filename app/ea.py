@@ -91,6 +91,9 @@ def _migrate(con):
     con.execute("CREATE INDEX IF NOT EXISTS ix_auto_events_acct ON auto_events(account_id, kind, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_flags_status ON copy_flags(status)")
     con.add_column("copy_flags", "source", "TEXT")
+    con.add_column("copy_flags", "master_lots", "DOUBLE PRECISION")        # what the master traded and how much of ITS balance the stop loss risks:
+    con.add_column("copy_flags", "master_risk_pct", "DOUBLE PRECISION")    # followers in "match the team's risk" mode risk the same percentage
+    con.add_column("copy_members", "how", "TEXT")                          # 'auto' (switched on automatically after payment), 'admin' or 'self'
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_auto_seen_acct ON copy_auto_seen(master_account_id, first_seen)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_mt5_requests_status ON mt5_requests(status, user_id)")
     # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and

@@ -33,7 +33,7 @@ AUTO_GAP = 90            # automatic copying: if the master's EA had been silent
 AUTO_SLTP_WAIT = 45      # seconds a new master trade may take to get its stop loss and take profit before it is left uncopied
 AUTO_MAX_PER_DAY = 40    # safety brake: at most this many automatic copies per rolling 24 hours
 SUB_MAX_DAYS = 366
-MODES = ("fixed", "risk")
+MODES = ("fixed", "risk", "mirror")      # mirror = risk the same percentage of balance as the team's trade (the default for members switched on automatically)
 OPEN_STATES = ("waiting", "sent", "open")
 _f = ea._f
 
@@ -44,7 +44,7 @@ def _dec(step: float) -> int:
     return len(t.split(".")[1]) if "." in t else 0
 
 
-def size(spec: dict, balance: float, sl_dist: float, mode: str, fixed_lots, risk_pct, cap_pct):
+def size(spec: dict, balance: float, sl_dist: float, mode: str, fixed_lots, risk_pct, cap_pct, master_risk=None):
     """(lots, risk_pct_of_balance, reason). lots is None when the trade must NOT be placed; reason says why.
     fixed: the member's fixed lot, or the symbol's minimum lot when none is set. risk: lots so the stop loss risks risk_pct of balance.
     cap_pct: the member's own limit per trade: a lot that would risk more than it is never traded."""
@@ -55,7 +55,15 @@ def size(spec: dict, balance: float, sl_dist: float, mode: str, fixed_lots, risk
     if not balance > 0:
         return None, None, "Your account balance is not known yet"
     per_lot = sl_dist * unit
-    if mode == "risk":
+    if mode == "mirror":                 # the same share of THIS balance as the team's trade risked of its own: a $10 account trades a tenth of a $100 account
+        if not (master_risk and master_risk > 0):
+            return None, None, "The size of the team's trade could not be worked out, so it was not copied"
+        want = balance * master_risk / 100.0 / per_lot
+        lots = math.floor(want / vstep + 1e-9) * vstep
+        if lots < vmin:
+            return None, None, (f"Your balance is too small to copy this trade in proportion: the team risked {master_risk:.2f}% and even the smallest lot "
+                                f"({vmin:g}) would risk more than that on your account")
+    elif mode == "risk":
         want = balance * _f(risk_pct) / 100.0 / per_lot
         lots = math.floor(want / vstep + 1e-9) * vstep
         if lots < vmin:
@@ -127,6 +135,23 @@ def _cmd_msg(con, cid) -> str:
 
 
 # ---------------------------------------------------------------- flagging (admin) -> one job per eligible follower
+def master_risk(con, mid, st, pos, op, sl):
+    """(lots, % of the master's balance risked by the stop loss) of a master position, or (lots, None) when the master's contract details or balance are not known."""
+    lots = _f(pos.get("volume"))
+    try:
+        _, specs = _state(con, mid)
+        sym = str(pos.get("symbol"))
+        want = journal._norm(sym)
+        spec = next((x for x in specs if x.get("symbol") == sym), None) or next((x for x in specs if journal._norm(str(x.get("symbol", ""))) == want), None)
+        bal = _f(((st or {}).get("account") or {}).get("balance"))
+        unit = unit_per_lot(spec) if spec else 0
+        if lots > 0 and unit > 0 and bal > 0 and abs(op - sl) > 0:
+            return lots, round(lots * abs(op - sl) * unit / bal * 100.0, 4)
+    except Exception as e:
+        print(f"[copy] could not work out the master's risk: {type(e).__name__}", flush=True)
+    return lots or None, None
+
+
 def create_flag(con, admin_id: int, ticket: int, source: str = "manual") -> dict:
     mid = master_id(con)
     if not mid:
@@ -147,8 +172,9 @@ def create_flag(con, admin_id: int, ticket: int, source: str = "manual") -> dict
     if con.execute("SELECT 1 FROM copy_flags WHERE master_account_id=? AND master_ticket=? AND status='open'", (mid, ticket)).fetchone():
         raise HTTPException(409, "This trade is already flagged")
     now = _now()
-    fid = con.insert("INSERT INTO copy_flags(master_account_id,master_ticket,symbol,dir,open_price,sl,tp,status,admin_id,created_at,source) "
-                     "VALUES(?,?,?,?,?,?,?,'open',?,?,?)", (mid, ticket, str(pos.get("symbol")), d, op, sl, tp, admin_id, now, source))
+    mlots, mrisk = master_risk(con, mid, st, pos, op, sl)
+    fid = con.insert("INSERT INTO copy_flags(master_account_id,master_ticket,symbol,dir,open_price,sl,tp,status,admin_id,created_at,source,master_lots,master_risk_pct) "
+                     "VALUES(?,?,?,?,?,?,?,'open',?,?,?,?,?)", (mid, ticket, str(pos.get("symbol")), d, op, sl, tp, admin_id, now, source, mlots, mrisk))
     n = 0
     for m in con.execute("SELECT m.account_id, m.user_id FROM copy_members m JOIN ea_accounts a ON a.id=m.account_id "
                          "WHERE m.enabled=1 AND m.account_id<>?", (mid,)).fetchall():
@@ -177,7 +203,7 @@ def dispatch(con, aid: int):
     now = _now()
     if _busy(con, aid, now):
         return
-    job = con.execute("SELECT j.*, f.status AS fstatus, f.open_price, f.sl, f.tp FROM copy_jobs j JOIN copy_flags f ON f.id=j.flag_id "
+    job = con.execute("SELECT j.*, f.status AS fstatus, f.open_price, f.sl, f.tp, f.master_risk_pct FROM copy_jobs j JOIN copy_flags f ON f.id=j.flag_id "
                       "WHERE j.account_id=? AND ((j.status='open' AND j.close_req=1 AND j.close_cmd IS NULL AND j.ticket IS NOT NULL) "
                       "OR j.status='waiting') ORDER BY (j.status='waiting'), j.id LIMIT 1", (aid,)).fetchone()
     if not job:
@@ -228,7 +254,7 @@ def dispatch(con, aid: int):
         return skip(f"{job['symbol']} was not found in your MT5 Market Watch")
     sd = abs(job["open_price"] - job["sl"])
     cap = _f(mem["max_risk_pct"]) or _f(rules.get("max_risk_pct"))
-    lots, pct, why = size(spec, _f(acc.get("balance")), sd, mem["mode"], mem["fixed_lots"], mem["risk_pct"], cap)
+    lots, pct, why = size(spec, _f(acc.get("balance")), sd, mem["mode"], mem["fixed_lots"], mem["risk_pct"], cap, job.get("master_risk_pct"))
     if lots is None:
         _set(con, job["id"], status="skipped", note=why, risk_pct=pct)
         con.commit()
@@ -366,10 +392,64 @@ def needs_for(con, spec_list, balance: float, cap) -> list:
     return out
 
 
+def _tell(uid: int, text: str):
+    """One message from the team in the member's Messages. Best effort."""
+    try:
+        from . import inbox
+        with closing(inbox.db()) as c:
+            c.insert("INSERT INTO inbox_messages(user_id,sender,body,created_at) VALUES(?,?,?,?)", (uid, "admin", text[:1000], _now()))
+            c.commit()
+    except Exception as e:
+        print(f"[copy] could not message the member: {type(e).__name__}", flush=True)
+
+
+def enrol(con, aid: int, uid: int, how: str = "auto") -> bool:
+    """Switch copy trading on for this account with the default settings ("match the team's risk", limited by the member's own risk rule).
+    Only when the account has no copy settings yet, so a member who switched it off, or chose their own settings, is never overridden.
+    Not for Signals Plus members whose copy trading replaces their signals: that is a choice they must make themselves."""
+    if con.execute("SELECT 1 FROM copy_members WHERE account_id=?", (aid,)).fetchone():
+        return False
+    user = con.execute("SELECT id, tier FROM users WHERE id=?", (uid,)).fetchone()
+    if not user:
+        return False
+    st = copy_plan.state({"id": uid, "tier": user["tier"]}, con)
+    if not st["copy"] or st["swap"]:
+        return False
+    try:
+        con.execute("INSERT INTO copy_members(account_id,user_id,enabled,mode,fixed_lots,risk_pct,max_risk_pct,updated_at,how) VALUES(?,?,1,'mirror',NULL,NULL,NULL,?,?)",
+                    (aid, uid, _now(), how))
+        con.commit()
+    except Exception as e:
+        con.raw.rollback()
+        if not ea.dbx.is_duplicate(e):
+            raise
+        return False
+    rules = ea.get_rules(con, aid)
+    label = (con.execute("SELECT label FROM ea_accounts WHERE id=?", (aid,)).fetchone() or {"label": "your MT5 account"})["label"]
+    _tell(uid, f"Copy trading is now on for {label}. You do not need to do anything. Each trade the TradeLens team takes is copied to your account with the same entry, stop loss and "
+               f"take profit, sized to your balance so that it risks the same percentage as the team's trade. A copy is never placed if it would risk more than your limit "
+               f"({rules['max_risk_pct']:g}% per trade) or if you have reached your daily loss limit. You can change these in the MT5 tab under Copy trading.")
+    try:
+        from . import admin_alerts
+        admin_alerts.copy_enrolled(uid, aid)
+    except Exception:
+        pass
+    return True
+
+
 def on_report(con, aid: int, state: dict, prev_seen=None):
     """Called after an account's report was stored."""
     now = _now()
     mid = master_id(con)
+    if mid != aid:                                                   # a paid member's account that reports for the first time starts copying by itself
+        try:
+            if not con.execute("SELECT 1 FROM copy_members WHERE account_id=?", (aid,)).fetchone():
+                a = con.execute("SELECT user_id FROM ea_accounts WHERE id=?", (aid,)).fetchone()
+                if a:
+                    enrol(con, aid, a["user_id"])
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[copy] automatic set-up failed: {type(e).__name__}", flush=True)
     have = _tickets(state)
     if mid == aid and auto_on(con):                                  # the master opened something new: copy it now
         try:
@@ -458,7 +538,7 @@ async def me_get(request):
             cap = (m["max_risk_pct"] if m and m["max_risk_pct"] else None) or _f(rules.get("max_risk_pct"))
             needs = [] if a["id"] == mid else needs_for(con, specs, _f(((st or {}).get("account") or {}).get("balance")), cap)
             accts.append({"id": a["id"], "label": a["label"], "is_master": a["id"] == mid, "enabled": bool(m and m["enabled"]), "needs": needs,
-                          "mode": m["mode"] if m else "fixed", "fixed_lots": m["fixed_lots"] if m else None,
+                          "how": m["how"] if m else None, "mode": m["mode"] if m else "fixed", "fixed_lots": m["fixed_lots"] if m else None,
                           "risk_pct": m["risk_pct"] if m else 1.0, "max_risk_pct": (m["max_risk_pct"] if m and m["max_risk_pct"] else None),
                           "own_limit_pct": rules["max_risk_pct"]})
         jobs = [_job_out(dict(r)) for r in con.execute("SELECT * FROM copy_jobs WHERE user_id=? ORDER BY id DESC LIMIT 20", (u["id"],)).fetchall()]
@@ -471,7 +551,7 @@ async def me_settings(request):
     d = await auth._json(request)
     mode = d.get("mode", "fixed")
     if mode not in MODES:
-        raise HTTPException(422, "mode must be fixed or risk")
+        raise HTTPException(422, "mode must be mirror, fixed or risk")
     enabled = bool(d.get("enabled"))
     fixed = _num(d, "fixed_lots", 0.0001, 1000)
     risk = _num(d, "risk_pct", 0.05, 10)
@@ -493,7 +573,7 @@ async def me_settings(request):
         if enabled and not subscribed(con, u["id"]):
             raise HTTPException(403, "Copy trading needs the Copy Trading plan or Signals Pro (or Signals Plus if your Deriv account is linked to TradeLens). "
                                      "See the Billing tab.")
-        con.execute("INSERT INTO copy_members(account_id,user_id,enabled,mode,fixed_lots,risk_pct,max_risk_pct,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+        con.execute("INSERT INTO copy_members(account_id,user_id,enabled,mode,fixed_lots,risk_pct,max_risk_pct,updated_at,how) VALUES(?,?,?,?,?,?,?,?,'self') "
                     "ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled, mode=excluded.mode, fixed_lots=excluded.fixed_lots, "
                     "risk_pct=excluded.risk_pct, max_risk_pct=excluded.max_risk_pct, updated_at=excluded.updated_at",
                     (a["id"], u["id"], 1 if enabled else 0, mode, fixed, risk, cap, _now()))
@@ -540,7 +620,61 @@ async def admin_get(request):
                 "ORDER BY first_seen DESC LIMIT 12", (mid,)).fetchall()]
             auto["last_24h"] = con.execute("SELECT COUNT(*) AS c FROM copy_flags WHERE source='auto' AND created_at>?", (now - 86400,)).fetchone()["c"]
     return JSONResponse({"master": master, "my_accounts": [{"id": a["id"], "label": a["label"]} for a in mine], "positions": positions,
-                         "flags": flags, "followers": followers, "subscribers": subs, "now": now, "auto": auto})
+                         "flags": flags, "followers": followers, "subscribers": subs, "now": now, "auto": auto, "setup": setup_board(mid)})
+
+
+def setup_board(mid) -> list:
+    """Members who have paid for (or been given) copy trading, with where each one stands: no MT5 yet, connected but not copying, copying."""
+    ck = sorted(copy_plan.copy_keys())
+    ids = set()
+    try:
+        with closing(copy_plan.credits.db()) as c:
+            if ck:
+                ids |= {r["user_id"] for r in c.execute("SELECT user_id FROM billing_subs WHERE ends_at>? AND plan IN (%s)" % ",".join("?" * len(ck)), (_now(), *ck)).fetchall()}
+    except Exception as e:
+        print(f"[copy] setup board: {type(e).__name__}", flush=True)
+    out = []
+    with closing(ea.db()) as con:
+        ids |= {r["user_id"] for r in con.execute("SELECT user_id FROM copy_subs WHERE ends_at>?", (_now(),)).fetchall()}
+        for uid in sorted(ids):
+            u = con.execute("SELECT id, email, tier FROM users WHERE id=?", (uid,)).fetchone()
+            if not u:
+                continue
+            st = copy_plan.state({"id": uid, "tier": u["tier"]}, con)
+            if not st["copy"]:
+                continue
+            accts = [a for a in ea.user_accounts(con, uid) if a["id"] != mid]
+            rows = []
+            for a in accts:
+                m = con.execute("SELECT enabled, mode, how FROM copy_members WHERE account_id=?", (a["id"],)).fetchone()
+                rows.append({"id": a["id"], "label": a["label"], "connected": ea._connected(a),
+                             "state": "off" if m and not m["enabled"] else ("on" if m else "not_set_up"), "mode": m["mode"] if m else None, "how": m["how"] if m else None})
+            out.append({"user_id": uid, "email": u["email"], "until": st["until"], "swap": st["swap"], "accounts": rows})
+    out.sort(key=lambda r: (not r["accounts"], any(a["state"] == "on" for a in r["accounts"])))
+    return out[:100]
+
+
+async def admin_member(request):
+    """Set copy trading up for a member who has paid for it (their MT5 account must already be connected). Optionally tell them."""
+    u = auth.require_admin(request)
+    d = await auth._json(request)
+    with closing(ea.db()) as con:
+        r = con.execute("SELECT id FROM users WHERE LOWER(email)=LOWER(?)", (str(d.get("email", "")).strip(),)).fetchone() if d.get("email") else \
+            con.execute("SELECT id FROM users WHERE id=?", (d.get("user_id"),)).fetchone()
+        if not r:
+            raise HTTPException(404, "No member with that email")
+        uid, mid = r["id"], master_id(con)
+        accts = [a for a in ea.user_accounts(con, uid) if a["id"] != mid]
+        if not accts:
+            raise HTTPException(409, "This member has not connected an MT5 account yet")
+        done = [a["id"] for a in accts if enrol(con, a["id"], uid, "admin")]
+        if not done and not any(con.execute("SELECT 1 FROM copy_members WHERE account_id=?", (a["id"],)).fetchone() for a in accts):
+            raise HTTPException(409, "This member does not have an active copy trading plan (or their plan swaps signals for copy trading and they must switch it themselves)")
+    note = str(d.get("message") or "").strip()[:800]
+    if note:
+        _tell(uid, note)
+    print(f"[copy] admin {u['id']} set up copy trading for member {uid}: {len(done)} account(s)", flush=True)
+    return JSONResponse({"ok": True, "set_up": len(done), "already": len(accts) - len(done)})
 
 
 async def admin_master(request):
@@ -641,6 +775,14 @@ async def admin_sub(request):
                     "ends_at=excluded.ends_at, note=excluded.note, admin_id=excluded.admin_id, updated_at=excluded.updated_at",
                     (uid, ends, str(d.get("note") or "")[:200], u["id"], now))
         con.commit()
+        mid = master_id(con)
+        for a in ea.user_accounts(con, uid):                       # a connected account starts copying now, without waiting for its next report
+            if a["id"] != mid:
+                try:
+                    enrol(con, a["id"], uid, "admin")
+                except Exception as e:
+                    con.raw.rollback()
+                    print(f"[copy] set-up after grant failed: {type(e).__name__}", flush=True)
     return JSONResponse({"ok": True, "ends_at": ends})
 
 
@@ -654,4 +796,5 @@ routes = [
     Route("/api/copy/admin/flag/{fid:int}/close", admin_flag_close, methods=["POST"]),
     Route("/api/copy/admin/flag/{fid:int}", admin_flag_jobs, methods=["GET"]),
     Route("/api/copy/admin/subscription", admin_sub, methods=["POST"]),
+    Route("/api/copy/admin/member", admin_member, methods=["POST"]),
 ]

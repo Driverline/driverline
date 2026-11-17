@@ -105,6 +105,17 @@ async function load(){
   d.subscribers.forEach(x=>{s.append(kv(x.email,(x.active?'until ':'ended ')+day(x.ends_at),x.active?'win':'mut'));
     if(x.active){const b=el('button','ghost','Revoke');b.style.marginBottom='8px';b.onclick=()=>{if(confirm('Revoke copy trading for '+x.email+'? Copying is switched off and waiting copies are cancelled. Their open copies stay open.'))act(()=>api('/subscription','POST',{user_id:x.user_id,revoke:true}))};s.append(b)}});
   root.append(s);
+
+  const sb=el('div','card');sb.append(el('h2','','Paid members and copy set-up'));
+  sb.append(el('div','mut','Copy trading starts by itself for a paid member as soon as their MT5 account is connected. Anyone still waiting shows here, and you can set them up and send them a message.'));
+  (d.setup||[]).forEach(x=>{
+    if(!x.accounts.length){sb.append(kv(x.email,'No MT5 account yet','warn'));return}
+    x.accounts.forEach(a=>{const lab={on:'Copying',off:'Switched off by the member',not_set_up:'Not set up'}[a.state];
+      sb.append(kv(x.email+' | '+a.label,lab+(a.connected?'':' | MT5 offline'),a.state==='on'?'win':'warn'));
+      if(a.state==='not_set_up'){const b=el('button','ghost',x.swap?'Member must switch to Copy trading':'Set up with default settings and tell them');b.disabled=!!x.swap;b.style.marginBottom='8px';
+        b.onclick=()=>{if(confirm('Switch copy trading on for '+x.email+' with the default settings (match the team\'s risk) and send them a message?'))act(async()=>{await api('/member','POST',{user_id:x.user_id,message:'Copy trading is now set up on your MT5 account. The team\'s trades will be copied to you, sized to your balance. You can adjust the settings in the MT5 tab under Copy trading.'});note('Set up and message sent.','win')})};sb.append(b)}})});
+  if(!(d.setup||[]).length)sb.append(el('div','mut','No paid members yet.'));
+  root.append(sb);
 }
 load();setInterval(()=>{if(!document.hidden&&!document.activeElement.matches('input,select'))load()},20000);
 </script>

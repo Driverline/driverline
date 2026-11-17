@@ -193,14 +193,16 @@ async function loadCopy(sel){
       w.append(sw);box.append(w)}
     const en=document.createElement('input');en.type='checkbox';en.checked=a.enabled;
     const lb=el('label','sw');lb.append(en,document.createTextNode(' Copy the TradeLens team\'s trades to this account'));box.append(lb);
-    const md=document.createElement('select');[['fixed','Fixed lot'],['risk','Percentage risk']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;md.append(o)});md.value=a.mode;
+    const md=document.createElement('select');[['mirror','Match the team\'s risk (recommended)'],['fixed','Fixed lot'],['risk','Percentage risk']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;md.append(o)});md.value=a.how||a.enabled?a.mode:'mirror';
     const fl=document.createElement('input');fl.type='number';fl.step='any';fl.inputMode='decimal';fl.placeholder='Empty = the smallest lot';fl.value=a.fixed_lots||'';
     const rk=document.createElement('input');rk.type='number';rk.step='any';rk.inputMode='decimal';rk.value=a.risk_pct||1;
     const cp=document.createElement('input');cp.type='number';cp.step='any';cp.inputMode='decimal';cp.placeholder='Empty = your risk rule ('+a.own_limit_pct+'%)';cp.value=a.max_risk_pct||'';
     const w1=el('div'),w2=el('div');w1.append(el('label','','Lot size (fixed)'),fl);w2.append(el('label','','Risk per trade (% of balance)'),rk);
-    const show=()=>{w1.hidden=md.value!=='fixed';w2.hidden=md.value!=='risk'};md.onchange=show;show();
-    box.append(el('label','','Sizing'),md,w1,w2,el('label','','Never risk more than (% of balance)'),cp,
-      el('div','mut','If the lot would risk more than this, the trade is not placed. Safe by default: the smallest lot, and your own risk rule as the limit.'));
+    const mnote=el('div','mut','Each trade is copied with the same entry, stop loss and take profit, sized to your balance so it risks the same percentage as the team\'s trade. A $100 team account trading 0.40 lot is a $10 account trading 0.04 lot and a $1,000 account trading 4.00 lots. You do not need to change anything.');
+    const show=()=>{w1.hidden=md.value!=='fixed';w2.hidden=md.value!=='risk';mnote.hidden=md.value!=='mirror'};md.onchange=show;show();
+    if(a.how==='auto'||a.how==='admin')box.append(el('div','win',a.how==='auto'?'Copy trading was switched on for you automatically. You only need to change the settings below if you want something different.':'The TradeLens team set up copy trading for you. You only need to change the settings below if you want something different.'));
+    box.append(el('label','','Sizing'),md,mnote,w1,w2,el('label','','Never risk more than (% of balance)'),cp,
+      el('div','mut','If a copy would risk more than this, it is not placed. Your own risk rule is the limit unless you set one here, and your daily loss limit and equity protection also stop copies.'));
     const sv=el('button','','Save copy settings');sv.style.marginTop='10px';const mg=el('div','mut');
     sv.onclick=async()=>{try{const send=async sm=>{const rr=await fetch('/api/copy/me/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(dlAcct.body({enabled:en.checked,mode:md.value,fixed_lots:fl.value,risk_pct:md.value==='risk'?rk.value:(rk.value||null),max_risk_pct:cp.value,switch_mode:sm}))});return[rr,await rr.json().catch(()=>({}))]};
       let [rr,dd]=await send(false);if(rr.status===409&&dd.need_switch){if(!confirm(dd.detail))return;[rr,dd]=await send(true)}
