@@ -796,6 +796,8 @@ def _remove(con, a: dict):
     con.execute("UPDATE auto_jobs SET status='closed', note='Account removed' WHERE account_id=? AND status IN ('waiting','sent','open')", (aid,))
     con.execute("DELETE FROM auto_settings WHERE account_id=?", (aid,))
     con.execute("DELETE FROM ea_meta WHERE k='copy_master' AND v=?", (str(aid),))
+    con.execute("UPDATE copy_jobs SET status='closed', note='Master account removed' WHERE status IN ('waiting','sent','open') AND flag_id IN (SELECT id FROM copy_flags WHERE master_account_id=? AND status='open')", (aid,))
+    con.execute("UPDATE copy_flags SET status='closed', closed_at=? WHERE master_account_id=? AND status='open'", (int(time.time()), aid))
     con.execute("DELETE FROM ea_commands WHERE account_id=?", (aid,))
     con.execute("DELETE FROM ea_accounts WHERE id=?", (aid,))
     con.commit()

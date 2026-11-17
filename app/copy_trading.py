@@ -762,7 +762,12 @@ async def admin_master(request):
     d = await auth._json(request)
     with closing(ea.db()) as con:
         a = ea.resolve(con, u["id"], d.get("account"), explicit=True)
-        if con.execute("SELECT 1 FROM copy_flags WHERE status='open'").fetchone():
+        now, cur = _now(), master_id(con)
+        # A flag whose master account no longer exists (it was removed) can never be closed by the master: end it, with its waiting copies, so it cannot block anything.
+        for f in con.execute("SELECT id FROM copy_flags WHERE status='open' AND master_account_id NOT IN (SELECT id FROM ea_accounts)").fetchall():
+            con.execute("UPDATE copy_flags SET status='closed', closed_at=? WHERE id=?", (now, f["id"]))
+            con.execute("UPDATE copy_jobs SET status='closed', note='Master account removed' WHERE flag_id=? AND status IN ('waiting','sent','open')", (f["id"],))
+        if cur and cur != a["id"] and con.execute("SELECT 1 FROM copy_flags WHERE status='open'").fetchone():
             raise HTTPException(409, "End the open flagged trades before changing the master account")
         con.execute("DELETE FROM copy_members WHERE account_id=?", (a["id"],))
         con.execute("INSERT INTO ea_meta(k,v) VALUES('copy_master',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(a["id"]),))

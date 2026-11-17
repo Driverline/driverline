@@ -23,7 +23,7 @@ async function api(path,method,body){
 const day=t=>t?new Date(t*1000).toISOString().slice(0,16).replace('T',' '):'-';
 let msg=null;
 function note(t,c){if(msg){msg.className=c||'mut';msg.textContent=t}}
-async function act(f){try{await f();await load()}catch(e){note(e.message,'err')}}
+async function act(f,where){try{await f();await load()}catch(e){if(where){where.className='err';where.textContent=e.message}else note(e.message,'err')}}
 async function load(){
   const root=$('root');let d;
   try{d=await api('')}catch(e){root.textContent=e.message;return}
@@ -65,8 +65,8 @@ async function load(){
   d.my_accounts.forEach(a=>{const o=document.createElement('option');o.value=a.id;o.textContent=a.label;sel.append(o)});
   if(d.master)sel.value=d.master.id;
   const sv=el('button','','Use as master');sv.style.marginTop='8px';
-  sv.onclick=()=>{if(!sel.value)return;if(!confirm('Use this account as the copy-trading master? Members will copy the trades you flag on it, and every new trade on it if automatic copying is on.'))return;act(()=>api('/master','POST',{account:Number(sel.value)}))};
-  m.append(sel,sv);
+  sv.onclick=()=>{if(!sel.value)return;if(!confirm('Use this account as the copy-trading master? Members will copy the trades you flag on it, and every new trade on it if automatic copying is on.'))return;act(()=>api('/master','POST',{account:Number(sel.value)}),mm)};
+  const mm=el('div','mut');m.append(sel,sv,mm);
   if(d.master)m.append(kv('Master',d.master.label+(d.master.connected?' (connected)':' (not connected)'),d.master.connected?'win':'warn'));
   m.append(kv('Active followers',String(d.followers)));root.append(m);
 
