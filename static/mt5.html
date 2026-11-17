@@ -201,6 +201,13 @@ async function loadCopy(sel){
     const mnote=el('div','mut','Each trade is copied with the same entry, stop loss and take profit, sized to your balance so it risks the same percentage as the team\'s trade. A $100 team account trading 0.40 lot is a $10 account trading 0.04 lot and a $1,000 account trading 4.00 lots. You do not need to change anything.');
     const show=()=>{w1.hidden=md.value!=='fixed';w2.hidden=md.value!=='risk';mnote.hidden=md.value!=='mirror'};md.onchange=show;show();
     if(a.how==='auto'||a.how==='admin')box.append(el('div','win',a.how==='auto'?'Copy trading was switched on for you automatically. You only need to change the settings below if you want something different.':'The TradeLens team set up copy trading for you. You only need to change the settings below if you want something different.'));
+    if(a.offer){const oc=el('div','card');oc.style.cssText='margin:10px 0;border:1px solid var(--gold2)';
+      oc.append(el('h2','','TradeLens suggests a higher per-trade limit'),
+        el('div','mut','Your limit is now '+a.offer.from_pct+'% of your balance per trade. The suggestion is '+a.offer.pct+'%, so larger trades from the team can be copied to you. A single trade could then lose up to '+a.offer.pct+'% of your account. Your daily loss limit and equity protection still apply.'+(a.offer.message?' Note from the team: '+a.offer.message:'')));
+      const ans=async ok=>{try{const r=await fetch('/api/copy/me/limit-offer',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:a.offer.id,accept:ok})});const dd=await r.json().catch(()=>({}));
+        if(!r.ok)throw new Error(typeof dd.detail==='string'?dd.detail:'HTTP '+r.status);loadCopy(sel)}catch(e){alert(e.message)}};
+      const ya=el('button','','Accept '+a.offer.pct+'%'),na=el('button','ghost','Decline');na.style.marginLeft='8px';
+      ya.onclick=()=>{if(confirm('Raise your per-trade limit to '+a.offer.pct+'%?'))ans(true)};na.onclick=()=>ans(false);oc.append(ya,na);box.append(oc)}
     box.append(el('label','','Sizing'),md,mnote,w1,w2,el('label','','Never risk more than (% of balance)'),cp,
       el('div','mut','If a copy would risk more than this, it is not placed. Your own risk rule is the limit unless you set one here, and your daily loss limit and equity protection also stop copies.'));
     const sv=el('button','','Save copy settings');sv.style.marginTop='10px';const mg=el('div','mut');

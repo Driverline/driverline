@@ -540,7 +540,8 @@ async def me_get(request):
             accts.append({"id": a["id"], "label": a["label"], "is_master": a["id"] == mid, "enabled": bool(m and m["enabled"]), "needs": needs,
                           "how": m["how"] if m else None, "mode": m["mode"] if m else "fixed", "fixed_lots": m["fixed_lots"] if m else None,
                           "risk_pct": m["risk_pct"] if m else 1.0, "max_risk_pct": (m["max_risk_pct"] if m and m["max_risk_pct"] else None),
-                          "own_limit_pct": rules["max_risk_pct"]})
+                          "own_limit_pct": rules["max_risk_pct"], "limit_pct": cap,
+                          "offer": (lambda o: {"id": o["id"], "pct": o["offered_pct"], "from_pct": o["from_pct"], "message": o["message"]} if o else None)(_pending_offer(con, a["id"]) if m else None)})
         jobs = [_job_out(dict(r)) for r in con.execute("SELECT * FROM copy_jobs WHERE user_id=? ORDER BY id DESC LIMIT 20", (u["id"],)).fetchall()]
     return JSONResponse({"subscribed": bool(ends), "ends_at": ends or None, "now": now, "accounts": accts, "recent": jobs,
                          "plan": copy_plan.view(u)})
@@ -623,6 +624,83 @@ async def admin_get(request):
                          "flags": flags, "followers": followers, "subscribers": subs, "now": now, "auto": auto, "setup": setup_board(mid)})
 
 
+OFFER_TTL = 7 * 86400
+LIMIT_MAX = 10.0
+
+
+def effective_limit(con, aid: int) -> float:
+    """The per-trade limit that gates copies for this account: the member's own copy limit, else their account risk rule."""
+    m = con.execute("SELECT max_risk_pct FROM copy_members WHERE account_id=?", (aid,)).fetchone()
+    return (m["max_risk_pct"] if m and m["max_risk_pct"] else None) or _f(ea.get_rules(con, aid).get("max_risk_pct"))
+
+
+def _pending_offer(con, aid: int):
+    r = con.execute("SELECT * FROM copy_limit_offers WHERE account_id=? AND status='pending' ORDER BY id DESC LIMIT 1", (aid,)).fetchone()
+    if r and _now() - r["created_at"] > OFFER_TTL:
+        con.execute("UPDATE copy_limit_offers SET status='expired', decided_at=? WHERE id=?", (_now(), r["id"]))
+        con.commit()
+        return None
+    return r
+
+
+async def admin_offer(request):
+    """Admin proposes a higher per-trade limit for a member's account. Nothing changes until the member accepts."""
+    u = auth.require_admin(request)
+    d = await auth._json(request)
+    pct = _num(d, "pct", 0.05, LIMIT_MAX, allow_none=False)
+    msg = str(d.get("message") or "").strip()[:600]
+    with closing(ea.db()) as con:
+        m = con.execute("SELECT account_id, user_id FROM copy_members WHERE account_id=?", (d.get("account_id"),)).fetchone() if d.get("account_id") is not None else None
+        if not m or m["account_id"] == master_id(con):
+            raise HTTPException(404, "That account does not have copy trading set up yet")
+        aid, uid = m["account_id"], m["user_id"]
+        cur = effective_limit(con, aid)
+        if pct <= cur:
+            raise HTTPException(422, f"The member's limit is already {cur:g}%. An offer must be higher.")
+        con.execute("UPDATE copy_limit_offers SET status='cancelled', decided_at=? WHERE account_id=? AND status='pending'", (_now(), aid))
+        oid = con.insert("INSERT INTO copy_limit_offers(account_id,user_id,from_pct,offered_pct,message,status,admin_id,created_at) VALUES(?,?,?,?,?,'pending',?,?)",
+                         (aid, uid, cur, pct, msg, u["id"], _now()))
+        con.commit()
+    _tell(uid, f"TradeLens suggests raising your copy trading limit from {cur:g}% to {pct:g}% of your balance per trade, so the team's larger trades can be copied to you. "
+               f"{msg + ' ' if msg else ''}Nothing changes unless you accept. Open the MT5 tab, Copy trading, and choose Accept or Decline. A higher limit means a single trade can lose more of your account. "
+               f"Your daily loss limit and equity protection still apply. The offer expires in 7 days.")
+    print(f"[copy] admin {u['id']} offered member {uid} a {pct:g}% limit (offer {oid})", flush=True)
+    return JSONResponse({"ok": True, "id": oid})
+
+
+async def admin_offer_cancel(request):
+    auth.require_admin(request)
+    d = await auth._json(request)
+    with closing(ea.db()) as con:
+        n = con.execute("UPDATE copy_limit_offers SET status='cancelled', decided_at=? WHERE id=? AND status='pending'", (_now(), d.get("id"))).rowcount
+        con.commit()
+    if not n:
+        raise HTTPException(404, "No pending offer with that id")
+    return JSONResponse({"ok": True})
+
+
+async def me_offer(request):
+    """The member accepts or declines an offered limit. Accepting sets their own copy limit; they can change it again whenever they like."""
+    u = auth.require_user(request)
+    d = await auth._json(request)
+    with closing(ea.db()) as con:
+        o = con.execute("SELECT * FROM copy_limit_offers WHERE id=? AND user_id=?", (d.get("id"), u["id"])).fetchone()
+        if not o or o["status"] != "pending" or _now() - o["created_at"] > OFFER_TTL:
+            raise HTTPException(409, "This offer is no longer open")
+        accept = d.get("accept") is True
+        if accept:
+            if not con.execute("UPDATE copy_members SET max_risk_pct=?, updated_at=? WHERE account_id=? AND user_id=?", (o["offered_pct"], _now(), o["account_id"], u["id"])).rowcount:
+                raise HTTPException(409, "Copy trading is not set up on this account")
+        con.execute("UPDATE copy_limit_offers SET status=?, decided_at=? WHERE id=?", ("accepted" if accept else "declined", _now(), o["id"]))
+        con.commit()
+    try:
+        from . import admin_alerts
+        admin_alerts.limit_offer_answer(u["id"], o["id"], accept, o["offered_pct"])
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "accepted": accept, "limit_pct": o["offered_pct"] if accept else o["from_pct"]})
+
+
 def setup_board(mid) -> list:
     """Members who have paid for (or been given) copy trading, with where each one stands: no MT5 yet, connected but not copying, copying."""
     ck = sorted(copy_plan.copy_keys())
@@ -647,7 +725,9 @@ def setup_board(mid) -> list:
             rows = []
             for a in accts:
                 m = con.execute("SELECT enabled, mode, how FROM copy_members WHERE account_id=?", (a["id"],)).fetchone()
-                rows.append({"id": a["id"], "label": a["label"], "connected": ea._connected(a),
+                off = _pending_offer(con, a["id"]) if m else None
+                rows.append({"id": a["id"], "label": a["label"], "connected": ea._connected(a), "limit_pct": effective_limit(con, a["id"]) if m else None,
+                             "offer": {"id": off["id"], "pct": off["offered_pct"]} if off else None,
                              "state": "off" if m and not m["enabled"] else ("on" if m else "not_set_up"), "mode": m["mode"] if m else None, "how": m["how"] if m else None})
             out.append({"user_id": uid, "email": u["email"], "until": st["until"], "swap": st["swap"], "accounts": rows})
     out.sort(key=lambda r: (not r["accounts"], any(a["state"] == "on" for a in r["accounts"])))
@@ -797,4 +877,7 @@ routes = [
     Route("/api/copy/admin/flag/{fid:int}", admin_flag_jobs, methods=["GET"]),
     Route("/api/copy/admin/subscription", admin_sub, methods=["POST"]),
     Route("/api/copy/admin/member", admin_member, methods=["POST"]),
+    Route("/api/copy/admin/limit-offer", admin_offer, methods=["POST"]),
+    Route("/api/copy/admin/limit-offer/cancel", admin_offer_cancel, methods=["POST"]),
+    Route("/api/copy/me/limit-offer", me_offer, methods=["POST"]),
 ]

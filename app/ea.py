@@ -55,6 +55,9 @@ EA_SCHEMA = """
     CREATE TABLE IF NOT EXISTS copy_subs(user_id INTEGER PRIMARY KEY, ends_at BIGINT NOT NULL, note TEXT, admin_id INTEGER, updated_at BIGINT NOT NULL);
     CREATE TABLE IF NOT EXISTS copy_members(account_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
         mode TEXT NOT NULL DEFAULT 'fixed', fixed_lots DOUBLE PRECISION, risk_pct DOUBLE PRECISION, max_risk_pct DOUBLE PRECISION, updated_at BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS copy_limit_offers(id {ID}, account_id INTEGER NOT NULL, user_id INTEGER NOT NULL, from_pct DOUBLE PRECISION, offered_pct DOUBLE PRECISION NOT NULL,
+        message TEXT, status TEXT NOT NULL, admin_id INTEGER, created_at BIGINT NOT NULL, decided_at BIGINT);
+    CREATE INDEX IF NOT EXISTS ix_limit_offers ON copy_limit_offers(account_id, status);
     CREATE TABLE IF NOT EXISTS copy_flags(id {ID}, master_account_id INTEGER NOT NULL, master_ticket BIGINT NOT NULL, symbol TEXT NOT NULL,
         dir TEXT NOT NULL, open_price DOUBLE PRECISION NOT NULL, sl DOUBLE PRECISION NOT NULL, tp DOUBLE PRECISION NOT NULL,
         status TEXT NOT NULL, admin_id INTEGER, created_at BIGINT NOT NULL, closed_at BIGINT);
@@ -787,7 +790,7 @@ def _protect_events(con, uid: int, aid: int, events):
 
 def _remove(con, a: dict):
     aid = a["id"]
-    for t in ("ea_acct_state", "ea_acct_rules", "ea_acct_manage", "copy_members", "ea_protect_log"):
+    for t in ("ea_acct_state", "ea_acct_rules", "ea_acct_manage", "copy_members", "ea_protect_log", "copy_limit_offers"):
         con.execute(f"DELETE FROM {t} WHERE account_id=?", (aid,))
     con.execute("UPDATE copy_jobs SET status='closed', note='Account removed' WHERE account_id=? AND status IN ('waiting','sent','open')", (aid,))
     con.execute("UPDATE auto_jobs SET status='closed', note='Account removed' WHERE account_id=? AND status IN ('waiting','sent','open')", (aid,))
