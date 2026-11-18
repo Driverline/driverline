@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, admin_alerts, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, wallet, rewards, commission, prizes, partners, pending_orders, tg_bot, copy_trading, copy_plan, autotrade, price_alerts, mt5_requests, inbox, recap
+from . import admin, admin_alerts, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, wallet, expiry_reminders, rewards, commission, prizes, partners, pending_orders, tg_bot, copy_trading, copy_plan, autotrade, price_alerts, mt5_requests, inbox, recap
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -158,6 +158,8 @@ async def lifespan(app):
         tasks.append(asyncio.create_task(engine_signals.engine_loop()))
     if os.environ.get("NOWPAYMENTS_API_KEY"):   # re-checks open crypto orders with NOWPayments, so a lost notification only delays
         tasks.append(asyncio.create_task(nowpay.reconcile_loop()))
+    if expiry_reminders.enabled():         # reminders 3 days and 1 day before a plan ends, and a notice when it has ended (expiry_reminders.py)
+        tasks.append(asyncio.create_task(expiry_reminders.loop()))
     if recap.enabled():                    # the daily Telegram recap: only when DAILY_RECAP=1 and the bot token and channel are set (recap.py)
         tasks.append(asyncio.create_task(recap.loop()))
     yield
@@ -184,6 +186,7 @@ routes = [
     *nowpay.routes,
     *naira.routes,
     *wallet.routes,
+    *expiry_reminders.routes,
     *tg_bot.routes,
     *deriv_login.routes,
     *deriv_trade.routes,

@@ -45,6 +45,8 @@ SCHEMA = """
         kind TEXT NOT NULL, provider_status TEXT, detail TEXT, dedupe_key TEXT UNIQUE, admin_id INTEGER, created_at BIGINT NOT NULL);
     CREATE INDEX IF NOT EXISTS ix_pevents_order ON payment_events(order_id, id);
     CREATE INDEX IF NOT EXISTS ix_pevents_kind ON payment_events(kind, id);
+    CREATE TABLE IF NOT EXISTS expiry_notices(user_id INTEGER NOT NULL, service TEXT NOT NULL, stage TEXT NOT NULL, end_ts BIGINT NOT NULL, sent_at BIGINT NOT NULL,
+        PRIMARY KEY(user_id, service, stage, end_ts));
     CREATE TABLE IF NOT EXISTS wallet_balances(user_id INTEGER PRIMARY KEY, balance_cents BIGINT NOT NULL DEFAULT 0 CHECK (balance_cents >= 0));
     CREATE TABLE IF NOT EXISTS wallet_ledger(id {ID}, user_id INTEGER NOT NULL, delta_cents BIGINT NOT NULL, kind TEXT NOT NULL,
         ref TEXT NOT NULL, note TEXT, admin_id INTEGER, created_at BIGINT NOT NULL);

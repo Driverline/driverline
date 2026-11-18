@@ -31,7 +31,8 @@ const SECTIONS=[
   ['naira','Naira (Moniepoint)','Naira payments (Moniepoint)',b=>loadNaira(b)],
   ['crypto','Crypto','Crypto payments (NOWPayments)',b=>loadCrypto(b,'open')],
   ['manual','Manual USDT and credits','Billing and signal credits',b=>loadBilling(b)],
-  ['wallet','Wallet','Member wallets',b=>loadWallet(b)]];
+  ['wallet','Wallet','Member wallets',b=>loadWallet(b)],
+  ['expiring','Expiring plans','Plans ending soon',b=>loadExpiring(b)]];
 function show(key){
   const s=SECTIONS.find(x=>x[0]===key)||SECTIONS[0];
   try{history.replaceState(null,'','#'+s[0])}catch(e){}
@@ -139,6 +140,14 @@ async function loadCrypto(box,filter){
     row.append(hs);d.append(row,hb);box.append(d)});
   if(r.exceptions.length){box.append(el('h2','','Recent exceptions'));
     r.exceptions.forEach(x=>{const e=el('div','mut',when(x.created_at)+' · '+x.kind+(x.order_id?' · order #'+x.order_id:'')+' · '+(x.detail||''));e.style.fontSize='13px';box.append(e)})}
+}
+async function loadExpiring(box){
+  box.textContent='';
+  let r;try{r=await api('/expiring')}catch(e){box.append(el('div','err',e.message));return}
+  box.append(el('div','mut','Members whose notifications, MT5 connection (with AutoTrading) or copy trading end within 7 days, or ended in the last 3 days. Each member is reminded automatically 3 days and 1 day before, and told when it has ended. Contact the ones who matter to you.'));
+  if(!r.members.length){box.append(el('div','mut','Nothing is ending soon.'));return}
+  r.members.forEach(m=>{box.append(el('h3','',m.email));
+    m.services.forEach(s=>box.append(kv(s.service,(s.ended?'ended ':'ends ')+new Date(s.ends_at*1000).toLocaleString([], {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}),s.ended?'loss':'warn')))});
 }
 async function loadWallet(box){
   box.textContent='';
