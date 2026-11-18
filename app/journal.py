@@ -1,6 +1,7 @@
 import json
 import math
 import re
+import time
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -219,10 +220,73 @@ async def add_trade(request):
         return JSONResponse({"id": new_id})
 
 
+CONNECTED_WITHIN = 120          # seconds: the EA reports every few seconds, so a login seen in the last two minutes is connected
+_LOGIN_OK = re.compile(r"^[0-9A-Za-z_-]{1,40}$")
+_TS_OK = re.compile(r"^\d{4}-\d{2}-\d{2}(T[0-9:+\-.Z]*)?$")
+
+
+def _iso(t: int) -> str:
+    return datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds")
+
+
+def mt5_accounts(uid: int) -> list:
+    """The MT5 logins this member has had connected, newest activity first: login, server, since (first connected), last_seen, connected, current.
+    Logins that only exist in old imported trades (before connections were tracked) are listed without a start time."""
+    from . import ea
+    out, now = {}, int(time.time())
+    with closing(ea.db()) as ec:
+        for r in ec.execute("SELECT login, server, started_at, last_seen FROM mt5_sessions WHERE user_id=? ORDER BY id", (uid,)).fetchall():
+            a = out.setdefault(r["login"], {"login": r["login"], "server": r["server"], "since": r["started_at"], "last_seen": r["last_seen"]})
+            a["since"], a["last_seen"], a["server"] = min(a["since"], r["started_at"]), max(a["last_seen"], r["last_seen"]), r["server"] or a["server"]
+    with closing(db()) as con:
+        for r in con.execute("SELECT DISTINCT mt5_id FROM trades WHERE user_id=? AND mt5_id IS NOT NULL", (uid,)).fetchall():
+            lg = str(r["mt5_id"]).split(":")[0]
+            out.setdefault(lg, {"login": lg, "server": None, "since": None, "last_seen": None})
+    rows = sorted(out.values(), key=lambda a: a["last_seen"] or 0, reverse=True)
+    for i, a in enumerate(rows):
+        a["connected"] = bool(a["last_seen"] and now - a["last_seen"] <= CONNECTED_WITHIN)
+        a["current"] = i == 0 and bool(a["last_seen"])
+    return rows
+
+
+def _scope(request, uid: int):
+    """(WHERE text, args, info) for the account and date range asked for. No account given: the MT5 login that is connected now (else the manual journal)."""
+    q = request.query_params if hasattr(request, "query_params") else {}
+    acct, frm, to = (q.get("account") or "").strip(), (q.get("from") or "").strip(), (q.get("to") or "").strip()
+    accounts = mt5_accounts(uid)
+    if not acct:
+        acct = accounts[0]["login"] if accounts and accounts[0]["current"] else "manual"
+    where, args = "user_id=?", [uid]
+    if acct == "manual":
+        where += " AND mt5_id IS NULL"
+    else:
+        if not _LOGIN_OK.match(acct):
+            raise HTTPException(422, "Unknown account")
+        where += " AND mt5_id LIKE ?"
+        args.append(acct + ":%")
+        since = next((a["since"] for a in accounts if a["login"] == acct), None)
+        if since:                                    # nothing from before this login was connected to TradeLens
+            where += " AND COALESCE(closed_at, opened_at) >= ?"
+            args.append(_iso(since))
+    for v, op in ((frm, ">="), (to, "<")):
+        if v:
+            if not _TS_OK.match(v):
+                raise HTTPException(422, "Dates must look like 2026-11-18 or 2026-11-18T00:00:00+00:00")
+            where += f" AND COALESCE(closed_at, opened_at) {op} ?"
+            args.append(v)
+    return where, args, {"account": acct, "from": frm or None, "to": to or None}
+
+
+async def accounts(request):
+    uid = require_user(request)["id"]
+    return JSONResponse({"accounts": mt5_accounts(uid), "now": int(time.time())})
+
+
 async def list_trades(request):
     uid = require_user(request)["id"]
+    where, args, _ = _scope(request, uid)
     with closing(db()) as con:
-        rows = con.execute("SELECT * FROM trades WHERE user_id=? ORDER BY id DESC LIMIT 200", (uid,)).fetchall()
+        rows = con.execute(f"SELECT * FROM trades WHERE {where} ORDER BY id DESC LIMIT 300", args).fetchall()
     return JSONResponse([dict(r) for r in rows])
 
 
@@ -285,8 +349,9 @@ async def delete_trade(request):
 
 async def stats(request):
     uid = require_user(request)["id"]
+    where, args, _ = _scope(request, uid)
     with closing(db()) as con:
-        rows = con.execute("SELECT * FROM trades WHERE user_id=?", (uid,)).fetchall()
+        rows = con.execute(f"SELECT * FROM trades WHERE {where}", args).fetchall()
     return JSONResponse(compute_stats(rows))
 
 
@@ -294,11 +359,12 @@ async def review(request):
     user = require_user(request)
     if user["tier"] not in ("member", "admin"):
         raise HTTPException(403, "The AI review is for members. Ask your admin to upgrade you.")
+    where, args, _ = _scope(request, user["id"])      # the review looks at the same account and dates as the page
     with closing(db()) as con:
-        rows = con.execute("SELECT * FROM trades WHERE user_id=? ORDER BY id", (user["id"],)).fetchall()
+        rows = con.execute(f"SELECT * FROM trades WHERE {where} ORDER BY id", args).fetchall()
     closed = [r for r in rows if r["status"] == "closed"]
     if len(closed) < 5:
-        raise HTTPException(400, f"Log at least 5 closed trades first (you have {len(closed)}).")
+        raise HTTPException(400, f"You need at least 5 closed trades in this view (it has {len(closed)}). Choose a wider date range or another account.")
     if not reserve_quota(user):                # atomic: parallel requests cannot pass the daily limit
         raise HTTPException(429, "Daily AI limit reached. Try again tomorrow.")
     recent = [{k: r[k] for k in ("instrument", "direction", "pnl", "r_multiple", "followed_plan",
@@ -316,6 +382,7 @@ async def review(request):
 
 
 routes = [
+    Route("/api/journal/accounts", accounts, methods=["GET"]),
     Route("/api/journal/stats", stats, methods=["GET"]),
     Route("/api/journal/review", review, methods=["POST"]),
     Route("/api/journal", list_trades, methods=["GET"]),

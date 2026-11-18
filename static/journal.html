@@ -14,6 +14,13 @@
 <body>
 <header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
 <main>
+<div class="card" id="scope">
+<label for="acct">Account</label><select id="acct"></select>
+<div class="mut" id="acctinfo"></div>
+<label for="rng" style="margin-top:10px">Period</label>
+<select id="rng"><option value="all">Everything since connected</option><option value="today">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="custom">Custom range</option></select>
+<div class="row" id="custom" hidden><div><label for="d1">From</label><input id="d1" type="date"></div><div><label for="d2">To</label><input id="d2" type="date"></div></div>
+</div>
 <div class="card" id="stats"><span class="mut">Loading...</span></div>
 <div class="btns"><button id="rv">AI review of my trades</button></div>
 <div id="review"></div>
@@ -115,11 +122,43 @@ function tradeCard(t){
   btns.append(del);
   return c;
 }
+const pad=n=>String(n).padStart(2,'0');
+// A calendar day in the member's own time zone, as the UTC instant the server compares with.
+function utcIso(y,m,d){const t=new Date(y,m,d,0,0,0);return t.getUTCFullYear()+'-'+pad(t.getUTCMonth()+1)+'-'+pad(t.getUTCDate())+'T'+pad(t.getUTCHours())+':'+pad(t.getUTCMinutes())+':00+00:00'}
+function range(){
+  const v=$('rng').value,n=new Date(),y=n.getFullYear(),m=n.getMonth(),d=n.getDate();
+  if(v==='today')return{from:utcIso(y,m,d),to:utcIso(y,m,d+1)};
+  if(v==='7'||v==='30')return{from:utcIso(y,m,d-(+v-1)),to:utcIso(y,m,d+1)};
+  if(v==='custom'){const r={};
+    if($('d1').value){const p=$('d1').value.split('-');r.from=utcIso(+p[0],+p[1]-1,+p[2])}
+    if($('d2').value){const p=$('d2').value.split('-');r.to=utcIso(+p[0],+p[1]-1,+p[2]+1)}
+    return r}
+  return{};
+}
+function qs(){
+  const p=new URLSearchParams(),r=range();p.set('account',$('acct').value||'');
+  if(r.from)p.set('from',r.from);if(r.to)p.set('to',r.to);
+  return '?'+p.toString();
+}
+const dt=t=>t?new Date(t*1000).toLocaleString([], {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+async function loadAccounts(keep){
+  let a={accounts:[]};try{a=await api('/accounts')}catch(e){}
+  const sel=$('acct'),prev=keep?sel.value:'';sel.textContent='';
+  a.accounts.forEach(x=>opt(sel,x.login,'MT5 '+x.login+(x.server?' ('+x.server+')':'')+(x.current?(x.connected?' - connected':' - last connected'):' - earlier account')));
+  opt(sel,'manual','Trades I logged by hand');
+  sel.value=prev&&[...sel.options].some(o=>o.value===prev)?prev:(a.accounts.length&&a.accounts[0].current?a.accounts[0].login:'manual');
+  window.__accts=a.accounts;info();
+}
+function info(){
+  const x=(window.__accts||[]).find(a=>a.login===$('acct').value),b=$('acctinfo');
+  if(!x){b.textContent=$('acct').value==='manual'?'Trades you typed in yourself. They are not from an MT5 account.':'';return}
+  b.textContent=x.since?('Records from '+dt(x.since)+(x.connected?' until now (connected).':' to '+dt(x.last_seen)+' (not connected now).')):'Records of an earlier connection.';
+}
 async function load(){
   try{
-    const [s,l]=await Promise.all([api('/stats'),api('')]);
+    const [s,l]=await Promise.all([api('/stats'+qs()),api(qs())]);
     renderStats(s);const list=$('list');list.textContent='';
-    if(!l.length)list.append(el('div','mut','No trades logged yet.'));
+    if(!l.length)list.append(el('div','mut','No trades in this account and period.'));
     l.forEach(t=>list.append(tradeCard(t)));
   }catch(e){$('stats').textContent='Cannot reach backend: '+e.message}
 }
@@ -130,6 +169,7 @@ $('add').onclick=async()=>{
     await post('',{instrument:$('ins').value,direction:$('dir').value,entry,stop:num('sl'),target:num('tp'),
       lots:num('lots'),emotion:$('emo').value||null,notes:$('nt').value||null});
     ['en','sl','tp','lots','nt'].forEach(i=>$(i).value='');$('logbox').open=false;
+    await loadAccounts(true);$('acct').value='manual';$('rng').value='all';$('custom').hidden=true;info();     // a trade typed in by hand lives in the manual journal: show it
     try{localStorage.removeItem('dl_last')}catch(e){}
     load();
   }catch(e){$('msg').textContent=e.message}
@@ -137,7 +177,7 @@ $('add').onclick=async()=>{
 $('rv').onclick=async()=>{
   const b=$('rv'),out=$('review');b.disabled=true;b.textContent='Reviewing...';out.textContent='';
   try{
-    const r=await post('/review');const c=el('div','card');
+    const r=await post('/review'+qs());const c=el('div','card');
     c.append(el('h2','','Review'),el('div','',r.summary));
     if(r.patterns.length){c.append(el('h2','','Patterns'));const ul=el('ul');
       r.patterns.forEach(p=>{const li=el('li','',p.finding+' ');li.append(el('span','mut','('+p.evidence+')'));ul.append(li)});c.append(ul)}
@@ -156,6 +196,10 @@ $('rv').onclick=async()=>{
     if(last){$('ins').value=last.key;if(last.direction)$('dir').value=last.direction;
       $('en').value=last.entry??'';$('sl').value=last.stop??'';$('tp').value=last.target??'';$('logbox').open=true}
   }catch(e){}
+  await loadAccounts(false);
+  $('acct').onchange=()=>{info();load()};
+  $('rng').onchange=()=>{$('custom').hidden=$('rng').value!=='custom';load()};
+  $('d1').onchange=$('d2').onchange=load;
   load();
 })();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});

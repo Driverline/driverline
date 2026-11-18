@@ -42,6 +42,9 @@ EA_SCHEMA = """
     CREATE TABLE IF NOT EXISTS ea_manage(user_id INTEGER PRIMARY KEY, settings TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_accounts(id {ID}, user_id INTEGER NOT NULL, label TEXT NOT NULL, key_hash TEXT UNIQUE NOT NULL,
         created_at BIGINT NOT NULL, last_seen BIGINT, login TEXT);
+    CREATE TABLE IF NOT EXISTS mt5_sessions(id {ID}, user_id INTEGER NOT NULL, ea_account_id INTEGER NOT NULL, login TEXT NOT NULL, server TEXT,
+        started_at BIGINT NOT NULL, last_seen BIGINT NOT NULL);
+    CREATE INDEX IF NOT EXISTS ix_mt5_sessions ON mt5_sessions(user_id, login);
     CREATE TABLE IF NOT EXISTS ea_acct_state(account_id INTEGER PRIMARY KEY, state TEXT NOT NULL, specs TEXT, updated_at BIGINT NOT NULL);
     CREATE TABLE IF NOT EXISTS ea_acct_rules(account_id INTEGER PRIMARY KEY, max_risk_pct DOUBLE PRECISION NOT NULL,
         daily_loss_pct DOUBLE PRECISION NOT NULL, max_positions INTEGER NOT NULL);
@@ -98,6 +101,10 @@ def _migrate(con):
     con.add_column("copy_flags", "master_risk_pct", "DOUBLE PRECISION")    # followers in "match the team's risk" mode risk the same percentage
     con.add_column("copy_members", "how", "TEXT")                          # 'auto' (switched on automatically after payment), 'admin' or 'self'
     con.execute("CREATE INDEX IF NOT EXISTS ix_copy_auto_seen_acct ON copy_auto_seen(master_account_id, first_seen)")
+    # The journal shows the records of the MT5 login that is connected, from when it connected. Logins already connected get their first session from the
+    # moment their connection key was created (the best that is known); every later change is recorded exactly by track_session.
+    con.execute("INSERT INTO mt5_sessions(user_id,ea_account_id,login,server,started_at,last_seen) SELECT a.user_id,a.id,a.login,NULL,a.created_at,COALESCE(a.last_seen,a.created_at) "
+                "FROM ea_accounts a WHERE a.login IS NOT NULL AND a.login<>'' AND NOT EXISTS (SELECT 1 FROM mt5_sessions s WHERE s.ea_account_id=a.id)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_mt5_requests_status ON mt5_requests(status, user_id)")
     # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and
     # auto-manage settings, so a connected EA keeps working untouched. The old tables are left as they are (rollback safety).
@@ -256,6 +263,18 @@ def risk_check(state: dict, rules: dict) -> dict:
     }
 
 
+def track_session(con, uid: int, aid: int, login: str, server, now: int):
+    """One row per period in which an MT5 login was connected through this key: continued while the same login keeps reporting, a new row when it changes
+    or comes back after more than SESSION_GAP seconds of silence. The journal uses these periods."""
+    if not login:
+        return
+    s = con.execute("SELECT id, login, last_seen FROM mt5_sessions WHERE ea_account_id=? ORDER BY id DESC LIMIT 1", (aid,)).fetchone()
+    if s and s["login"] == login and now - s["last_seen"] <= SESSION_GAP:
+        con.execute("UPDATE mt5_sessions SET last_seen=? WHERE id=?", (now, s["id"]))
+    else:
+        con.insert("INSERT INTO mt5_sessions(user_id,ea_account_id,login,server,started_at,last_seen) VALUES(?,?,?,?,?,?)", (uid, aid, login, str(server or "")[:60], now, now))
+
+
 async def report(request):
     """Called by the MT5 EA with the connection key. No browser login involved."""
     key = request.headers.get("x-driverline-key", "")
@@ -301,6 +320,12 @@ async def report(request):
                     "specs=COALESCE(excluded.specs, ea_acct_state.specs), updated_at=excluded.updated_at",
                     (aid, json.dumps(state), specs_json, int(now)))
         con.execute("UPDATE ea_accounts SET last_seen=?, login=COALESCE(NULLIF(?, ''), login) WHERE id=?", (int(now), login, aid))
+        try:
+            track_session(con, uid, aid, login, acc.get("server"), int(now))
+        except Exception as e:
+            con.raw.rollback()
+            print(f"[ea] session tracking failed: {type(e).__name__}", flush=True)
+            con.execute("UPDATE ea_accounts SET last_seen=?, login=COALESCE(NULLIF(?, ''), login) WHERE id=?", (int(now), login, aid))
         con.commit()
         try:                                       # copy trading: follow flagged trades / follow the master closing (never blocks the EA)
             from . import copy_trading
@@ -489,6 +514,7 @@ MANAGE_DEFAULT = {"be_on": False, "be_trigger": 1.0, "be_offset": 0.1,
                   "ttp_on": False, "ttp_near": 0.3, "ttp_step": 1.0, "excluded": [],
                   # Equity protection for trades with NO stop loss, or a stop that risks too much of the account (off unless chosen)
                   "prot_mode": "off", "prot_risk_pct": 4.5, "prot_cap_pct": 4.5, "prot_grace": 45, "prot_be_pct": 1.0, "prot_pending": {}}
+SESSION_GAP = 6 * 3600          # a login silent for longer than this (terminal closed, AutoTrading and EA stopped) starts a new session when it reports again
 PROT_MODES = {"off": 0, "breakeven": 1, "stop": 2, "close": 3}     # higher = stricter
 PROT_RANGES = {"prot_risk_pct": (0.25, 10.0), "prot_cap_pct": (0.5, 25.0), "prot_grace": (10, 300), "prot_be_pct": (0.25, 10.0)}
 PROT_LOOSEN_DELAY = 24 * 3600   # a setting that makes protection weaker only takes effect this long after it was asked for

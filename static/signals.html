@@ -108,6 +108,7 @@ function card(s){
   h.append(el('span','',s.name+' '),el('span',s.direction==='BUY'?'BUY':'SELL',s.direction));
   c.append(h);
   const t=el('div');t.append(el('span','tag',STY[s.style]),el('span','tag '+s.risk,s.risk+' risk'),el('span','mut',SET[s.setup]+' \u00b7 '+ago(s.created_at)));c.append(t);
+  if(tradedIds.has(s.id))c.append(el('div','mut','You already traded this setup.'));
   if(s.status!=='open'){
     const r=s.result_r;c.append(el('div',r>0?'win':'loss','Finished: '+({target:'target reached',stop:'stop hit',timeout:'time ran out'}[s.status]||s.status)+(r===null?'':' ('+sg(r)+'R after costs)')));
   }else if(!s.actionable)c.append(el('div','mut','This setup is no longer fresh enough to enter.'));
@@ -237,6 +238,8 @@ async function loadDvTrades(){
   if(!dv.enabled){box.hidden=true;return}
   try{
     const r=await api('/api/deriv/trades');box.textContent='';
+    const ids=new Set(r.trades.filter(t=>t.status==='placed').map(t=>t.signal_id));
+    if(ids.size!==tradedIds.size||[...ids].some(i=>!tradedIds.has(i))){tradedIds=ids;if(state&&!hold){renderChips();renderList()}}
     if(!r.trades.length){box.hidden=true;return}
     box.hidden=false;box.append(el('h2','','Your Deriv trades from TradeLens'));
     r.trades.forEach(t=>{
@@ -273,14 +276,17 @@ const STYLES=[['scalp','Scalp','Fast, short setups',
     '<path d="M3 15c3-8 6-8 9 0s6 8 9 0"/>'],
   ['h4','H4 gold','Gold on the 4-hour chart',
     '<path d="M6 4h12l3 5-9 11L3 9z"/><path d="M3 9h18M9 4l3 5 3-5M12 9v11"/>']];
-let view=(location.hash||'').slice(1),gOpen={},eOpen={};
+let view=(location.hash||'').slice(1),gOpen={};
+let showPast=false;try{showPast=localStorage.getItem('tl_past')==='1'}catch(e){}
+let tradedIds=new Set();      // setups the member already traded through Deriv (placed trades)
 if(!STYLES.some(x=>x[0]===view))view=null;
-const isActive=s=>s.status==='open'&&s.actionable!==false;     // open and still fresh enough to enter
+const isActive=s=>s.status==='open'&&s.actionable!==false&&!tradedIds.has(s.id);     // open, still fresh enough to enter and not traded yet
 const byNew=(a,b)=>(b.created_at||0)-(a.created_at||0);
 function groupsOf(style){
   const m={};
   (state.signals||[]).filter(s=>s.style===style).forEach(s=>{(m[s.name]=m[s.name]||{name:s.name,active:[],older:[]})[isActive(s)?'active':'older'].push(s)});
-  const gs=Object.values(m);gs.forEach(g=>{g.active.sort(byNew);g.older.sort(byNew)});
+  let gs=Object.values(m);gs.forEach(g=>{g.active.sort(byNew);g.older.sort(byNew)});
+  if(!showPast)gs=gs.filter(g=>g.active.length);          // by default only what can still be acted on
   const newest=g=>Math.max(...(g.active.length?g.active:g.older).map(s=>s.created_at||0));
   // groups with something to act on first; then the most recent symbol first
   gs.sort((a,b)=>(b.active.length>0)-(a.active.length>0)||newest(b)-newest(a)||a.name.localeCompare(b.name));
@@ -301,28 +307,36 @@ function renderChips(){
     if(act)b.append(el('span','n',String(act)));
     b.onclick=()=>setView(k);c.append(b)});
 }
+function pastCount(){return (state.signals||[]).filter(s=>(!view||s.style===view)&&!isActive(s)).length}
+function pastToggle(){
+  const n=pastCount();if(!n&&!showPast)return null;
+  const b=el('button','earlier',(showPast?'Hide':'Show')+' past signals ('+n+')');b.type='button';b.style.margin='0';
+  b.setAttribute('aria-pressed',showPast?'true':'false');
+  b.onclick=()=>{showPast=!showPast;try{localStorage.setItem('tl_past',showPast?'1':'0')}catch(e){}renderChips();renderList()};
+  return b;
+}
 function renderList(){
   const l=$('list');l.textContent='';
   if(!view){
     const n=(state.signals||[]).filter(isActive).length;
     l.append(el('div','mut',n?'Tap a tile to see its setups, grouped by symbol with the newest first.':'No active setups right now. This is normal: setups appear only when the rules line up, and waiting is a valid choice.'));
+    const pt=pastToggle();if(pt){pt.style.marginTop='10px';l.append(pt)}
     return}
   const st=STYLES.find(x=>x[0]===view),gs=groupsOf(view);
-  const hd=el('div','shead');hd.append(el('h2','',st[1]+' setups'));l.append(hd);
-  if(!gs.length){l.append(el('div','mut','No setups right now in '+st[1]+'. This is normal: setups appear only when the rules line up, and waiting is a valid choice.'));return}
+  const hd=el('div','shead');hd.append(el('h2','',st[1]+' setups'));const pt=pastToggle();if(pt)hd.append(pt);l.append(hd);
+  if(!gs.length){l.append(el('div','mut','No active setups in '+st[1]+' right now. This is normal: setups appear only when the rules line up, and waiting is a valid choice.'+(pastCount()?' Past setups are hidden.':'')));return}
   gs.forEach(g=>{
     const key=view+'|'+g.name,open=key in gOpen?gOpen[key]:g.active.length>0;
     const box=el('div','grp'+(open?' open':'')),h=el('button','gh');h.type='button';h.setAttribute('aria-expanded',open?'true':'false');
-    const nm=el('span','nm');nm.append(el('b','',g.name),el('small','',(g.active.length?ago((g.active[0]).created_at):'Nothing active')+(g.older.length?' \u00b7 '+g.older.length+' earlier':'')));
+    const nm=el('span','nm');nm.append(el('b','',g.name),el('small','',(g.active.length?ago((g.active[0]).created_at):'Nothing active')+(showPast&&g.older.length?' \u00b7 '+g.older.length+' earlier':'')));
     h.append(nm,el('span','act'+(g.active.length?'':' none'),g.active.length?g.active.length+' active':'none active'),el('span','chev','\u203a'));
     h.onclick=()=>{gOpen[key]=!open;renderList()};
     box.append(h);
     const body=el('div','gb');
     g.active.forEach(s=>body.append(card(s)));
-    if(g.older.length){
-      const eo=!!eOpen[key]||(!g.active.length);
-      if(g.active.length){const tb=el('button','earlier',(eo?'Hide':'Show')+' earlier setups ('+g.older.length+')');tb.type='button';tb.onclick=()=>{eOpen[key]=!eo;renderList()};body.append(tb)}
-      if(eo)g.older.forEach(s=>body.append(card(s)));
+    if(showPast&&g.older.length){                          // past setups only on request: expired, invalid, finished or already traded
+      if(g.active.length)body.append(el('div','mut','Past setups'));
+      g.older.forEach(s=>body.append(card(s)));
     }
     box.append(body);l.append(box)});
 }
