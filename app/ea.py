@@ -17,7 +17,8 @@ from .config import match_key
 
 MAX_BODY = 300_000
 CMD_TTL = 60  # seconds a close command stays valid
-DEFAULT_RULES = {"max_risk_pct": 1.0, "daily_loss_pct": 3.0, "max_positions": 3}
+DEFAULT_RULES = {"max_risk_pct": 4.5, "daily_loss_pct": 10.0, "max_positions": 3}      # every account starts with these; the member can change them
+OLD_DEFAULT_RULES = {"max_risk_pct": 1.0, "daily_loss_pct": 3.0, "max_positions": 3}     # the defaults before Nov 2026 (used only to tell untouched accounts apart)
 MAX_ACCOUNTS = max(1, int(os.environ.get("DRIVERLINE_MAX_MT5_ACCOUNTS", "3") or 3))   # MT5 accounts one member can connect
 def member_keys_ok(u) -> bool:
     """TradeLens does not give members the EA, so by default only an admin creates connection keys (through MT5 connection requests).
@@ -106,6 +107,11 @@ def _migrate(con):
     con.execute("INSERT INTO mt5_sessions(user_id,ea_account_id,login,server,started_at,last_seen) SELECT a.user_id,a.id,a.login,NULL,a.created_at,COALESCE(a.last_seen,a.created_at) "
                 "FROM ea_accounts a WHERE a.login IS NOT NULL AND a.login<>'' AND NOT EXISTS (SELECT 1 FROM mt5_sessions s WHERE s.ea_account_id=a.id)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_mt5_requests_status ON mt5_requests(status, user_id)")
+    try:
+        apply_default_protection(con)
+    except Exception as e:
+        con.raw.rollback()
+        print(f"[ea] default protection could not be applied: {type(e).__name__}", flush=True)
     # One-time, additive: each member's existing connection becomes their first account ("Main"), keeping the SAME key, risk rules and
     # auto-manage settings, so a connected EA keeps working untouched. The old tables are left as they are (rollback safety).
     # The marker stops the copy from running again, so an account a member later removes can never be brought back from the old tables.
@@ -265,14 +271,16 @@ def risk_check(state: dict, rules: dict) -> dict:
 
 def track_session(con, uid: int, aid: int, login: str, server, now: int):
     """One row per period in which an MT5 login was connected through this key: continued while the same login keeps reporting, a new row when it changes
-    or comes back after more than SESSION_GAP seconds of silence. The journal uses these periods."""
+    or comes back after more than SESSION_GAP seconds of silence. The journal uses these periods. Returns True when it was the connection's very first session."""
     if not login:
-        return
+        return False
     s = con.execute("SELECT id, login, last_seen FROM mt5_sessions WHERE ea_account_id=? ORDER BY id DESC LIMIT 1", (aid,)).fetchone()
     if s and s["login"] == login and now - s["last_seen"] <= SESSION_GAP:
         con.execute("UPDATE mt5_sessions SET last_seen=? WHERE id=?", (now, s["id"]))
     else:
         con.insert("INSERT INTO mt5_sessions(user_id,ea_account_id,login,server,started_at,last_seen) VALUES(?,?,?,?,?,?)", (uid, aid, login, str(server or "")[:60], now, now))
+        return not s                           # True the first time this connection ever reports
+    return False
 
 
 async def report(request):
@@ -320,13 +328,16 @@ async def report(request):
                     "specs=COALESCE(excluded.specs, ea_acct_state.specs), updated_at=excluded.updated_at",
                     (aid, json.dumps(state), specs_json, int(now)))
         con.execute("UPDATE ea_accounts SET last_seen=?, login=COALESCE(NULLIF(?, ''), login) WHERE id=?", (int(now), login, aid))
+        first_ever = False
         try:
-            track_session(con, uid, aid, login, acc.get("server"), int(now))
+            first_ever = track_session(con, uid, aid, login, acc.get("server"), int(now))
         except Exception as e:
             con.raw.rollback()
             print(f"[ea] session tracking failed: {type(e).__name__}", flush=True)
             con.execute("UPDATE ea_accounts SET last_seen=?, login=COALESCE(NULLIF(?, ''), login) WHERE id=?", (int(now), login, aid))
         con.commit()
+        if first_ever:                             # the first time this connection reports: say what protects the account from the start
+            _tell(uid, PROTECTED_TEXT)
         try:                                       # copy trading: follow flagged trades / follow the master closing (never blocks the EA)
             from . import copy_trading
             copy_trading.on_report(con, aid, state, prev_seen=r["last_seen"])
@@ -509,11 +520,60 @@ async def result(request):
     return JSONResponse({"ok": True})
 
 
-MANAGE_DEFAULT = {"be_on": False, "be_trigger": 1.0, "be_offset": 0.1,
-                  "tsl_on": False, "tsl_start": 1.5, "tsl_dist": 1.0,
-                  "ttp_on": False, "ttp_near": 0.3, "ttp_step": 1.0, "excluded": [],
-                  # Equity protection for trades with NO stop loss, or a stop that risks too much of the account (off unless chosen)
-                  "prot_mode": "off", "prot_risk_pct": 4.5, "prot_cap_pct": 4.5, "prot_grace": 45, "prot_be_pct": 1.0, "prot_pending": {}}
+# Every account starts protected: breakeven, trailing stop, trailing take-profit and equity protection (a protective stop) are ON, and the member can switch
+# any of them off or change the numbers. Equity protection for trades with NO stop loss, or a stop that risks too much of the account.
+MANAGE_DEFAULT = {"be_on": True, "be_trigger": 1.0, "be_offset": 0.1,
+                  "tsl_on": True, "tsl_start": 1.5, "tsl_dist": 1.0,
+                  "ttp_on": True, "ttp_near": 0.3, "ttp_step": 1.0, "excluded": [],
+                  "prot_mode": "stop", "prot_risk_pct": 4.5, "prot_cap_pct": 4.5, "prot_grace": 45, "prot_be_pct": 1.0, "prot_pending": {}}
+OLD_MANAGE_DEFAULT = {"be_on": False, "be_trigger": 1.0, "be_offset": 0.1, "tsl_on": False, "tsl_start": 1.5, "tsl_dist": 1.0, "ttp_on": False, "ttp_near": 0.3,
+                      "ttp_step": 1.0, "excluded": [], "prot_mode": "off", "prot_risk_pct": 4.5, "prot_cap_pct": 4.5, "prot_grace": 45, "prot_be_pct": 1.0, "prot_pending": {}}
+PROTECTED_TEXT = ("Your MT5 account is protected by default. Risk rules: no trade risking more than 4.5% of your balance, a daily loss limit of 10% and at most 3 open positions. "
+                  "Auto-manage: your stop moves to breakeven after 1R of profit, then trails your stop loss and take-profit. Equity protection: a trade with no stop loss, "
+                  "or a stop that risks too much of your account, gets a protective stop. You can change or switch off any of these in the MT5 tab. "
+                  "Loosening equity protection takes effect 24 hours after you ask.")
+
+
+def _tell(uid: int, text: str):
+    """One message from TradeLens in the member's Messages. Best effort."""
+    try:
+        from . import inbox
+        with closing(inbox.db()) as c:
+            c.insert("INSERT INTO inbox_messages(user_id,sender,admin_id,body,created_at) VALUES(?,?,?,?,?)", (uid, "admin", 0, text[:1000], int(time.time())))
+            c.commit()
+    except Exception as e:
+        print(f"[ea] could not message the member: {type(e).__name__}", flush=True)
+
+
+def _same(settings: dict, base: dict) -> bool:
+    return all(settings.get(k, base[k]) == base[k] for k in base if k != "prot_pending") and not settings.get("prot_pending")
+
+
+def apply_default_protection(con) -> int:
+    """Once: accounts that still hold the OLD defaults (nobody ever changed them) move to the new protected defaults. Accounts where the member saved
+    different values are left exactly as they are. Returns how many accounts changed; each member is told once."""
+    if con.execute("SELECT 1 FROM ea_meta WHERE k='defaults_protected_2026_11'").fetchone():
+        return 0
+    changed = {}
+    for r in con.execute("SELECT z.account_id, z.max_risk_pct, z.daily_loss_pct, z.max_positions, a.user_id FROM ea_acct_rules z JOIN ea_accounts a ON a.id=z.account_id").fetchall():
+        if (r["max_risk_pct"], r["daily_loss_pct"], r["max_positions"]) == tuple(OLD_DEFAULT_RULES.values()):
+            con.execute("UPDATE ea_acct_rules SET max_risk_pct=?, daily_loss_pct=?, max_positions=? WHERE account_id=?",
+                        (DEFAULT_RULES["max_risk_pct"], DEFAULT_RULES["daily_loss_pct"], DEFAULT_RULES["max_positions"], r["account_id"]))
+            changed[r["account_id"]] = r["user_id"]
+    for r in con.execute("SELECT m.account_id, m.settings, a.user_id FROM ea_acct_manage m JOIN ea_accounts a ON a.id=m.account_id").fetchall():
+        try:
+            s = json.loads(r["settings"] or "{}")
+        except ValueError:
+            continue
+        if isinstance(s, dict) and _same(s, OLD_MANAGE_DEFAULT):
+            con.execute("DELETE FROM ea_acct_manage WHERE account_id=?", (r["account_id"],))      # no row = the new defaults
+            changed[r["account_id"]] = r["user_id"]
+    con.execute("INSERT INTO ea_meta(k,v) VALUES('defaults_protected_2026_11','1')")
+    con.commit()
+    for uid in sorted(set(changed.values())):
+        _tell(uid, PROTECTED_TEXT)
+    print(f"[ea] default protection switched on for {len(changed)} account(s)", flush=True)
+    return len(changed)
 SESSION_GAP = 6 * 3600          # a login silent for longer than this (terminal closed, AutoTrading and EA stopped) starts a new session when it reports again
 PROT_MODES = {"off": 0, "breakeven": 1, "stop": 2, "close": 3}     # higher = stricter
 PROT_RANGES = {"prot_risk_pct": (0.25, 10.0), "prot_cap_pct": (0.5, 25.0), "prot_grace": (10, 300), "prot_be_pct": (0.25, 10.0)}

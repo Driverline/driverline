@@ -79,15 +79,15 @@ class Settings(unittest.TestCase):
         self.u, self.c, self.a, self.k = setup_member()
         report(self.k)
 
-    def test_off_by_default_with_the_agreed_numbers(self):
+    def test_on_by_default_with_the_agreed_numbers(self):
         m = mg(self.c, self.a)
-        self.assertEqual((m["prot_mode"], m["prot_risk_pct"], m["prot_cap_pct"], m["prot_grace"]), ("off", 4.5, 4.5, 45))
+        self.assertEqual((m["prot_mode"], m["prot_risk_pct"], m["prot_cap_pct"], m["prot_grace"]), ("stop", 4.5, 4.5, 45))
 
     def test_existing_auto_manage_is_untouched(self):
         self.assertEqual(save(self.c, self.a, be_on=True).status_code, 200)
         m = mg(self.c, self.a)
         self.assertTrue(m["be_on"])
-        self.assertEqual(m["prot_mode"], "off")
+        self.assertEqual(m["prot_mode"], "stop")
 
     def test_status_reports_whether_the_ea_allows_protection(self):
         self.assertTrue(self.c.get(f"/api/ea/status?account={self.a}").json()["can_protect"])
@@ -137,6 +137,10 @@ class Settings(unittest.TestCase):
         self.assertEqual(mg(self.c, self.a)["prot_pending"]["prot_mode"]["at"], t0 + DAY)
 
     def test_while_it_is_off_nothing_waits(self):
+        with closing(ea.db()) as con:                                          # a member whose protection is already off (switched off earlier)
+            s = ea.get_manage(con, self.a)
+            s["prot_mode"] = "off"
+            ea._save_manage(con, self.a, s)
         save(self.c, self.a, prot_risk_pct=6.0, prot_cap_pct=12.0)
         m = mg(self.c, self.a)
         self.assertEqual((m["prot_risk_pct"], m["prot_cap_pct"], m["prot_pending"]), (6.0, 12.0, {}))
@@ -150,13 +154,14 @@ class Settings(unittest.TestCase):
         other_u, other_c, other_a, other_k = setup_member()
         report(other_k)
         save(self.c, self.a, prot_mode="close")
-        self.assertEqual(mg(other_c, other_a)["prot_mode"], "off")
+        self.assertEqual(mg(self.c, self.a)["prot_mode"], "close")
+        self.assertEqual(mg(other_c, other_a)["prot_mode"], "stop")           # the other member keeps the default
 
     def test_the_ea_receives_the_settings_in_its_poll(self):
-        save(self.c, self.a, prot_mode="stop", prot_risk_pct=1.5, prot_cap_pct=4.0, prot_grace=60, prot_be_pct=0.5)
+        save(self.c, self.a, prot_mode="stop", prot_risk_pct=1.5, prot_cap_pct=4.0, prot_grace=30, prot_be_pct=0.5)
         ea._last_poll.clear()
         d = ANON.post("/api/ea/poll", json={}, headers={"x-driverline-key": self.k}).json()
-        for k, v in {"prot_mode": "stop", "prot_risk_pct": "1.5", "prot_cap_pct": "4.0", "prot_grace": "60", "prot_be_pct": "0.5"}.items():
+        for k, v in {"prot_mode": "stop", "prot_risk_pct": "1.5", "prot_cap_pct": "4.0", "prot_grace": "30", "prot_be_pct": "0.5"}.items():
             self.assertEqual(str(d.get(k)), v, k)
 
 
@@ -166,7 +171,8 @@ class Events(unittest.TestCase):
 
     def inbox_bodies(self):
         with closing(inbox.db()) as con:
-            return [r["body"] for r in con.execute("SELECT body FROM inbox_messages WHERE user_id=? ORDER BY id", (self.u,)).fetchall()]
+            return [r["body"] for r in con.execute("SELECT body FROM inbox_messages WHERE user_id=? ORDER BY id", (self.u,)).fetchall()
+                    if not r["body"].startswith("Your MT5 account is protected by default")]     # the welcome message is tested in test_default_protection
 
     def test_an_event_is_logged_once_and_the_member_is_told(self):
         ev = {"ticket": 777, "symbol": "Volatility 75 Index", "action": "stop_set", "pct": 2.0}

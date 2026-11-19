@@ -77,11 +77,11 @@ class AutoSetUp(T.World, unittest.TestCase):
         eareport(k, "LP1", [], bal)
         m = q("SELECT * FROM copy_members WHERE account_id=?", a)
         self.assertEqual((m[0]["enabled"], m[0]["mode"], m[0]["how"]), (1, "mirror", "auto"))
-        msg = q("SELECT body FROM inbox_messages WHERE user_id=?", u)
+        msg = [m for m in q("SELECT body FROM inbox_messages WHERE user_id=?", u) if "protected by default" not in m["body"]]
         self.assertEqual(len(msg), 1)
         self.assertIn("Copy trading is now on", msg[0]["body"])
         eareport(k, "LP1", [], bal)                                                     # reports again: no second message
-        self.assertEqual(len(q("SELECT 1 FROM inbox_messages WHERE user_id=?", u)), 1)
+        self.assertEqual(len([m for m in q("SELECT body FROM inbox_messages WHERE user_id=?", u) if "protected by default" not in m["body"]]), 1)
 
     def test_never_overrides_a_member_who_switched_it_off_and_never_enrols_the_unpaid_or_the_master(self):
         u, a, k, bal = self.paid()
@@ -105,7 +105,7 @@ class AutoSetUp(T.World, unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["set_up"], 1)
         self.assertEqual(q("SELECT how FROM copy_members WHERE account_id=?", a)[0]["how"], "admin")
-        self.assertEqual(len(q("SELECT 1 FROM inbox_messages WHERE user_id=?", u)), 2)
+        self.assertEqual(len([m for m in q("SELECT body FROM inbox_messages WHERE user_id=?", u) if "protected by default" not in m["body"]]), 2)
         self.assertEqual(cl(u).post("/api/copy/admin/member", json={"user_id": u}).status_code, 403)
         nomt5 = mk_user()
         SUBS(nomt5)

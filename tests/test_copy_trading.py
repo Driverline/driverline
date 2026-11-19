@@ -142,6 +142,8 @@ class World:
     def follower(self, tag, sub=True, enabled=True, balance=1000.0, mode="fixed", **flags):
         u = mk_user()
         a, k = add(u, tag)
+        q("DELETE FROM ea_acct_rules WHERE account_id=?", a)                  # these tests are about a 1% limit: the account keeps the older, tighter rules
+        q("INSERT INTO ea_acct_rules(account_id,max_risk_pct,daily_loss_pct,max_positions) VALUES(?,1.0,3.0,3)", a)
         eareport(k, "L" + tag, [], balance, **flags)
         if sub:
             SUBS(u)

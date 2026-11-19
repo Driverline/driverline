@@ -193,22 +193,22 @@ class SeparationTests(Two, unittest.TestCase):
 
     def test_rules_and_auto_manage_are_per_account(self):
         cl(self.u).post("/api/ea/rules", json={"account": self.live, "max_risk_pct": 0.3, "daily_loss_pct": 1, "max_positions": 1})
-        cl(self.u).post("/api/ea/manage", json={"account": self.live, "tsl_on": True, "tsl_start": 2, "tsl_dist": 1})
+        cl(self.u).post("/api/ea/manage", json={"account": self.live, "tsl_on": False, "tsl_start": 2, "tsl_dist": 1})
         d = cl(self.u).get(f"/api/ea/status?account={self.demo}").json()
         l = cl(self.u).get(f"/api/ea/status?account={self.live}").json()
-        self.assertEqual((d["rules"]["max_risk_pct"], d["manage"]["tsl_on"]), (1.0, False))
-        self.assertEqual((l["rules"]["max_risk_pct"], l["manage"]["tsl_on"], l["rules"]["max_positions"]), (0.3, True, 1))
+        self.assertEqual((d["rules"]["max_risk_pct"], d["manage"]["tsl_on"]), (4.5, True))          # an untouched account has the protected defaults
+        self.assertEqual((l["rules"]["max_risk_pct"], l["manage"]["tsl_on"], l["rules"]["max_positions"]), (0.3, False, 1))
         self.assertEqual(l["check"]["status"], "WARN")                                  # 2 positions over the Live account's own maximum of 1
         self.assertEqual(d["check"]["status"], "OK")
 
     def test_each_ea_only_sees_its_own_commands_and_settings(self):
-        cl(self.u).post("/api/ea/manage", json={"account": self.live, "be_on": True})
+        cl(self.u).post("/api/ea/manage", json={"account": self.live, "be_on": False})
         r = cl(self.u).post("/api/ea/command", json={"kind": "close_all", "account": self.live})
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(eapoll(self.kd).json()["cmd"], "")                              # the Demo EA is not told to close anything
         p = eapoll(self.kl).json()
-        self.assertEqual((p["cmd"], p["be_on"]), ("close_all", "1"))
-        self.assertEqual(eapoll(self.kd).json()["be_on"], "0")
+        self.assertEqual((p["cmd"], p["be_on"]), ("close_all", "0"))
+        self.assertEqual(eapoll(self.kd).json()["be_on"], "1")
         cid = p["id"]
         ANON.post("/api/ea/result", json={"id": cid, "ok": True, "closed": 2}, headers={"x-driverline-key": self.kd})     # the wrong EA answers
         self.assertEqual(q("SELECT status FROM ea_commands WHERE id=?", cid)[0]["status"], "sent")
