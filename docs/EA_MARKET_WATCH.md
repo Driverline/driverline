@@ -1,0 +1,2 @@
+# Market Watch changes (EA 1.57)
+Copies are sized from the symbol list the follower's EA sends. Before 1.57 it was sent when the EA started and every 30 minutes, so a symbol added to Market Watch was unknown for up to 30 minutes and a copy skipped with "not found in your MT5 Market Watch". From 1.57 the EA sends the list within about 10 seconds of any change. Members on older EAs: restart the EA or wait up to 30 minutes. The skip message now says so.

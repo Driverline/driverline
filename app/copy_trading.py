@@ -251,7 +251,8 @@ def dispatch(con, aid: int):
     spec = next((x for x in specs if journal._norm(str(x.get("symbol", ""))) == want and x.get("symbol") == job["symbol"]), None) \
         or next((x for x in specs if journal._norm(str(x.get("symbol", ""))) == want), None)
     if not spec:
-        return skip(f"{job['symbol']} was not found in your MT5 Market Watch")
+        return skip(f"{job['symbol']} was not found in your MT5 Market Watch. Add it in MT5 (Market Watch, right-click, Symbols). If you have just added it, "
+                    f"restart the EA or wait up to 30 minutes (EA version 1.57 and later notice it within seconds); copies already skipped are not placed late")
     sd = abs(job["open_price"] - job["sl"])
     cap = _f(mem["max_risk_pct"]) or _f(rules.get("max_risk_pct"))
     lots, pct, why = size(spec, _f(acc.get("balance")), sd, mem["mode"], mem["fixed_lots"], mem["risk_pct"], cap, job.get("master_risk_pct"))

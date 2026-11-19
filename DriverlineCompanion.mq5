@@ -24,7 +24,7 @@
 //| never widens a stop. It limits risk but cannot guarantee it.     |
 //+------------------------------------------------------------------+
 #property copyright   "TradeLens by Driverline"
-#property version     "1.56"
+#property version     "1.57"
 #property description "Syncs account state to TradeLens. Opens or closes a trade, or places a pending order, only when you click a button in the app and allowed it here."
 
 #include <Trade/Trade.mqh>
@@ -76,6 +76,7 @@ string   g_l3        = "";
 string   g_net       = "Starting";
 datetime g_lastSync  = 0;
 datetime g_lastSpecs = 0;
+ulong    g_watchSig  = 0;      // fingerprint of the Market Watch list that was last sent, so a symbol you add or remove is sent within seconds, not half an hour later
 datetime g_lastFull  = 0;
 datetime g_jSince    = 0;
 string   g_cmdMsg    = "";
@@ -344,6 +345,22 @@ double UnitPerLot(const string sym)
    return (p < 0.0) ? (-p / probe) : 0.0;
 }
 
+ulong MarketWatchSig()
+{
+   ulong h     = 1469598103934665603;
+   ulong prime = 1099511628211;
+   int total = SymbolsTotal(true);
+   for(int i = 0; i < total; i++)
+   {
+      string sym = SymbolName(i, true);
+      int n = StringLen(sym);
+      for(int k = 0; k < n; k++)
+         h = (h ^ (ulong)StringGetCharacter(sym, k)) * prime;
+      h = (h ^ (ulong)44) * prime;                    // separator, so "AB","C" differs from "A","BC"
+   }
+   return h;
+}
+
 string BuildSpecs()
 {
    string s = "";
@@ -430,7 +447,9 @@ bool Sync()
       return false;
    }
 
-   bool sendSpecs = (g_lastSpecs == 0 || TimeCurrent() - g_lastSpecs >= 1800);
+   ulong watchSig = MarketWatchSig();
+   bool sendSpecs = (g_lastSpecs == 0 || TimeCurrent() - g_lastSpecs >= 1800 ||
+                     (watchSig != g_watchSig && TimeCurrent() - g_lastSpecs >= 10));   // also as soon as the Market Watch list changes
    bool demo = (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO);
 
    string body = "{\"v\":1,\"account\":{"
@@ -505,7 +524,10 @@ bool Sync()
    g_lastSync = TimeLocal();
    g_net      = "Connected";
    if(sendSpecs)
+   {
       g_lastSpecs = TimeCurrent();
+      g_watchSig  = watchSig;
+   }
    if(newestClosed > g_jSince)
       g_jSince = newestClosed + 1;
    return true;
