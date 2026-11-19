@@ -7,7 +7,7 @@
 **Mirror sizing.** When the admin flags a trade, the master's risk % is stored (`copy_flags.master_lots`, `master_risk_pct` = lots x |entry-SL| x value per lot / master balance). Each follower in `mirror` mode gets the lot that risks the same % of THEIR balance, rounded down to the lot step. Same entry, SL and TP as before.
 Example: master $1,000, 0.40 lot, $40 stop = 4%. A $100 account trades 0.04, a $10,000 account trades 4.00.
 
-**Gates (unchanged, never bypassed).** A copy is skipped (not shrunk) when it would risk more than the member's own cap (`max_risk_pct` in copy settings, else their account risk rule, default 1%), when the smallest lot already risks more than the master's %, when the daily loss limit or equity protection stops the account, when max positions is reached, or when slippage exceeds the guard. Members who want to follow larger-risk trades raise their cap themselves.
+**Gates (unchanged, never bypassed).** A copy is skipped (not shrunk) when it would risk more than the member's own cap (`max_risk_pct` in copy settings, else their account risk rule, default 1%), when the smallest lot would risk more than the member's OWN limit (a balance below the broker's smallest lot copies at that smallest lot as long as it fits the limit, e.g. Volatility 50 has a minimum of 4 lots, so a stop of 3,431 points risks $1.37, which is 1.96% of $70), when the daily loss limit or equity protection stops the account, when max positions is reached, or when slippage exceeds the guard. Members who want to follow larger-risk trades raise their cap themselves.
 
 **Schema.** `copy_flags.master_lots`, `copy_flags.master_risk_pct`, `copy_members.how` (see migrations/2026_11_copy_mirror.sql). Tests: `python3 tests/test_copy_mirror.py`.
 

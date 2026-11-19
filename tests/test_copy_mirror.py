@@ -33,10 +33,19 @@ class Mirror(T.World, unittest.TestCase):
         self.assertIsNone(lots)
         self.assertIn("1%", why)
 
-    def test_a_balance_too_small_to_copy_in_proportion_is_skipped_never_oversized(self):
-        lots, _, why = CT.size(T.SPEC, 10, 0.0010, "mirror", None, None, 5.0, 4.0)     # 4% of $10 = $0.40, smallest lot risks $1
+    def test_below_the_smallest_lot_the_smallest_lot_is_used_only_within_the_members_own_limit(self):
+        v50 = {"symbol": "Volatility 50 Index", "unit": 1.0, "vol_min": 4.0, "vol_step": 0.01, "vol_max": 3700.0, "tick_size": 0.0001, "tick_value": 0.0001}
+        lots, pct, why = CT.size(v50, 70.0, 0.3431, "mirror", None, None, 4.5, 0.1411)    # 3431 points, 4 lots = $1.37 = 1.96% of $70: fits the 4.5% limit
+        self.assertEqual(lots, 4.0, why)
+        self.assertAlmostEqual(pct, 1.96, 2)
+        lots, pct, why = CT.size(v50, 70.0, 1.5983, "mirror", None, None, 4.5, 0.6576)    # 15983 points = $6.39 = 9.1%: above the limit, so no copy
         self.assertIsNone(lots)
-        self.assertIn("too small", why)
+        self.assertIn("4.5%", why)
+        lots, _, why = CT.size(v50, 70.0, 0.7712, "mirror", None, None, 4.5, 0.3173)      # 7712 points = $3.08 = 4.4%: just inside
+        self.assertEqual(lots, 4.0, why)
+        lots, _, why = CT.size(T.SPEC, 10, 0.0010, "mirror", None, None, 5.0, 4.0)         # smallest lot risks $1 = 10% of $10, limit 5%
+        self.assertIsNone(lots)
+        self.assertIn("limit", why)
         self.assertIsNone(CT.size(T.SPEC, 1000, 0.0010, "mirror", None, None, 5.0, None)[0])
 
     def test_the_flag_records_the_masters_risk_and_followers_are_sized_from_it(self):

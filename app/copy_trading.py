@@ -47,7 +47,9 @@ def _dec(step: float) -> int:
 def size(spec: dict, balance: float, sl_dist: float, mode: str, fixed_lots, risk_pct, cap_pct, master_risk=None):
     """(lots, risk_pct_of_balance, reason). lots is None when the trade must NOT be placed; reason says why.
     fixed: the member's fixed lot, or the symbol's minimum lot when none is set. risk: lots so the stop loss risks risk_pct of balance.
-    cap_pct: the member's own limit per trade: a lot that would risk more than it is never traded."""
+    cap_pct: the member's own limit per trade: a lot that would risk more than it is never traded.
+    mirror: the lot that risks the same % of THIS balance as the team's trade did; when that is below the broker's smallest lot, the smallest lot is
+    used if (and only if) it stays within cap_pct, otherwise nothing is placed."""
     unit = unit_per_lot(spec)
     vmin, vstep, vmax = _f(spec.get("vol_min")), _f(spec.get("vol_step")), _f(spec.get("vol_max"))
     if not (unit > 0 and vmin > 0 and vstep > 0 and sl_dist > 0):
@@ -60,9 +62,8 @@ def size(spec: dict, balance: float, sl_dist: float, mode: str, fixed_lots, risk
             return None, None, "The size of the team's trade could not be worked out, so it was not copied"
         want = balance * master_risk / 100.0 / per_lot
         lots = math.floor(want / vstep + 1e-9) * vstep
-        if lots < vmin:
-            return None, None, (f"Your balance is too small to copy this trade in proportion: the team risked {master_risk:.2f}% and even the smallest lot "
-                                f"({vmin:g}) would risk more than that on your account")
+        if lots < vmin:                  # a small account cannot match the team's share exactly: the broker's smallest lot is used if it still fits the member's OWN limit (checked below)
+            lots = vmin
     elif mode == "risk":
         want = balance * _f(risk_pct) / 100.0 / per_lot
         lots = math.floor(want / vstep + 1e-9) * vstep
