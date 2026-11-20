@@ -406,8 +406,9 @@ async def callback(request):
         con.execute("DELETE FROM deriv_trade_states WHERE state=?", (state,))
         con.commit()
     user = auth.current_user(request)
+    home = "/options.html" if request.cookies.get("dl_next") == "options" else "/signals.html"     # where the member started from
     if q.get("error"):
-        return RedirectResponse("/signals.html?deriv=cancelled", status_code=303)
+        return RedirectResponse(home + "?deriv=cancelled", status_code=303)
     if not (r and q.get("code") and time.time() - r["created_at"] <= STATE_TTL and request.cookies.get("dl_oauth") == state
             and user and user["id"] == r["user_id"]):
         return deriv_login._again("This connection link has expired or was already used. Please start again from Signals.")
@@ -448,8 +449,9 @@ async def callback(request):
         partner.record_accounts([a["id"] for a in accts], user["id"], "trade_connect", request)
     except Exception as e:
         print(f"[partner] could not record accounts: {type(e).__name__}", flush=True)
-    resp = RedirectResponse("/signals.html?deriv=connected", status_code=303)
+    resp = RedirectResponse(home + "?deriv=connected", status_code=303)
     resp.delete_cookie("dl_oauth", path="/auth/deriv")
+    resp.delete_cookie("dl_next", path="/auth/deriv")
     return resp
 
 

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Options</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon-48.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/theme.css">
+<script src="/auth.js"></script>
+</head>
+<body>
+<header><a class="brand" href="/"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i></b><small>by Driverline</small></span></a></header>
+<main id="root"><span class="mut">Loading...</span></main>
+<script>
+const $=id=>document.getElementById(id);
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!==undefined)e.textContent=x;return e}
+function field(label,input,hint){const w=el('div');w.append(el('label','',label),input);if(hint)w.append(el('small','mut',hint));return w}
+function num(v){const i=document.createElement('input');i.type='number';i.inputMode='decimal';i.step='any';if(v!=null)i.value=v;return i}
+function sel(opts,v){const s=document.createElement('select');opts.forEach(([k,t])=>{const o=document.createElement('option');o.value=k;o.textContent=t;s.append(o)});s.value=String(v);return s}
+function tick(text,v){const l=document.createElement('label');l.style.cssText='display:flex;gap:8px;align-items:flex-start;font-weight:400;color:inherit;margin:8px 0';
+  const c=document.createElement('input');c.type='checkbox';c.checked=!!v;c.style.cssText='width:auto;margin-top:3px';l.append(c,el('span','',text));return{box:l,c}}
+const usd=v=>(v<0?'-':'')+'$'+Math.abs(v).toFixed(2);
+const when=t=>t?new Date(t*1000).toISOString().slice(5,16).replace('T',' ')+' UTC':'';
+async function api(path,body){
+  const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  let d={};try{d=await r.json()}catch(e){}
+  if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d;
+}
+let D=null,DV=null,ACC=[],acctId=null;
+function busy(b,on,txt){b.disabled=on;if(txt)b.textContent=txt}
+function msg(box,text,cls){box.textContent=text;box.className=cls||'mut'}
+
+async function load(){
+  const root=$('root');
+  try{D=await api('/api/options/me')}catch(e){root.textContent=e.message;return}
+  if(!D.available){root.textContent='';root.append(el('div','card','Options trading is not open on your account yet.'));return}
+  try{DV=await api('/api/deriv/status')}catch(e){DV={enabled:false}}
+  ACC=[];
+  if(DV.connected){try{ACC=(await api('/api/deriv/accounts')).accounts}catch(e){DV.connected=false}}
+  if(!acctId||!ACC.some(a=>a.id===acctId))acctId=(D.session.account_id&&ACC.some(a=>a.id===D.session.account_id))?D.session.account_id:(ACC[0]&&ACC[0].id);
+  root.textContent='';
+  head(root);
+  if(!DV.enabled){root.append(el('div','card','Trading with Deriv is not open yet.'));return}
+  if(!DV.connected){connectCard(root);return}
+  accountCard(root);
+  todayCard(root);
+  if(D.auto_available)autoCard(root);else{root.append(note('AutoTrading for options is private for now. You can still place trades yourself below, each with your own confirmation.'));limitsCard(root)}
+  manualCard(root);
+  tradesCard(root);
+  validationCard(root);
+  if(D.admin)adminCard(root);
+}
+function note(t){const c=el('div','card');c.append(el('small','mut',t));return c}
+function head(root){
+  const c=el('div','card');c.append(el('h2','','Options: Rise/Fall and Accumulators'),
+    el('p','mut','Fixed-payout trades on Volatility indices with strict, server-enforced limits. A trade pays less than it risks, so it only makes money over time if its strategy really wins more often than the break-even rate shown on every quote. Trading is risky and you can lose your whole stake on every trade. Start on a demo account.'));
+  root.append(c);
+}
+function connectCard(root){
+  const c=el('div','card');c.append(el('h2','','Connect Deriv'),el('p','mut','Connect your Deriv account to trade options here. The connection lasts about an hour; you can disconnect any time.'));
+  const a=el('a','','Connect Deriv to trade');a.href='/auth/deriv/options/start';a.className='btn';a.style.cssText='display:inline-block;padding:10px 16px;border-radius:10px;border:1px solid var(--gold);color:var(--gold2)';c.append(a,el('small','mut','Deriv brings you back to this page when you are connected.'));root.append(c);
+}
+function accountCard(root){
+  const c=el('div','card'),s=sel(ACC.map(a=>[a.id,a.id+' · '+a.type+(a.balance!=null?' · $'+a.balance.toFixed(2):'')]),acctId);
+  s.onchange=()=>{acctId=s.value;load()};c.append(field('Deriv account',s));
+  const exp=DV.expires_at?el('small','mut','Connection ends about '+when(DV.expires_at)+'.'):null;if(exp)c.append(exp);root.append(c);
+}
+function todayCard(root){
+  const t=D.today,c=el('div','card');c.append(el('h2','','Today (UTC)'));
+  const p=el('div',t.today_pnl>=0?'win':'loss',usd(t.today_pnl)+' settled · '+t.today_n+' trades · '+t.open_n+' open'+(t.consec_losses?' · '+t.consec_losses+' losses in a row':''));c.append(p);
+  c.append(el('small','mut','Daily loss limit '+usd(D.settings.daily_loss)+' (open trades count at full stake) · cap '+D.settings.max_per_day+' trades.'));root.append(c);
+}
+function settingsForm(card,s){
+  const st=sel(D.strategies.map(x=>[x.key,x.label]),s.strategy),about=el('small','mut');
+  const ab=()=>{const x=D.strategies.find(y=>y.key===st.value);about.textContent=x.about};st.onchange=ab;ab();
+  card.append(field('Strategy',st),about);
+  card.append(el('h3','','Symbols'));
+  const box=el('div');box.style.cssText='display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 12px;margin:6px 0';const ins=[];
+  D.symbols.forEach(x=>{const t=tick(x.name,s.symbols.includes(x.key));t.c.value=x.key;ins.push(t.c);t.box.style.margin='0';box.append(t.box)});card.append(box);
+  const du=sel(D.durations.map(x=>[x,x+' min']),s.duration),gr=sel(D.growth_rates.map(x=>[x,(x*100)+'% per tick']),s.growth_rate),tp=num(s.accu_tp);
+  card.append(field('Duration (Rise/Fall)',du),field('Accumulator growth rate',gr),field('Accumulator take profit per trade (USD)',tp));
+  card.append(el('h3','','Stake and risk'));
+  const sm=sel([['fixed','Fixed stake (USD)'],['pct','Percent of my balance']],s.stake_mode),sk=num(s.stake),rp=num(s.risk_pct),ms=num(s.max_stake);
+  const kw=field('Stake (USD)',sk),rw=field('Risk per trade (% of balance, up to '+D.caps.risk_pct+')',rp);
+  const sw=()=>{kw.hidden=sm.value!=='fixed';rw.hidden=sm.value!=='pct'};sm.onchange=sw;sw();
+  card.append(field('Stake type',sm),kw,rw,field('Largest stake ever placed (USD)',ms,'Hard ceiling for any single trade, martingale steps included. Platform maximum '+D.caps.max_stake+' USD.'));
+  card.append(el('h3','','Session stop loss and target'));
+  const sl=num(s.session_sl),stp=num(s.session_tp);
+  card.append(field('Stop loss for a session (USD, 0 = none)',sl,'AutoTrading stops by itself when the session has lost this much.'),
+    field('Target for a session (USD, 0 = none)',stp,'AutoTrading stops by itself when the session has won this much.'));
+  card.append(el('h3','','Daily limits'));
+  const dl=num(s.daily_loss),mp=num(s.max_per_day),mo=num(s.max_open),cl=num(s.cooldown_losses);
+  card.append(field('Daily loss limit (USD)',dl,'Open trades count at full stake. When it is reached, no new trades until tomorrow (UTC).'),field('Most trades per day',mp),
+    field('Most open trades at once',mo),field('Pause after this many losses in a row',cl,'Pauses for '+D.caps.cooldown_mins+' minutes.'));
+  card.append(el('h3','','Trading style'));
+  const mg=sel([['0','Fixed stake: every trade uses the same stake'],['1','Martingale: multiply the stake after a loss']],s.martingale?'1':'0'),mm=num(s.mg_mult),mst=num(s.mg_steps);
+  const mgw=el('div'),worst=el('div','warn');
+  const ack=tick('I understand that a martingale does not improve my odds. It wins small amounts often and can lose a large amount in one run of losses. I set limits I can afford to lose.',s.ack_martingale);
+  mgw.append(field('Stake multiplier after a loss ('+D.caps.mg_mult[0]+' to '+D.caps.mg_mult[1]+')',mm),field('Most steps in a chain (1 to '+D.caps.mg_steps+')',mst),worst,ack.box);
+  const calc=()=>{mgw.hidden=mg.value!=='1';const b=sm.value==='fixed'?Number(sk.value):null;
+    if(b&&mm.value&&mst.value){let tot=0,x=b,list=[];for(let i=0;i<Number(mst.value);i++){list.push(x.toFixed(2));tot+=x;x*=Number(mm.value)}worst.textContent='Chain: '+list.join(' → ')+' USD. If every step loses you lose '+usd(-tot).slice(1)+'. That must stay inside your daily loss limit and your largest stake.'}else worst.textContent=''};
+  [mg,mm,mst,sk,sm].forEach(x=>x.oninput=x.onchange=calc);calc();
+  card.append(field('Style',mg),mgw);
+  const re=tick('Only trade a strategy whose backtest still beats break-even at the quoted payout (demo accounts only; real accounts always require it)',s.require_edge);card.append(re.box);
+  return()=>({strategy:st.value,symbols:ins.filter(c=>c.checked).map(c=>c.value),duration:Number(du.value),growth_rate:Number(gr.value),accu_tp:Number(tp.value),
+    stake_mode:sm.value,stake:Number(sk.value),risk_pct:Number(rp.value),max_stake:Number(ms.value),session_sl:Number(sl.value),session_tp:Number(stp.value),
+    daily_loss:Number(dl.value),max_per_day:Number(mp.value),max_open:Number(mo.value),cooldown_losses:Number(cl.value),martingale:mg.value==='1',
+    mg_mult:Number(mm.value),mg_steps:Number(mst.value),ack_martingale:ack.c.checked,require_edge:re.c.checked,account_id:acctId});
+}
+function autoCard(root){
+  const s=D.settings,S=D.session,c=el('div','card');c.append(el('h2','','AutoTrading'),
+    el('p','mut','TradeLens places trades for you while a session runs, only on the symbols and with the stakes and limits you set below. It stops at your session stop loss or target, at your daily limits, or when your Deriv connection ends (about an hour).'));
+  const status=el('div');status.style.cssText='border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 0';
+  if(S.on){status.append(el('b','win','Session running'),el('div','mut','Ends by '+when(S.ends)+' · '+(S.pnl!=null?usd(S.pnl)+' this session':'')),el('div','mut',S.note||''))}
+  else status.append(el('b','','No session running'),el('div','mut',S.note||''));
+  c.append(status);
+  const get=settingsForm(c,s),out=el('div','mut');
+  const save=el('button','','Save settings'),start=el('button','',S.on?'Stop session':'Start session'),real=tick('This is a REAL-money account and I want AutoTrading to place real-money trades for me.',false);
+  const acct=ACC.find(a=>a.id===acctId);if(acct&&acct.type==='real')c.append(real.box);
+  save.onclick=async()=>{busy(save,true);try{await api('/api/options/settings',get());msg(out,'Saved.','win');await load()}catch(e){msg(out,e.message,'err');busy(save,false)}};
+  start.onclick=async()=>{busy(start,true);try{
+      if(S.on)await api('/api/options/session',{action:'stop'});
+      else{await api('/api/options/settings',get());await api('/api/options/session',{action:'start',account_id:acctId,confirm_real:real.c.checked})}
+      await load()}catch(e){msg(out,e.message,'err');busy(start,false)}};
+  const row=el('div');row.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-top:12px';row.append(save,start);c.append(row,out);
+  c.append(el('small','mut','Changes to the settings do not affect a session that is already running until you stop it and start it again.'));root.append(c);
+}
+function limitsCard(root){
+  const c=el('div','card');c.append(el('h2','','Your stake and limits'),el('p','mut','These apply to every trade you place here. Symbols are only used by AutoTrading.'));
+  const get=settingsForm(c,D.settings),out=el('div','mut'),save=el('button','','Save settings');save.style.marginTop='12px';
+  save.onclick=async()=>{busy(save,true);try{await api('/api/options/settings',get());msg(out,'Saved.','win');await load()}catch(e){msg(out,e.message,'err');busy(save,false)}};
+  c.append(save,out);root.append(c);
+}
+function manualCard(root){
+  const c=el('div','card');c.append(el('h2','','Place a trade yourself'),el('p','mut','Pick a symbol, see what the strategies say right now, preview the price, then confirm. You always see the stake, the payout and the break-even rate before anything is bought.'));
+  const sy=sel(D.symbols.map(x=>[x.key,x.name]),(D.settings.symbols[0]||D.symbols[0].key)),go=el('button','','See current ideas'),res=el('div'),out=el('div','mut');
+  go.onclick=async()=>{busy(go,true);res.textContent='';msg(out,'');try{
+    const d=await api('/api/options/ideas?symbol='+encodeURIComponent(sy.value));
+    d.ideas.forEach(i=>{const r=el('div');r.style.cssText='border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 0';
+      r.append(el('b','',i.label),el('div','mut',i.signal?('Signal now: '+i.side):'No signal right now'));
+      const run=(dir)=>{const b=el('button','ghost','Preview '+(i.kind==='accu'?'Accumulator':dir>0?'Rise':'Fall'));b.style.marginTop='8px';b.onclick=()=>preview(i.strategy,sy.value,dir,res,out);return b};
+      if(i.kind==='accu')r.append(run(1));else{r.append(run(1));const f=run(-1);f.style.marginLeft='8px';r.append(f)}
+      res.append(r)});
+    }catch(e){msg(out,e.message,'err')}busy(go,false)};
+  c.append(field('Symbol',sy),go,res,out);root.append(c);
+}
+async function preview(strategy,symbol,dir,res,out){
+  msg(out,'Getting a price from Deriv...');
+  try{
+    const q=await api('/api/options/quote',{strategy,symbol,direction:dir,account_id:acctId});
+    msg(out,'');const box=el('div');box.style.cssText='border:1px solid var(--gold);border-radius:10px;padding:10px;margin:8px 0';
+    box.append(el('b','',(q.contract.contract_type==='ACCU'?'Accumulator':q.contract.contract_type==='CALL'?'Rise':'Fall')+' · '+q.name+' · '+(q.account_type==='real'?'REAL account':'demo account')),
+      el('div','','Stake '+usd(q.stake)+(q.step?' (martingale step '+(q.step+1)+')':'')+' · '+(q.payout?'payout '+usd(q.payout):'payout not quoted')),
+      el('div','mut',q.breakeven?'Break-even hit rate at this payout: '+(q.breakeven*100).toFixed(1)+'%':''),el('small','mut',q.longcode||''));
+    if(q.blocked)box.append(el('div','warn',q.blocked));
+    const rc=tick('I am placing this real-money trade myself.',false);if(q.account_type==='real')box.append(rc.box);
+    const ok=el('button','','Place trade'),no=el('button','ghost','Cancel');no.style.marginLeft='8px';ok.disabled=!!q.blocked;
+    ok.onclick=async()=>{busy(ok,true);try{const r=await api('/api/options/trade',{...q,strategy,symbol,direction:dir,account_id:acctId,confirm_real:rc.c.checked});
+      msg(out,'Trade placed ('+usd(r.buy_price||q.stake)+'). Check the result in Recent trades.','win');box.remove();await load()}catch(e){msg(out,e.message,'err');busy(ok,false)}};
+    no.onclick=()=>box.remove();box.append(ok,no);res.prepend(box);
+  }catch(e){msg(out,e.message,'err')}
+}
+function tradesCard(root){
+  const c=el('div','card');c.append(el('h2','','Recent trades'));
+  const b=el('button','ghost','Refresh results'),out=el('div','mut');
+  b.onclick=async()=>{busy(b,true);try{await api('/api/options/trades/check',{});await load()}catch(e){msg(out,e.message,'err');busy(b,false)}};c.append(b,out);
+  if(!D.trades.length)c.append(el('p','mut','No trades yet.'));
+  D.trades.forEach(t=>{const r=el('div');r.style.cssText='border-top:1px solid var(--line);padding:8px 0';
+    const name=t.contract_type==='ACCU'?'Accumulator':t.contract_type==='CALL'?'Rise':'Fall';
+    r.append(el('div','',name+' · '+t.symbol+' · '+usd(t.stake)+' · '+t.source+(t.step?' · step '+(t.step+1):'')+' · '+(t.account_type)));
+    r.append(t.status==='failed'?el('small','err','Not placed: '+(t.error||'')):t.result_status?el('small',t.profit>=0?'win':'loss',t.result_status+' '+usd(t.profit)):el('small','mut','Open or not checked yet'));
+    c.append(r)});
+  if(D.events.length){c.append(el('h3','','AutoTrading log'));D.events.forEach(e=>c.append(el('small','mut',when(e.created_at)+' · '+e.detail),el('br')))}
+  root.append(c);
+}
+function validationCard(root){
+  const c=el('div','card');c.append(el('h2','','Backtest results (measured, not promised)'),
+    el('p','mut','Each row is a strategy tested on recent Deriv history. Real accounts only trade a strategy whose hit-rate lower bound beats break-even at the live payout. On random-style indices most strategies will not pass, and that is the honest answer.'));
+  if(!D.validation.length)c.append(el('p','mut','No backtest has been stored yet, so real-money trades are blocked.'));
+  D.validation.forEach(v=>{const r=el('div');r.style.cssText='border-top:1px solid var(--line);padding:6px 0';
+    r.append(el('span',v.edge?'win':'mut',(v.edge?'PASS ':'no edge ')+v.strategy+' · '+v.symbol+' · '+v.duration+' min'),
+      el('small','mut',' — '+v.n+' trades, hit '+(v.hit*100).toFixed(1)+'%, lower bound '+(v.lower*100).toFixed(1)+'%, break-even '+(v.breakeven*100).toFixed(1)+'%'));c.append(r)});
+  root.append(c);
+}
+function adminCard(root){
+  const A=D.admin,c=el('div','card');c.append(el('h2','','Admin'));
+  const mo=sel([['off','Off'],['testers','Admin and testers'],['public','Everyone (manual trades)']],A.mode),au=sel([['off','Off'],['testers','Admin and testers']],A.auto);
+  const te=document.createElement('textarea');te.rows=3;te.value=(A.testers||[]).join('\n');te.style.width='100%';
+  const out=el('div','mut'),save=el('button','','Save access');
+  save.onclick=async()=>{try{const r=await api('/api/options/admin',{mode:mo.value,auto:au.value,testers:te.value.split(/[\s,;]+/).filter(Boolean)});
+    msg(out,'Saved.'+(r.unknown_emails.length?' Unknown e-mails: '+r.unknown_emails.join(', '):''),'win')}catch(e){msg(out,e.message,'err')}};
+  c.append(field('Who sees Options',mo),field('Who may run AutoTrading',au),field('Testers (e-mail addresses)',te),save);
+  const bt=el('button','ghost','Run backtest on Deriv history'),bo=el('div','mut');bt.style.marginTop='10px';
+  bt.onclick=async()=>{busy(bt,true,'Running (can take a minute)...');try{const r=await api('/api/options/admin/backtest',{});msg(bo,'Done: '+r.results.length+' rows from about '+r.bars+' one-minute bars each, payout assumed '+(r.assumed_payout_ratio*100).toFixed(0)+'%.','win');await load()}catch(e){msg(bo,e.message,'err');busy(bt,false,'Run backtest on Deriv history')}};
+  c.append(bt,bo,out);root.append(c);
+}
+load();
+</script>
+</body>
+</html>

@@ -14,6 +14,7 @@
       if(u.rewards)rewardsTab();
       partnerTab();
       autoTab();
+      optionsTab();
       window.dlWallet();
       window.dlBadge()}catch(x){}
   };
@@ -88,6 +89,13 @@
       const a=document.createElement('a');a.href='/auto.html';a.textContent='AutoTrading';a.dataset.auto='1';
       if(location.pathname==='/auto.html')a.className='on';
       const m=n.querySelector('a[href="/mt5.html"]');if(m)m.after(a);else n.append(a)}catch(x){}
+  }
+  async function optionsTab(){          // Options (Deriv Rise/Fall and Accumulators): the tab appears only where the server says it is open to this member
+    try{const r=await f('/api/options/me');if(!r.ok||!(await r.json()).available)return;
+      const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-options]'))return;
+      const a=document.createElement('a');a.href='/options.html';a.textContent='Options';a.dataset.options='1';
+      if(location.pathname==='/options.html')a.className='on';
+      const m=n.querySelector('[data-auto]')||n.querySelector('a[href="/mt5.html"]');if(m)m.after(a);else n.append(a)}catch(x){}
   }
   function adminTab(){
     const n=document.querySelector('nav.tabs');if(!n||n.querySelector('[data-admin]'))return;
