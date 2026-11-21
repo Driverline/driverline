@@ -471,7 +471,7 @@ async def admin_view(request):
     with closing(db()) as con:
         log = [dict(r) for r in con.execute("SELECT day,status,sent_at,trades,attempts,error FROM recap_log ORDER BY day DESC LIMIT 7").fetchall()]
     return JSONResponse({"settings": status(), "day": day, "count": len(trades), "preview": build(day, trades), "log": log,
-                         "accounts": accts, "explicit": bool(_env("RECAP_MT5_LOGINS"))})
+                         "accounts": accts, "days": await asyncio.to_thread(recent_days), "explicit": bool(_env("RECAP_MT5_LOGINS"))})
 
 
 async def admin_account(request):
@@ -495,19 +495,35 @@ async def admin_account(request):
     return JSONResponse({"ok": True, "login": _tail(acct["login"]), "include": inc})
 
 
+def recent_days(n: int = 7) -> list:
+    """Today and the days before it that the admin page may post by hand, newest first, with how many trades each has and its post status."""
+    today = datetime.strptime(local_day(), "%Y-%m-%d")
+    days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n)]
+    with closing(db()) as con:
+        st = {r["day"]: r["status"] for r in con.execute("SELECT day, status FROM recap_log").fetchall()}
+    return [{"day": x, "trades": len(trades_for_day(x)), "status": st.get(x)} for x in days]
+
+
 async def admin_send(request):
+    """Post the recap by hand: today's, or (day: "YYYY-MM-DD") one of the last 7 days, e.g. to correct a day that was posted before an account was
+    switched in. A day already posted needs again: true."""
     auth.require_admin(request)
     if not can_post():
         raise HTTPException(409, "Set TELEGRAM_BOT_TOKEN and TELEGRAM_RECAP_CHAT in Render first")
     d = await auth._json(request)
+    day = d.get("day")
+    if day is None:
+        day = local_day()
+    elif day not in {x["day"] for x in await asyncio.to_thread(recent_days)}:
+        raise HTTPException(400, "Choose today or one of the last 6 days")
     try:
-        r = await post_day(local_day(), force=True, again=d.get("again") is True)
+        r = await post_day(day, force=True, again=d.get("again") is True)
     except NoAccount as e:
         raise HTTPException(409, str(e))
     except RecapError as e:
         raise HTTPException(502, str(e))
     if not r["sent"]:
-        raise HTTPException(409, "Today's recap is already posted or being posted. Confirm to post it again.")
+        raise HTTPException(409, "That day's recap is already posted or being posted. Confirm to post it again.")
     return JSONResponse({"ok": True, **r})
 
 

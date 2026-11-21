@@ -41,7 +41,7 @@ Educational only, not financial advice. Use your own lot size and risk.
 | `RECAP_MT5_LOGINS` | optional: exactly these MT5 logins feed the recap, e.g. `12345097`. Default: every live account. |
 | `RECAP_USER_IDS` | optional: only these admin user ids, e.g. `1`. |
 
-Admin > **Daily Telegram recap** shows what is set, a live preview of today so far, the last 7 days, and **Post today's recap now** (works even before `DAILY_RECAP=1`, to test).
+Admin > **Daily Telegram recap** shows what is set, a live preview of today so far, the last 7 days, and **Post this day's recap now** with a day picker (today or any of the last 6 days; a day already posted asks for confirmation, and the channel then gets a second post for that day) (works even before `DAILY_RECAP=1`, to test).
 
 ## Safeguards
 - One post per day: the day is reserved in `recap_log` **before** sending, so a restart or a second copy of the app cannot post it twice. A repeat by hand asks for confirmation.

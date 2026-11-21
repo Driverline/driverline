@@ -208,11 +208,13 @@ async function loadRecap(box){
       box.append(row,t)}else box.append(row)});
   if(!inc.length)box.append(el('div','err','No account is selected, so nothing will be posted. Set RECAP_MT5_LOGINS in Render to the login(s) you post from.'));
   box.append(el('div','mut','Preview of today so far ('+d.day+', '+d.count+' trades):'),pre);
-  const b=el('button','ghost',"Post today's recap now");b.style.cssText='width:auto;padding:8px 14px';b.disabled=!S.can_post||!inc.length;
-  b.onclick=async()=>{if(!confirm("Post this recap to the Telegram channel now?"))return;b.disabled=true;
-    try{await api('/recap/send','POST',{});alert('Posted.');loadRecap(box)}
-    catch(e){if(/already posted/.test(e.message)){if(confirm('Today\'s recap was already posted. Post it again?')){try{await api('/recap/send','POST',{again:true});alert('Posted again.');loadRecap(box);return}catch(x){alert(x.message)}}}else alert(e.message);b.disabled=false}};
-  box.append(b);
+  const sel=el('select');sel.style.cssText='width:auto;padding:8px;margin-right:8px';
+  (d.days||[]).forEach(x=>{const o=el('option','',x.day+(x.day===d.day?' (today)':'')+' · '+x.trades+' trades'+(x.status==='sent'?' · already posted':''));o.value=x.day;sel.append(o)});
+  const b=el('button','ghost',"Post this day's recap now");b.style.cssText='width:auto;padding:8px 14px';b.disabled=!S.can_post||!inc.length;
+  b.onclick=async()=>{const day=sel.value;if(!confirm("Post the recap for "+day+" to the Telegram channel now?"))return;b.disabled=true;
+    try{await api('/recap/send','POST',{day});alert('Posted.');loadRecap(box)}
+    catch(e){if(/already posted/.test(e.message)){if(confirm(day+' was already posted. Post it again?')){try{await api('/recap/send','POST',{day,again:true});alert('Posted again.');loadRecap(box);return}catch(x){alert(x.message)}}}else alert(e.message);b.disabled=false}};
+  box.append(el('div','mut','Post a recap by hand (today, or one of the last days):'),sel,b);
   d.log.forEach(r=>box.append(kv(r.day,r.status+(r.status==='sent'?' ('+r.trades+' trades)':r.error?': '+r.error:''),r.status==='sent'?'win':'mut')));
 }
 async function loadRewards(box){

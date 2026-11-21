@@ -581,6 +581,22 @@ class AdminApi(unittest.TestCase):
         self.assertEqual(self.a.post("/api/admin/recap/send", json={"again": True}).status_code, 200)
         self.assertEqual(len(self.fake.requests), 2)
 
+    def test_a_past_day_can_be_posted_again_with_the_right_trades(self):
+        mk_trade(self.aid, login="1001", closed=utc(2026, 11, 1, 9))
+        mk_trade(self.aid, login="1001", closed=utc(2026, 11, 1, 10))
+        d = self.a.get("/api/admin/recap").json()
+        self.assertEqual([x["day"] for x in d["days"]][:2], ["2026-11-02", "2026-11-01"])
+        self.assertEqual({x["day"]: x["trades"] for x in d["days"]}["2026-11-01"], 2)
+        r = self.a.post("/api/admin/recap/send", json={"day": "2026-11-01"})
+        self.assertEqual((r.status_code, r.json()["day"], r.json()["trades"]), (200, "2026-11-01", 2))
+        self.assertEqual(self.a.post("/api/admin/recap/send", json={"day": "2026-11-01"}).status_code, 409)       # a repeat needs confirming
+        self.assertEqual(self.a.post("/api/admin/recap/send", json={"day": "2026-11-01", "again": True}).status_code, 200)
+
+    def test_only_the_last_days_can_be_posted(self):
+        for day in ("2026-10-01", "2026-11-03", "nonsense", 5):
+            self.assertEqual(self.a.post("/api/admin/recap/send", json={"day": day}).status_code, 400, day)
+        self.assertEqual(self.fake.requests, [])
+
     def test_post_now_explains_a_missing_setup_and_a_telegram_refusal(self):
         old = os.environ["TELEGRAM_RECAP_CHAT"]
         os.environ["TELEGRAM_RECAP_CHAT"] = ""
