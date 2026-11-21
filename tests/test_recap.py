@@ -75,6 +75,15 @@ def mk_account(uid, login="1001", demo=False, label=None, state=True):
     return login
 
 
+def recap_set(login, include):
+    """What the admin switch stores for one login (include True/False; None removes the choice)."""
+    with closing(recap.db()) as con:
+        con.execute("DELETE FROM recap_accounts WHERE login=?", (login,))
+        if include is not None:
+            con.insert("INSERT INTO recap_accounts(login,included,updated_at) VALUES(?,?,?)", (login, 1 if include else 0, 0))
+        con.commit()
+
+
 def mk_trade(uid, instrument="v25", direction="BUY", entry=100.0, exit_price=101.0, stop=None, target=None, pnl=1.0, r=None,
              reason=None, closed=utc(2026, 11, 2, 10, 0), login="1001", demo=False, manual=False, account=True):
     """A closed journal trade imported by the EA from `login` (a live account by default). manual=True is typed in by hand (no mt5_id)."""
@@ -270,6 +279,10 @@ class OnlyTheLiveAccount(unittest.TestCase):
     def setUp(self):
         wipe()
         os.environ.pop("RECAP_USER_IDS", None)
+        os.environ.pop("RECAP_MT5_LOGINS", None)
+        with closing(recap.db()) as con:
+            con.execute("DELETE FROM recap_accounts")                    # the admin switch starts empty in every test
+            con.commit()
         self.a = mk_user()
 
     def logins(self, day="2026-11-02"):
@@ -301,6 +314,24 @@ class OnlyTheLiveAccount(unittest.TestCase):
         mk_trade(self.a, login="981", demo=True)
         os.environ["RECAP_MT5_LOGINS"] = " 981 , 555 "
         self.assertEqual(self.logins(), ["981"])                          # exactly the listed ones, even a demo, not the live one
+        os.environ["RECAP_MT5_LOGINS"] = "097"
+        self.assertEqual(self.logins(), ["097"])
+
+    def test_the_admin_switch_includes_a_demo_account_and_can_take_a_live_one_out(self):
+        mk_trade(self.a, login="097", demo=False)
+        mk_trade(self.a, login="981", demo=True)
+        recap_set("981", True)
+        recap_set("097", False)
+        self.assertEqual(self.logins(), ["981"])
+        recap_set("097", None)                                            # back to the default: a live account is in
+        self.assertEqual(self.logins(), ["097", "981"])
+        recap_set("981", None)
+        self.assertEqual(self.logins(), ["097"])
+
+    def test_the_env_list_still_beats_the_switch(self):
+        mk_trade(self.a, login="097", demo=False)
+        mk_trade(self.a, login="981", demo=True)
+        recap_set("981", True)
         os.environ["RECAP_MT5_LOGINS"] = "097"
         self.assertEqual(self.logins(), ["097"])
 
@@ -508,6 +539,24 @@ class AdminApi(unittest.TestCase):
         self.assertTrue(acc["\u2026001"]["included"])
         self.assertFalse(acc["\u2026981"]["included"])
         self.assertNotIn("9999981", self.a.get("/api/admin/recap").text)
+
+    def test_the_switch_page_flow_includes_a_demo_account_and_is_admin_only(self):
+        mk_trade(self.aid, login="9999981", demo=True, closed=utc(2026, 11, 2, 9))
+        acc = {x["login"]: x for x in self.a.get("/api/admin/recap").json()["accounts"]}
+        demo = acc["\u2026981"]
+        self.assertFalse(demo["included"])
+        self.assertEqual(self.m.post("/api/admin/recap/account", json={"account_id": demo["id"], "include": True}).status_code, 403)
+        self.assertEqual(self.a.post("/api/admin/recap/account", json={"account_id": demo["id"], "include": True}).status_code, 200)
+        d = self.a.get("/api/admin/recap").json()
+        self.assertEqual(d["count"], 2)                                   # the demo trade is now part of today's recap
+        self.assertTrue({x["login"]: x for x in d["accounts"]}["\u2026981"]["included"])
+        self.assertEqual(self.a.post("/api/admin/recap/account", json={"account_id": demo["id"], "include": None}).status_code, 200)
+        self.assertEqual(self.a.get("/api/admin/recap").json()["count"], 1)
+
+    def test_the_switch_rejects_bad_input_and_foreign_accounts(self):
+        self.assertEqual(self.a.post("/api/admin/recap/account", json={"account_id": "x", "include": True}).status_code, 400)
+        self.assertEqual(self.a.post("/api/admin/recap/account", json={"account_id": 1, "include": "yes"}).status_code, 400)
+        self.assertEqual(self.a.post("/api/admin/recap/account", json={"account_id": 99999, "include": True}).status_code, 404)
 
     def test_post_now_refuses_when_no_live_account_is_selected(self):
         with closing(ea.db()) as con:

@@ -42,7 +42,8 @@ from .config import INSTRUMENTS
 
 SCHEMA = """
     CREATE TABLE IF NOT EXISTS recap_log(day TEXT PRIMARY KEY, status TEXT NOT NULL, claimed_at BIGINT NOT NULL, sent_at BIGINT,
-        message_id TEXT, trades INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT)"""
+        message_id TEXT, trades INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT);
+    CREATE TABLE IF NOT EXISTS recap_accounts(login TEXT PRIMARY KEY, included INTEGER NOT NULL, updated_at BIGINT NOT NULL)"""
 
 BE_PCT = 0.0001            # closed within 0.01% of its entry price = breakeven
 MAX_ROWS = 25              # trades listed in one post (Telegram allows 4096 characters)
@@ -156,12 +157,24 @@ def accounts() -> list:
     return out
 
 
+def choices() -> dict:
+    """The owner's own per-account choices from the admin page: {login: True (in the recap) or False (out)}. Saved in recap_accounts."""
+    try:
+        with closing(db()) as con:
+            return {str(r["login"]): bool(r["included"]) for r in con.execute("SELECT login, included FROM recap_accounts").fetchall()}
+    except Exception as e:
+        print(f"[recap] could not read the account choices: {type(e).__name__}", flush=True)
+        return {}
+
+
 def included_logins() -> set:
-    """Whose trades the recap may show: the logins listed in RECAP_MT5_LOGINS, or by default every LIVE account."""
+    """Whose trades the recap may show. RECAP_MT5_LOGINS, when set, is the whole answer (as before). Otherwise each account follows the
+    switch on the admin page when it has one, and by default is in only if the EA last reported it as LIVE."""
     raw = _env("RECAP_MT5_LOGINS")
     if raw:
         return {x.strip() for x in raw.split(",") if x.strip()}
-    return {a["login"] for a in accounts() if a["live"] and a["login"]}
+    chosen = choices()
+    return {a["login"] for a in accounts() if a["login"] and chosen.get(a["login"], a["live"])}
 
 
 def _rows_for_day(day: str) -> list:
@@ -191,11 +204,12 @@ def _tail(login: str) -> str:
 def account_overview(day: str) -> list:
     """For the admin: every account that has trades, with whether it feeds the recap and how many trades it has that day."""
     logins = included_logins()
+    chosen = choices()
     rows = _rows_for_day(day)
     seen, out = set(), []
     for a in accounts():
         seen.add(a["login"])
-        out.append({"label": a["label"], "login": _tail(a["login"]), "live": a["live"], "included": a["login"] in logins,
+        out.append({"id": a["id"], "label": a["label"], "login": _tail(a["login"]), "live": a["live"], "chosen": a["login"] in chosen, "included": a["login"] in logins,
                     "trades": sum(1 for t in rows if _login_of(t) == a["login"])})
     for lg in sorted({_login_of(t) for t in rows} - seen):               # an account that is no longer listed but still has trades
         out.append({"label": "(account no longer listed)", "login": _tail(lg), "live": False, "included": lg in logins,
@@ -460,6 +474,27 @@ async def admin_view(request):
                          "accounts": accts, "explicit": bool(_env("RECAP_MT5_LOGINS"))})
 
 
+async def admin_account(request):
+    """Switch one of the owner's MT5 accounts in or out of the recap. {account_id, include: true|false}; include: null goes back to the default
+    (in only when live). Ignored while RECAP_MT5_LOGINS is set, because that list replaces every choice."""
+    auth.require_admin(request)
+    d = await auth._json(request)
+    inc = d.get("include")
+    if inc is not None and not isinstance(inc, bool) or not isinstance(d.get("account_id"), int) or isinstance(d.get("account_id"), bool):
+        raise HTTPException(400, "account_id and include (true, false or null) are required")
+    acct = next((a for a in await asyncio.to_thread(accounts) if a["id"] == d["account_id"]), None)
+    if not acct or not acct["login"]:
+        raise HTTPException(404, "That MT5 account is not one the recap can use (unknown, or it has not reported its login yet)")
+    with closing(db()) as con:
+        if inc is None:
+            con.execute("DELETE FROM recap_accounts WHERE login=?", (acct["login"],))
+        else:
+            con.execute("DELETE FROM recap_accounts WHERE login=?", (acct["login"],))
+            con.execute("INSERT INTO recap_accounts(login,included,updated_at) VALUES(?,?,?)", (acct["login"], 1 if inc else 0, int(time.time())))
+        con.commit()
+    return JSONResponse({"ok": True, "login": _tail(acct["login"]), "include": inc})
+
+
 async def admin_send(request):
     auth.require_admin(request)
     if not can_post():
@@ -479,4 +514,5 @@ async def admin_send(request):
 routes = [
     Route("/api/admin/recap", admin_view, methods=["GET"]),
     Route("/api/admin/recap/send", admin_send, methods=["POST"]),
+    Route("/api/admin/recap/account", admin_account, methods=["POST"]),
 ]

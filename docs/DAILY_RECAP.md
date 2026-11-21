@@ -25,7 +25,7 @@ Educational only, not financial advice. Use your own lot size and risk.
 - Up to 25 trades are listed; a longer day says "...and N more". It never exceeds one Telegram message.
 
 ## What it covers (and does not)
-- Trades the Companion EA imported from your **LIVE MT5 account(s) only**. Demo accounts, accounts whose type is unknown, and trades typed into the journal by hand are never included (the channel is public). To choose the accounts yourself set `RECAP_MT5_LOGINS`; that list replaces the live-only rule. With no account selected nothing is posted. Admin users: all admins, or only `RECAP_USER_IDS`. A trade counts on the day it **closed** (Lagos time).
+- Trades the Companion EA imported from **MT5 accounts you have switched in**. By default only LIVE accounts are in; demo accounts, accounts whose type is unknown, and trades typed into the journal by hand are not. Admin > Daily Telegram recap has an **Include in recap / Take out of recap** button on each account (saved in `recap_accounts`), so an account that posts to your channel, demo included, can be switched in without touching Render. `RECAP_MT5_LOGINS`, when set, still replaces every choice (the buttons are disabled while it is set). With no account selected nothing is posted. Admin users: all admins, or only `RECAP_USER_IDS`. A trade counts on the day it **closed** (Lagos time).
 - Open positions are not in the journal, so they are not listed. Members' own trades are not included.
 - The reason a trade closed (TP / SL / manual) is now **saved on each trade** (`trades.reason`, new nullable column). Trades from before the upgrade have none:
   they are judged from their saved stop and target, otherwise shown only as "Closed in profit" / "Closed at a loss" (never guessed as TP).
