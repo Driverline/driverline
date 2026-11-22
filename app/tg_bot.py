@@ -57,6 +57,45 @@ def _reply(chat_id: int, text: str, markup: dict) -> JSONResponse:
     return JSONResponse({"method": "sendMessage", "chat_id": chat_id, "text": text, "reply_markup": markup, "disable_web_page_preview": True})
 
 
+def _connect_command(text: str, msg: dict):
+    """/app, /status and /unlink for TradeLens Connect. None (so the bot behaves exactly as before) unless Connect is switched on
+    (CONNECT_SECRET set) and the command is one of these three. The link itself is kept by app/connect.py, not here."""
+    word = text.split(" ")[0].split("@")[0].lower()
+    if word not in ("/app", "/status", "/unlink"):
+        return None
+    try:
+        from . import connect
+        if not connect.enabled():
+            return None
+        uid = (msg.get("from") or {}).get("id")
+        if not isinstance(uid, int):
+            return None
+        if word == "/app":
+            url = os.environ.get("CONNECT_MINIAPP_URL", "")
+            if not url.startswith("https://"):
+                return None
+            return ("Tap the button below to open TradeLens Connect.",
+                    {"inline_keyboard": [[{"text": "Open TradeLens Connect", "web_app": {"url": url}}]]})
+        found = connect.link_status(uid)
+        if word == "/status":
+            if not found:
+                return ("This Telegram account is not linked to a TradeLens account yet. Send /app to link it.", KEYBOARD)
+            ent = connect.get_entitlements(found[0])
+            on = [k for k, v in ent["flags"].items() if v]
+            return ("Linked to TradeLens (" + connect._mask(found[0]["email"]) + ").\nMembership: " + found[0]["tier"] +
+                    "\nActive: " + (", ".join(on) if on else "free account"), KEYBOARD)
+        if not found:
+            return ("This Telegram account is not linked, so there is nothing to unlink.", KEYBOARD)
+        if text.lower().split()[-1] == "confirm":
+            connect.unlink_telegram(uid)
+            return ("Unlinked. Your TradeLens account and Telegram are no longer connected. Send /app to link again.", KEYBOARD)
+        return ("This will disconnect this Telegram account from your TradeLens account. Your TradeLens account is not deleted. "
+                "To continue send:\n/unlink confirm", KEYBOARD)
+    except Exception as e:
+        print(f"[telegram] connect command failed: {type(e).__name__}", flush=True)
+        return None
+
+
 def respond(update: dict):
     """The webhook answer (a dict) for one Telegram update, or None when nothing should be sent."""
     msg = update.get("message") if isinstance(update, dict) else None
@@ -68,6 +107,9 @@ def respond(update: dict):
     text = text.strip()
     if text == "/start" or text.startswith("/start ") or text in ("/help", "/menu"):
         return ("sendMessage", chat_id, WELCOME, KEYBOARD)
+    cmd = _connect_command(text, msg)
+    if cmd:
+        return ("sendMessage", chat_id, cmd[0], cmd[1])
     if text in ACTIONS:
         say, url = ACTIONS[text]
         return ("sendMessage", chat_id, say, {"inline_keyboard": [[{"text": text, "url": url}]]})   # the reply keyboard stays: it is never removed
