@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import admin, admin_alerts, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, wallet, expiry_reminders, rewards, commission, prizes, partners, pending_orders, tg_bot, copy_trading, copy_plan, autotrade, price_alerts, mt5_requests, inbox, recap, deriv_options
+from . import admin, admin_alerts, auth, credits, deriv_login, deriv_trade, ea, journal, push, radar, signal_feed, track, partner, perks, chat, nowpay, naira, wallet, expiry_reminders, rewards, commission, prizes, partners, pending_orders, tg_bot, connect, copy_trading, copy_plan, autotrade, price_alerts, mt5_requests, inbox, recap, deriv_options
 from .engine import jobs as engine_jobs
 from .engine import signals_service as engine_signals
 from .config import INSTRUMENTS, market
@@ -190,6 +190,7 @@ routes = [
     *wallet.routes,
     *expiry_reminders.routes,
     *tg_bot.routes,
+    *connect.routes,
     *deriv_login.routes,
     *deriv_trade.routes,
     *deriv_options.routes,

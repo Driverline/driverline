@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeLens Connect</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#040a1b">
+<link rel="stylesheet" href="/theme.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>.pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:12px;font-weight:700;border:1px solid var(--line);color:var(--mut)}.pill.on{background:var(--grad);color:#02122c;border-color:transparent}
+.kv b{font-variant-numeric:tabular-nums}a.btn{display:block;text-align:center;padding:13px;border-radius:12px;background:var(--grad);color:#02122c;text-decoration:none;font-weight:700;margin-top:10px}</style>
+</head>
+<body>
+<header><span class="brand"><img src="/logo-mark.png" alt=""><span><b>Trade<i>Lens</i> Connect</b><small>by Driverline</small></span></span></header>
+<main>
+<div class="card" id="load"><span class="mut">Loading...</span></div>
+<div class="card" id="outside" hidden><h2>Open from Telegram</h2><div class="mut">This page works inside Telegram. Open the TradeLens bot and send /app.</div></div>
+
+<div class="card" id="linkbox" hidden>
+<h2>Connect your TradeLens account</h2>
+<div class="mut">Optional. Telegram works as usual either way. Linking shows your TradeLens plan and balance here. Your password is checked once and never stored by Telegram.</div>
+<label>TradeLens email</label><input id="em" type="email" autocomplete="email">
+<label>TradeLens password</label><input id="pw" type="password" autocomplete="current-password">
+<div class="btns"><button id="go">Link account</button></div>
+<div id="lmsg" class="err" style="margin-top:8px"></div>
+<a class="btn" id="signup" target="_blank" rel="noopener" style="background:transparent;border:1px solid var(--line);color:var(--gold2)">New to TradeLens? Create an account</a>
+</div>
+
+<div id="dash" hidden>
+<div class="card"><h2>Your account</h2>
+<div class="kv"><span>Account</span><b id="d_email"></b></div>
+<div class="kv"><span>Membership</span><b id="d_tier"></b></div></div>
+<div class="card"><h2>Your access</h2><div id="d_flags"></div></div>
+<div class="card"><h2>Usage</h2><div id="d_use"></div></div>
+<div class="card"><h2>Active plans</h2><div id="d_plans" class="mut"></div>
+<a class="btn" id="open" target="_blank" rel="noopener">Open TradeLens</a>
+<a class="btn" id="upg" target="_blank" rel="noopener" style="background:transparent;border:1px solid var(--line);color:var(--gold2)">Plans and top-ups</a></div>
+<div class="card"><button class="ghost" id="unl">Unlink this Telegram account</button><div id="umsg" class="mut" style="margin-top:6px"></div></div>
+</div>
+<small class="dis">TradeLens by Driverline. Education and risk analysis only, not financial advice. Uses Telegram Mini App technology.</small>
+</main>
+<script>
+const $=id=>document.getElementById(id), tg=window.Telegram&&Telegram.WebApp, SITE=location.origin;
+let TOKEN=null; // kept in memory only, never in storage
+const NAMES={notifications:'Signal notifications',mt5:'MT5 connection',copytrading:'Copy trading',autotrading:'AutoTrading'};
+function show(id){['load','outside','linkbox','dash'].forEach(x=>$(x).hidden=x!==id)}
+async function api(path,opt={}){
+  const h={'content-type':'application/json'};if(TOKEN)h.authorization='Bearer '+TOKEN;
+  const r=await fetch('/api/connect/v1/'+path,{...opt,headers:h});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){const e=new Error(d.detail||('HTTP '+r.status));e.status=r.status;throw e}
+  return d;
+}
+const date=t=>new Date(t*1000).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});
+function row(parent,label,value,cls){const d=document.createElement('div');d.className='kv';const a=document.createElement('span');a.textContent=label;const b=document.createElement('b');b.textContent=value;if(cls)b.className=cls;d.append(a,b);parent.append(d)}
+function render(me){
+  const e=me.entitlements;
+  $('d_email').textContent=me.email;$('d_tier').textContent=e.grandfathered?(e.tier+' (founding access)'):e.tier;
+  const f=$('d_flags');f.textContent='';
+  for(const k in NAMES){const on=e.flags[k],u=e.until[k];row(f,NAMES[k],on?(u?'Active until '+date(u):'Active'):'Not active',on?'win':'')}
+  const u=$('d_use');u.textContent='';const s=e.signals;
+  if(s.kind==='credits')row(u,'Signals balance',s.balance+' left ('+s.used+' opened today)');
+  else if(s.kind==='limit')row(u,'Signals today',s.used+' of '+s.limit);
+  else row(u,'Free analyses today',s.used+' of '+s.limit);
+  row(u,'Analyses today',e.analysis.used+' of '+e.analysis.limit);
+  $('d_plans').textContent=e.plans.length?e.plans.map(p=>p.label+' until '+date(p.until)).join(' | '):'No active plan.';
+  $('open').href=SITE+'/login.html?utm_source=Telegram&utm_medium=miniapp';
+  $('upg').href=SITE+'/billing.html';
+  show('dash');
+}
+async function start(){
+  if(!tg||!tg.initData){show('outside');return}
+  tg.ready();tg.expand();
+  try{
+    const d=await api('session',{method:'POST',body:JSON.stringify({init_data:tg.initData})});
+    if(d.linked){TOKEN=d.token;render(d.me)}else{show('linkbox')}
+  }catch(e){$('load').textContent='Please close and reopen this page from the bot.';}
+}
+$('signup').href=SITE+'/login.html?utm_source=Telegram&utm_medium=miniapp';
+$('go').onclick=async()=>{
+  $('lmsg').textContent='';$('go').disabled=true;
+  try{
+    const d=await api('link',{method:'POST',body:JSON.stringify({init_data:tg.initData,email:$('em').value,password:$('pw').value})});
+    $('pw').value='';TOKEN=d.token;render(d.me);
+  }catch(e){$('lmsg').textContent=e.message}
+  $('go').disabled=false;
+};
+$('upg').addEventListener('click',()=>{api('events',{method:'POST',body:JSON.stringify({event:'upgrade_tapped'})}).catch(()=>{})});
+$('unl').onclick=async()=>{
+  if(!confirm('Disconnect this Telegram account from TradeLens? Your TradeLens account is not deleted.'))return;
+  try{await api('unlink',{method:'POST',body:'{}'});TOKEN=null;show('linkbox')}catch(e){$('umsg').textContent=e.message}
+};
+start();
+</script>
+</body>
+</html>
