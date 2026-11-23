@@ -985,7 +985,11 @@ class MigrationTests(unittest.TestCase):
         raw.commit()
         raw.close()
         script = (f"import sys,os,json;sys.path.insert(0,{str(ROOT)!r});os.environ.pop('DATABASE_URL',None)\n"
-                  "import httpx2,types;sys.modules.setdefault('httpx',httpx2)\n"
+                  "import types\n"
+                  "try:\n"
+                  "    import httpx\n"
+                  "except ImportError:\n"
+                  "    import httpx2;sys.modules['httpx']=httpx2\n"
                   "from app import dbx,credits;from pathlib import Path\n"
                   f"dbx.SQLITE_PATH=Path({str(db)!r})\n"
                   "from contextlib import closing\n"

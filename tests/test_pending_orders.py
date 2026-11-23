@@ -236,7 +236,7 @@ def test_place_refusals():
     setup_member(pending_allowed=False)
     code, msg = place({"token": o["token"]})
     assert code == 409 and "AllowPending" in msg
-    setup_member(daily_loss=400.0)                      # 4% down, own limit is 3%
+    setup_member(daily_loss=1100.0)                     # 11% down, the default daily loss limit is 10%
     code, msg = place({"token": o["token"]})
     assert code == 409 and "daily loss" in msg
     setup_member(positions=3)                           # own maximum is 3
