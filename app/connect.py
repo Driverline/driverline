@@ -354,6 +354,22 @@ async def entitlements(request):
     return JSONResponse(get_entitlements(u))
 
 
+async def signals(request):
+    """GET with the Bearer token: the same signal list the website shows, read-only. It never opens or executes a signal, so it
+    spends nothing from the member's balance; opening stays in the existing signals flow."""
+    if not enabled():
+        return NOT_FOUND
+    u, _ = require_connect_user(request)
+    from . import signal_feed as F
+    now = int(time.time())
+    with closing(F.db()) as con:
+        rows = con.execute("SELECT * FROM signals WHERE created_at>? ORDER BY id DESC LIMIT 60",
+                           (now - F.CFG["view_hours"] * 3600,)).fetchall()
+        opened = {r["signal_id"] for r in con.execute("SELECT signal_id FROM signal_opens WHERE user_id=?", (u["id"],)).fetchall()}
+        b = F.budget(con, u)
+    return JSONResponse({"signals": [F._public(dict(r), r["id"] in opened, now) for r in rows], "budget": b, "ts": now})
+
+
 async def events(request):
     """POST {event, props?} with the Bearer token. Only the names in EVENTS are accepted; props is kept only if small."""
     if not enabled():
@@ -375,4 +391,5 @@ routes = [Route("/api/connect/v1/session", session, methods=["POST"]),
           Route("/api/connect/v1/unlink", unlink, methods=["POST"]),
           Route("/api/connect/v1/me", me, methods=["GET"]),
           Route("/api/connect/v1/entitlements", entitlements, methods=["GET"]),
+          Route("/api/connect/v1/signals", signals, methods=["GET"]),
           Route("/api/connect/v1/events", events, methods=["POST"])]

@@ -100,8 +100,8 @@ class RouteTests(unittest.TestCase):
         for fn in (connect.session, connect.link, connect.unlink, connect.me, connect.entitlements, connect.events):
             self.assertEqual(call(fn, {"init_data": sign(1)})[0], 404, fn.__name__)
 
-    def test_routes_list_has_the_six_paths(self):
-        self.assertEqual({r.path for r in connect.routes}, {f"/api/connect/v1/{x}" for x in ("session", "link", "unlink", "me", "entitlements", "events")})
+    def test_routes_list_has_the_seven_paths(self):
+        self.assertEqual({r.path for r in connect.routes}, {f"/api/connect/v1/{x}" for x in ("session", "link", "unlink", "me", "entitlements", "signals", "events")})
 
     # ---- session
     def test_unlinked_telegram_user_gets_linked_false_and_no_token(self):
@@ -217,6 +217,18 @@ class RouteTests(unittest.TestCase):
     def test_entitlements_route_matches_me(self):
         _, _, (_, b) = self.do_link()
         self.assertEqual(call(connect.entitlements, token=b["token"])[1], call(connect.me, token=b["token"])[1]["entitlements"])
+
+    def test_signals_route_is_read_only_and_needs_the_token(self):
+        self.assertEqual(call(connect.signals)[0], 401)
+        _, _, (_, b) = self.do_link()
+        st, body = call(connect.signals, token=b["token"])
+        self.assertEqual(st, 200)
+        self.assertIn("signals", body)
+        self.assertIn("budget", body)
+        self.assertNotIn("pw_hash", json.dumps(body))
+        from app import signal_feed
+        with closing(signal_feed.db()) as con:
+            self.assertEqual(con.execute("SELECT COUNT(*) AS c FROM signal_opens").fetchone()["c"], 0)
 
     def test_nothing_sensitive_is_logged_or_stored_in_events(self):
         _, _, (_, b) = self.do_link()
