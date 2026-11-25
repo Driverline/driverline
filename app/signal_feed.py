@@ -316,6 +316,12 @@ async def signal_loop():
             new = await asyncio.wait_for(scan_signals(), timeout=120)
             if new:
                 await asyncio.to_thread(push.notify_new, new)
+                try:                               # Telegram alerts for linked members; off unless CONNECT_ALERTS=1 (connect_alerts.py)
+                    from . import connect_alerts
+                    if connect_alerts.enabled():
+                        await asyncio.to_thread(connect_alerts.notify_new, new)
+                except Exception as e:
+                    print(f"[connect-alerts] failed: {type(e).__name__}", flush=True)
                 try:                               # AutoTrading: queue the matching trades for members who switched it on (autotrade.py)
                     from . import autotrade
                     await asyncio.to_thread(autotrade.on_new_signals, new)
