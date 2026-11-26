@@ -63,6 +63,7 @@ const I={ // simple line icons, 24x24
   rewards:'<rect x="4" y="9" width="16" height="11" rx="1"/><path d="M12 9v11M3 9h18M12 9c-2-4-6-3-5 0M12 9c2-4 6-3 5 0"/>',
   partner:'<circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20c0-4 3-6 6-6s6 2 6 6M15 14c3-1 6 1 6 5"/>',
   guide:'<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
+  connect:'<path d="M4 5h16v11H9l-5 4z"/><path d="M7 13l3-3 2 2 4-4"/>',
   admin:'<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>'
 };
 const T={ // where each tab points: icon and a plain-words line for people new to trading
@@ -79,6 +80,7 @@ const T={ // where each tab points: icon and a plain-words line for people new t
   '/rewards.html':['rewards','Points and prizes'],
   '/partner.html':['partner','Referrals and the partner programme'],
   '/guide.html':['guide','A 3-minute tour of every page'],
+  '/connect.html':['connect','Telegram with TradeLens built in. Get the Android app'],
   '/admin.html':['admin','Members and settings'],
   '/admin-messages.html':['messages','Members’ messages'],
   '/admin-payments.html':['billing','Payments'],
@@ -103,6 +105,7 @@ function build(){
     (a.dataset.admin?ag:g).append(tile(a));
   });
   const gl=document.createElement('a');gl.href='/guide.html';gl.textContent='Guide';g.append(tile(gl));        // not a tab: it opens the guided tour
+  const cn=document.createElement('a');cn.href='/connect.html';cn.textContent='Android app';g.append(tile(cn));  // not a tab: the TradeLens Connect download page
   document.getElementById('adminh').hidden=ag.hidden=!ag.children.length;
 }
 // First-time prompt: shown once per device to members who joined in the last 30 days, until they open the tour or tap Not now.
