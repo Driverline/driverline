@@ -2,8 +2,10 @@
 
 OFF unless CONNECT_ALERTS=1 (and Connect itself is on). It runs right AFTER the existing web-push alerts, with the same rules:
 the member must be entitled to notifications, must have chosen alert styles, must be outside quiet hours, must not have reached
-their daily limit, and gets at most one alert per signal. The existing signal_notifs table is shared, so a member whose web push
-already went out is skipped, and one without a working web push gets the Telegram message instead. The text never contains
+their daily limit, and gets at most one alert per signal. By default the existing signal_notifs table is shared, so a member whose
+web push already went out is skipped, and one without a working web push gets the Telegram message instead. With
+CONNECT_ALERTS_ALSO=1 Telegram keeps its own record (connect_alert_sent) and own daily count, so linked members get the Telegram
+alert IN ADDITION to web push, and web push is never affected (signal_notifs is only read, not written, in that mode). The text never contains
 trade levels; it points back to TradeLens, exactly like the web push. Nothing here changes any existing function or table.
 """
 import os
@@ -16,6 +18,10 @@ import httpx
 def enabled() -> bool:
     from . import connect
     return os.environ.get("CONNECT_ALERTS") == "1" and bool(os.environ.get("CONNECT_SECRET")) and bool(connect._bot_token())
+
+
+def also() -> bool:
+    return os.environ.get("CONNECT_ALERTS_ALSO") == "1"
 
 
 def _send(chat_id: int, text: str) -> bool:
@@ -34,9 +40,9 @@ def notify_new(signal_ids: list, sender=None) -> int:
     from . import connect, credits, push
     from . import signal_feed as F
     connect.db().close()      # makes sure the link table exists
-    sender, sent = sender or _send, 0
+    sender, sent, both = sender or _send, 0, also()
     now = datetime.now(timezone.utc)
-    with closing(F.db()) as con:
+    with closing(F.db()) as con, closing(connect.db()) as cdb:
         links = [dict(r) for r in con.execute(
             "SELECT l.user_id, l.telegram_id, u.tier FROM telegram_links l JOIN users u ON u.id=l.user_id "
             "WHERE l.revoked_at IS NULL AND u.blocked=0").fetchall()]
@@ -55,8 +61,10 @@ def notify_new(signal_ids: list, sender=None) -> int:
                 if F.budget(con, user)["paused"]:
                     continue
                 today = F._today()
-                done = con.execute("SELECT COUNT(*) AS c FROM signal_notifs WHERE user_id=? AND day=?", (uid, today)).fetchone()["c"]
-                if done >= p["limit"] or con.execute("SELECT 1 FROM signal_notifs WHERE user_id=? AND signal_id=?", (uid, sid)).fetchone():
+                book = cdb if both else con
+                table = "connect_alert_sent" if both else "signal_notifs"
+                done = book.execute(f"SELECT COUNT(*) AS c FROM {table} WHERE user_id=? AND day=?", (uid, today)).fetchone()["c"]
+                if done >= p["limit"] or book.execute(f"SELECT 1 FROM {table} WHERE user_id=? AND signal_id=?", (uid, sid)).fetchone():
                     continue
                 name = F.INSTRUMENTS.get(sig["instrument"], ("", sig["instrument"]))[1]
                 text = (f"{sig['style'].capitalize()} setup: {name}\n"
@@ -69,7 +77,12 @@ def notify_new(signal_ids: list, sender=None) -> int:
                     continue
                 if not ok:
                     continue
-                con.execute("INSERT INTO signal_notifs(user_id,signal_id,day) VALUES(?,?,?)", (uid, sid, today))
-                con.commit()
+                if both:
+                    cdb.execute("INSERT INTO connect_alert_sent(user_id,signal_id,day,sent_at) VALUES(?,?,?,?)",
+                                (uid, sid, today, int(now.timestamp())))
+                    cdb.commit()
+                else:
+                    con.execute("INSERT INTO signal_notifs(user_id,signal_id,day) VALUES(?,?,?)", (uid, sid, today))
+                    con.commit()
                 sent += 1
     return sent

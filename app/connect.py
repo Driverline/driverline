@@ -32,7 +32,10 @@ SCHEMA = """
     CREATE UNIQUE INDEX IF NOT EXISTS ux_tglink_user ON telegram_links(user_id) WHERE revoked_at IS NULL;
     CREATE TABLE IF NOT EXISTS connect_events(id {ID}, telegram_id BIGINT, user_id INTEGER, event TEXT NOT NULL,
         props TEXT, created_at BIGINT NOT NULL);
-    CREATE INDEX IF NOT EXISTS ix_cevents_event ON connect_events(event, created_at)"""
+    CREATE INDEX IF NOT EXISTS ix_cevents_event ON connect_events(event, created_at);
+    CREATE TABLE IF NOT EXISTS connect_alert_sent(user_id INTEGER NOT NULL, signal_id INTEGER NOT NULL, day TEXT NOT NULL,
+        sent_at BIGINT NOT NULL, PRIMARY KEY(user_id, signal_id));
+    CREATE INDEX IF NOT EXISTS ix_calert_day ON connect_alert_sent(user_id, day)"""
 
 # The only event names /events (a later step) will accept. Anything else is rejected so the table stays clean.
 EVENTS = ("announce_sent", "bot_start", "miniapp_opened", "link_started", "link_completed", "link_conflict",
