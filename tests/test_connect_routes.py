@@ -55,8 +55,9 @@ def newtg():
 
 
 class Req:
-    def __init__(self, body=None, token=None):
+    def __init__(self, body=None, token=None, query=None):
         self._b = body
+        self.query_params = query or {}
         self.headers = {"authorization": f"Bearer {token}"} if token else {}
 
     async def json(self):
@@ -65,10 +66,10 @@ class Req:
         return self._b
 
 
-def call(fn, body=None, token=None):
+def call(fn, body=None, token=None, query=None):
     """(status, json) of a handler, including the HTTPException a real server would turn into an answer."""
     try:
-        r = asyncio.run(fn(Req(body, token)))
+        r = asyncio.run(fn(Req(body, token, query)))
         return r.status_code, json.loads(r.body)
     except HTTPException as e:
         return e.status_code, {"detail": e.detail}
@@ -100,8 +101,8 @@ class RouteTests(unittest.TestCase):
         for fn in (connect.session, connect.link, connect.unlink, connect.me, connect.entitlements, connect.events):
             self.assertEqual(call(fn, {"init_data": sign(1)})[0], 404, fn.__name__)
 
-    def test_routes_list_has_the_seven_paths(self):
-        self.assertEqual({r.path for r in connect.routes}, {f"/api/connect/v1/{x}" for x in ("session", "link", "unlink", "me", "entitlements", "signals", "events")})
+    def test_routes_list_has_the_nine_paths(self):
+        self.assertEqual({r.path for r in connect.routes}, {f"/api/connect/v1/{x}" for x in ("session", "link", "unlink", "me", "entitlements", "signals", "mt5", "auto", "events")})
 
     # ---- session
     def test_unlinked_telegram_user_gets_linked_false_and_no_token(self):
@@ -229,6 +230,45 @@ class RouteTests(unittest.TestCase):
         from app import signal_feed
         with closing(signal_feed.db()) as con:
             self.assertEqual(con.execute("SELECT COUNT(*) AS c FROM signal_opens").fetchone()["c"], 0)
+
+    def _mt5_account(self, uid, equity=990.0):
+        import uuid
+        from app import ea
+        with closing(ea.db()) as con:
+            aid = con.insert("INSERT INTO ea_accounts(user_id,label,key_hash,created_at,last_seen,login) VALUES(?,?,?,?,?,?)",
+                             (uid, "Main", uuid.uuid4().hex, int(time.time()), int(time.time()), "123"))
+            state = {"account": {"login": "123", "server": "Demo", "currency": "USD", "balance": 1000.0, "equity": equity, "demo": True},
+                     "today": {"closed_pnl": 0}, "positions": [{"ticket": 7, "symbol": "EURUSD", "type": "BUY", "volume": 0.1, "profit": -10}], "orders": []}
+            con.execute("INSERT INTO ea_acct_state(account_id,state,updated_at) VALUES(?,?,?)", (aid, json.dumps(state), int(time.time())))
+            con.commit()
+        return aid
+
+    def test_mt5_and_auto_routes_need_the_token(self):
+        self.assertEqual(call(connect.mt5)[0], 401)
+        self.assertEqual(call(connect.auto)[0], 401)
+
+    def test_mt5_route_shows_the_members_own_account_and_never_a_foreign_one(self):
+        uid, email = mk()
+        _, _, (_, b) = self.do_link(email=email)
+        st, body = call(connect.mt5, token=b["token"])
+        self.assertEqual((st, body["accounts"]), (200, []))
+        other_uid, _ = mk()
+        other = self._mt5_account(other_uid)
+        self.assertEqual(call(connect.mt5, token=b["token"], query={"account": str(other)})[0], 404)
+        mine = self._mt5_account(uid)
+        st, body = call(connect.mt5, token=b["token"])
+        self.assertEqual(st, 200)
+        self.assertEqual(body["account_id"], mine)
+        self.assertEqual(body["accounts"][0]["equity"], 990.0)
+        self.assertEqual(len(body["positions"]), 1)
+        self.assertTrue(body["connected"])
+        self.assertNotIn("key_hash", json.dumps(body))
+
+    def test_auto_route_is_read_only_and_closed_when_autotrading_is_off(self):
+        _, _, (_, b) = self.do_link()
+        st, body = call(connect.auto, token=b["token"])
+        self.assertEqual(st, 200)
+        self.assertFalse(body["available"])
 
     def test_nothing_sensitive_is_logged_or_stored_in_events(self):
         _, _, (_, b) = self.do_link()

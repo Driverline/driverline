@@ -370,6 +370,55 @@ async def signals(request):
     return JSONResponse({"signals": [F._public(dict(r), r["id"] in opened, now) for r in rows], "budget": b, "ts": now})
 
 
+async def mt5(request):
+    """GET with the Bearer token: what the website's MT5 page shows, read-only (same ea.py functions and rules as /api/ea/status).
+    It cannot change rules, close a position or send any command."""
+    if not enabled():
+        return NOT_FOUND
+    u, _ = require_connect_user(request)
+    from . import credits, ea
+    now = time.time()
+    with closing(ea.db()) as con:
+        rows = ea.user_accounts(con, u["id"])
+        out = {"mt5_allowed": credits.mt5_can_report(u), "accounts": [ea._summary(con, a, now) for a in rows]}
+        if not rows:
+            if request.query_params.get("account") not in (None, ""):
+                raise HTTPException(404, "That MT5 account was not found")
+            return JSONResponse({**out, "has_key": False, "connected": False, "account_id": None})
+        a = ea.resolve(con, u["id"], request.query_params.get("account"))
+        aid = a["id"]
+        s = con.execute("SELECT state FROM ea_acct_state WHERE account_id=?", (aid,)).fetchone()
+        rules, mg = ea.get_rules(con, aid), ea.get_manage(con, aid)
+    seen = a["last_seen"]
+    out.update(account_id=aid, label=a["label"], has_key=True, connected=bool(seen and now - seen < 120),
+               last_seen_ago=int(now - seen) if seen else None, rules=rules, manage=mg)
+    if s:
+        st = json.loads(s["state"])
+        out.update(account=st["account"], today=st["today"], positions=st["positions"], check=ea.risk_check(st, rules),
+                   orders=st.get("orders") or [])
+    return JSONResponse(out)
+
+
+async def auto(request):
+    """GET with the Bearer token: what the website's AutoTrading page shows (eligibility, status, protection, recent jobs),
+    read-only. It cannot switch AutoTrading on or off, change a setting or start a trade."""
+    if not enabled():
+        return NOT_FOUND
+    u, _ = require_connect_user(request)
+    from . import autotrade as A, ea
+    with closing(ea.db()) as con:
+        if A.allowed(con, u):
+            return JSONResponse({"available": False})
+        accts = []
+        for a in ea.user_accounts(con, u["id"]):
+            st = A.get_settings(con, a["id"])
+            accts.append({"id": a["id"], "label": a["label"], "enabled": bool(st["enabled"]), "settings": {k: st[k] for k in A.form_values(st)},
+                          "pending": st["pending"], "paused_reason": st["paused_reason"],
+                          "eligibility": A.eligibility(con, a["id"]), "protection": A.protection_view(con, a["id"])})
+        jobs = [A._job_out(dict(r)) for r in con.execute("SELECT * FROM auto_jobs WHERE user_id=? ORDER BY id DESC LIMIT 30", (u["id"],)).fetchall()]
+    return JSONResponse({"available": True, "accounts": accts, "recent": jobs, "now": A._now()})
+
+
 async def events(request):
     """POST {event, props?} with the Bearer token. Only the names in EVENTS are accepted; props is kept only if small."""
     if not enabled():
@@ -392,4 +441,6 @@ routes = [Route("/api/connect/v1/session", session, methods=["POST"]),
           Route("/api/connect/v1/me", me, methods=["GET"]),
           Route("/api/connect/v1/entitlements", entitlements, methods=["GET"]),
           Route("/api/connect/v1/signals", signals, methods=["GET"]),
+          Route("/api/connect/v1/mt5", mt5, methods=["GET"]),
+          Route("/api/connect/v1/auto", auto, methods=["GET"]),
           Route("/api/connect/v1/events", events, methods=["POST"])]
