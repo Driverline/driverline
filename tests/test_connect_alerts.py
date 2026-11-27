@@ -90,6 +90,29 @@ class Alerts(unittest.TestCase):
         with closing(F.db()) as con:
             self.assertIsNone(con.execute("SELECT 1 FROM signal_notifs WHERE user_id=? AND signal_id=?", (uid, sid)).fetchone())
 
+    def test_also_mode_alerts_even_after_web_push_and_never_twice_or_touches_web_push(self):
+        uid, tg = member()
+        sid = signal()
+        with closing(F.db()) as con:
+            con.execute("INSERT INTO signal_notifs(user_id,signal_id,day) VALUES(?,?,?)", (uid, sid, F._today()))
+            con.commit()
+        os.environ["CONNECT_ALERTS_ALSO"] = "1"
+        try:
+            _, out = self.run_alerts(sid)
+            self.assertIn(tg, [c for c, _ in out])
+            _, again = self.run_alerts(sid)
+            self.assertNotIn(tg, [c for c, _ in again])
+            with closing(F.db()) as con:
+                n = con.execute("SELECT COUNT(*) AS c FROM signal_notifs WHERE user_id=?", (uid,)).fetchone()["c"]
+            self.assertEqual(n, 1, "web push records must not be written in also-mode")
+            uid2, tg2 = member()
+            sid2 = signal()
+            connect_alerts.notify_new([sid2], sender=lambda c, t: False)
+            with closing(connect.db()) as con:
+                self.assertIsNone(con.execute("SELECT 1 FROM connect_alert_sent WHERE user_id=?", (uid2,)).fetchone())
+        finally:
+            os.environ.pop("CONNECT_ALERTS_ALSO", None)
+
     def test_it_is_off_by_default(self):
         for k in ("CONNECT_ALERTS", "CONNECT_SECRET", "CONNECT_BOT_TOKEN"):
             os.environ.pop(k, None)
