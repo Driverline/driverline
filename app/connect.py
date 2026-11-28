@@ -58,6 +58,11 @@ TOKEN_TTL = 900            # 15 minutes. The Mini App asks for a new one each ti
 MIN_SECRET = 32
 
 
+def controls_on() -> bool:
+    """The app's safe-direction controls (connect_controls.py) are off until CONNECT_CONTROLS=1 as well."""
+    return enabled() and os.environ.get("CONNECT_CONTROLS") == "1"
+
+
 def enabled() -> bool:
     """Connect is off until CONNECT_SECRET (a NEW random value, at least 32 characters) is set in Render, the same way tg_bot.py
     stays off without its webhook secret. Never reuse DRIVERLINE_SECRET here."""
@@ -387,7 +392,7 @@ async def mt5(request):
         if not rows:
             if request.query_params.get("account") not in (None, ""):
                 raise HTTPException(404, "That MT5 account was not found")
-            return JSONResponse({**out, "has_key": False, "connected": False, "account_id": None})
+            return JSONResponse({**out, "has_key": False, "connected": False, "account_id": None, "controls": controls_on()})
         a = ea.resolve(con, u["id"], request.query_params.get("account"))
         aid = a["id"]
         s = con.execute("SELECT state FROM ea_acct_state WHERE account_id=?", (aid,)).fetchone()
@@ -399,6 +404,7 @@ async def mt5(request):
         st = json.loads(s["state"])
         out.update(account=st["account"], today=st["today"], positions=st["positions"], check=ea.risk_check(st, rules),
                    orders=st.get("orders") or [])
+    out["controls"] = controls_on()
     return JSONResponse(out)
 
 
@@ -419,7 +425,7 @@ async def auto(request):
                           "pending": st["pending"], "paused_reason": st["paused_reason"],
                           "eligibility": A.eligibility(con, a["id"]), "protection": A.protection_view(con, a["id"])})
         jobs = [A._job_out(dict(r)) for r in con.execute("SELECT * FROM auto_jobs WHERE user_id=? ORDER BY id DESC LIMIT 30", (u["id"],)).fetchall()]
-    return JSONResponse({"available": True, "accounts": accts, "recent": jobs, "now": A._now()})
+    return JSONResponse({"available": True, "accounts": accts, "recent": jobs, "now": A._now(), "controls": controls_on()})
 
 
 async def events(request):
